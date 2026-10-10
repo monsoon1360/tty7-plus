@@ -59,6 +59,7 @@ Native builds for macOS, Windows, and Linux on [**Releases**](https://github.com
 | **Side panel** | <kbd>⌘ J</kbd> · process tree and listening ports · file tree · changes and diffs · find in files · GitHub issues and pull requests, read-only, signed in through `gh` |
 | **Shell integration** | injected when a pane starts, nothing to install · prompt marks · working directory · exit codes · command-finished notifications · zsh, bash, fish, PowerShell, WSL, remote panes |
 | **Remote workspaces** | remote files, repos, changes, diffs, worktrees, tabs, and panes · reconnect from any client and continue where you left off |
+| **Android terminals** | [Pair, build and deploy](docs/remote/workspaces.mdx#android-remote-terminals) · scan a five-minute QR, compare codes and approve on desktop · automatic saved-computer reconnect · grouped session drawer and live Agent output · latest-snapshot loading/reconnect overlay · pinned TLS and end-to-end encryption · daemon stays online without the GUI |
 | **SSH** | native russh stack: profiles with keychain secrets · SFTP panel · port forwarding · jump hosts · one-time, unprivileged `tty7-server` install |
 
 ## Supported agents

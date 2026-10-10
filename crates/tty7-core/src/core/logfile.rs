@@ -14,7 +14,7 @@ struct FileLogger {
 
 impl Log for FileLogger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= log::max_level()
+        metadata.level() <= log::max_level() && payload_safe(metadata)
     }
 
     fn log(&self, record: &Record<'_>) {
@@ -36,6 +36,13 @@ impl Log for FileLogger {
     }
 
     fn flush(&self) {}
+}
+
+fn payload_safe(metadata: &Metadata<'_>) -> bool {
+    // Websocket libraries print full frames at debug/trace, including the host
+    // registration token. Verbose diagnostics must not turn into credential logs.
+    !(metadata.target().starts_with("tungstenite") || metadata.target().starts_with("tokio_tungstenite"))
+        || metadata.level() <= log::Level::Info
 }
 
 pub fn install(role: &'static str) {
@@ -113,6 +120,17 @@ fn timestamp() -> String {
 mod tests {
     use super::*;
     use log::Level;
+
+    #[test]
+    fn websocket_payload_trace_is_never_logged() {
+        fn metadata(target: &str, level: Level) -> Metadata<'_> {
+            Metadata::builder().target(target).level(level).build()
+        }
+        assert!(!payload_safe(&metadata("tungstenite::protocol", Level::Trace)));
+        assert!(!payload_safe(&metadata("tokio_tungstenite", Level::Debug)));
+        assert!(payload_safe(&metadata("tungstenite::protocol", Level::Warn)));
+        assert!(payload_safe(&metadata("tty7_core::mobile", Level::Debug)));
+    }
 
     #[test]
     fn logging_is_off_unless_asked_for() {

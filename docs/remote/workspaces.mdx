@@ -137,3 +137,156 @@ the local server *already* holds — it will not dial a fresh connection, and it
 says so rather than guessing. Connect from the switcher first.
 
 [CLI overview →](/cli/overview)
+
+## Android remote terminals
+
+The Android Kotlin Multiplatform Compose app connects to this computer's
+background tty7 daemon through a Rust relay. Both computer and phone make
+outbound connections; closing the desktop GUI does not stop the daemon or its
+shells. This is terminal and session access, not screen sharing: no mouse,
+file browser, file transfer or push notifications. Keep the Android app in the
+foreground while connected.
+
+### Pair and reconnect
+
+1. On the desktop, open **Settings → Pair Devices**. Configure the relay URL
+   and its trusted leaf certificate SHA-256 fingerprint, then enable access.
+   The initial empty pin fails closed; it does not trust a self-signed server
+   automatically. A pin is exactly 64 hexadecimal characters.
+2. Generate a QR code; it expires after five minutes. On Android, grant camera
+   permission and scan it. Treat the QR as a temporary secret, not something
+   to post or include in logs.
+3. Compare the verification code on the phone with the desktop request, then
+   approve that device on the desktop. Before approval the phone cannot list
+   sessions or send terminal input.
+4. Open the left session drawer and select a terminal. The Chinese-first Android
+   interface groups sessions with the desktop's repository grouping rules and
+   displays branches and Agent status. A loading overlay hides historical replay
+   until the selected terminal's latest snapshot has been parsed.
+   Use the command input and Enter, Ctrl-C, Tab, Esc or arrow controls; create
+   workspaces and terminals, switch between them, or close a terminal after
+   confirming. The terminal retains the desktop's dimensions, with horizontal
+   scrolling rather than resizing the desktop's shell.
+5. Approved saved computers reconnect automatically on cold launch and foreground
+   return; pairing does not need to be repeated. A foreground network interruption
+   keeps the selected terminal behind a reconnect overlay. After reconnection,
+   the overlay clears only when its new snapshot is completely parsed. Explicit
+   **Disconnect** opts out of automatic reconnect until you connect again.
+   Forgetting a computer on the phone removes its saved credential; **revoke**
+   its device entry on the desktop to withdraw access. Disabling desktop mobile
+   access disconnects live phones and stops relay access.
+
+### Content synchronization and failure handling
+
+The phone observes the same daemon-owned PTY as the desktop. Synchronization is
+an ANSI snapshot followed by ordered live output, not video frames or a copy of
+the desktop GUI. Desktop terminal dimensions are preserved; each client keeps
+its own selected session and scroll position. Normal-buffer history remains
+readable while an alternate-screen Agent is active, without inventing history
+for the alternate screen. Touch scrolling stays local and does not send mouse
+or terminal-query responses to the shared PTY.
+
+Protocol 2 gives each subscription a new generation and monotonically ordered
+output sequence. Android acknowledges output only after its terminal parser
+has consumed it; the host allows at most four unacknowledged output chunks.
+An ordered snapshot-complete marker releases the initial/reconnect overlay
+only after all preceding snapshot output has been parsed. Late callbacks from
+old subscriptions cannot unmask or acknowledge the new one. Initial history
+is bounded separately from the 8 MiB live-output queue, so a full initial
+replay does not disconnect its observer on the first new byte.
+
+Live output is streamed continuously; workspace, title, branch and Agent
+metadata refresh every two seconds, including while a terminal is open.
+Agent status uses the desktop's state source; agents that need status hooks
+still need those hooks installed. Observer or renderer failures retain the
+selected terminal and show an error with **Retry loading**, rather than
+returning to the QR screen or silently changing sessions.
+
+Update both the Android app and desktop daemon for protocol 2. Existing pairing
+credentials and certificate pins remain valid. The phone reconnects while
+foregrounded; this is not a background keep-alive service or push channel.
+
+### Trust and credentials
+
+Production connections require native TLS (`wss://`); unencrypted WebSocket
+connections are only for loopback development (the Android debug emulator also
+allows its host bridge). Configure your own relay address, for example
+`wss://relay.example.invalid:8443/v1/ws`, and the SHA-256 fingerprint of its leaf
+certificate. The example hostname is reserved and does not identify a deployment.
+No deployment address or certificate fingerprint is bundled as a trusted default;
+new credential stores start disabled with no pin. Existing saved configuration
+and approved devices are not replaced by these defaults.
+
+Obtain the expected pin through a trusted, out-of-band channel before configuring
+it. TLS pinning protects the relay connection; end-to-end encryption separately
+keeps terminal payloads opaque to the relay. Pairing bootstraps HKDF-derived,
+directional AES-256-GCM keys with strict sequence checking to reject replay.
+The desktop stores remembered secrets in a private credential store, not
+general settings; Android encrypts them using Android Keystore.
+
+When rotating the certificate, distribute the new desktop pin out of band,
+revoke the old device entry, and rescan and approve each phone with a fresh QR.
+Never commit certificates, private keys, pairing QR data or device credentials
+to the repository.
+
+### Build and deploy
+
+For a full Rust workspace build, use **Rust 1.95**: the current upstream GPUI
+dependency uses `cold_path`. From the repository root:
+
+```bash
+cargo +1.95.0 build --release --workspace
+```
+
+For a relay-only release build:
+
+```bash
+cargo +1.95.0 build --release -p tty7-relay
+```
+
+For Android, install **JDK 17** and **Android SDK 35**, set `ANDROID_HOME` to
+the SDK directory, and run this from `mobile/`:
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+Install the resulting `mobile/app/build/outputs/apk/debug/app-debug.apk` on an
+Android 8.0/API 26 or newer device.
+
+For a Linux relay deployment or redeployment, build the release binary above,
+install `target/release/tty7-relay` as `/opt/tty7-relay/tty7-relay`, and provision
+the certificate and private key privately on the server as
+`/opt/tty7-relay/tls.crt` and `/opt/tty7-relay/tls.key`. Use the existing
+`scripts/relay/tty7-relay.service` as the systemd unit: it listens on port 8443,
+runs with `DynamicUser`, and supplies TLS files through `LoadCredential`.
+Restrict the private key to the server administrator; do not store it in a
+checkout. Install the unit under `/etc/systemd/system/tty7-relay.service`, then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now tty7-relay.service
+# After replacing the binary or TLS credentials:
+sudo systemctl restart tty7-relay.service
+```
+
+Allow inbound TCP 8443 on the relay only. The HTTPS `/healthz` endpoint reports
+relay health; check it using the trusted certificate/pin rather than disabling
+TLS verification. The public pinned-TLS relay has passed encrypted pairing,
+approval, session management, GUI-independent operation, invalid membership
+and replay rejection, and device revocation end-to-end. Android emulator UI
+verification exercised CameraX/ML Kit scanning of the desktop-generated QR,
+matching-code approval, workspace/terminal creation and closing, live ANSI
+output and command input, Keystore-persisted reconnect after process restart,
+idle viewport changes, operation with the desktop GUI closed, and live
+revocation followed by authentication refusal.
+
+The Android repair verification also exercised a full 8 MiB native terminal
+replay, newest-snapshot masking, network-loss/recovery masking and automatic
+foreground recovery. On a physical Honor phone, two existing Agent terminals
+passed eight alternating entries and 32 history swipes without returning to
+pairing or the drawer; four additional switches made before snapshot completion
+also recovered to the final target. Cold process restart restored the approved
+computer and its grouped session drawer without scanning again. The updated
+desktop daemon was handed off without changing any of the four existing pane
+IDs or their immediately preceding terminal/Agent process IDs.

@@ -316,6 +316,103 @@ pub fn place(
     auto.map(GroupKey::Auto)
 }
 
+#[derive(Debug, PartialEq)]
+pub struct GroupSection {
+    pub key: Option<GroupKey>,
+    pub name: Option<String>,
+    pub tabs: Vec<usize>,
+}
+
+impl GroupSection {
+    pub fn pinned(&self) -> Option<GroupId> {
+        self.key.as_ref().and_then(GroupKey::pinned)
+    }
+}
+
+/// Shared desktop/mobile section order and labels. The caller supplies its
+/// localized Ungrouped caption; None keeps that section headerless.
+pub fn sections(
+    keys: &[Option<GroupKey>],
+    groups: &WorkspaceGroups,
+    ungrouped: Option<&str>,
+) -> Vec<GroupSection> {
+    let members = |key: Option<&GroupKey>| -> Vec<usize> {
+        (0..keys.len()).filter(|&i| keys[i].as_ref() == key).collect()
+    };
+    let mut auto_order = Vec::new();
+    for key in keys.iter().flatten().filter_map(GroupKey::auto) {
+        if !auto_order.contains(&key) {
+            auto_order.push(key);
+        }
+    }
+    let mut result: Vec<_> = groups.pinned.iter().zip(pinned_names(&groups.pinned))
+        .map(|(group, name)| {
+            let key = GroupKey::Pinned(group.id);
+            GroupSection { tabs: members(Some(&key)), key: Some(key), name: Some(name) }
+        }).collect();
+    result.extend(auto_order.iter().zip(auto_names(&auto_order)).map(|(auto, name)| {
+        let key = GroupKey::Auto((*auto).clone());
+        GroupSection { tabs: members(Some(&key)), key: Some(key), name: Some(name) }
+    }));
+    let rest = members(None);
+    if !rest.is_empty() || result.is_empty() {
+        result.push(GroupSection {
+            key: None,
+            name: (!auto_order.is_empty()).then(|| ungrouped.map(str::to_string)).flatten(),
+            tabs: rest,
+        });
+    }
+    result
+}
+
+/// Pinned labels remain verbatim; unnamed folders use disambiguated path tails.
+pub fn pinned_names(pinned: &[PinnedGroup]) -> Vec<String> {
+    let unnamed: Vec<_> = pinned.iter().filter(|group| group.given_name().is_none())
+        .filter_map(PinnedGroup::folder_path).collect();
+    let mut folders = group_names(&unnamed).into_iter();
+    pinned.iter().map(|group| match (group.given_name(), group.folder_path()) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(_)) => folders.next().expect("one name per folder"),
+        (None, None) => String::new(),
+    }).collect()
+}
+
+fn auto_names(keys: &[&AutoKey]) -> Vec<String> {
+    let roots: Vec<_> = keys.iter().filter_map(|key| match key {
+        AutoKey::Repo(path) => Some(path.as_path()),
+        AutoKey::SshHost(_) => None,
+    }).collect();
+    let mut names = group_names(&roots).into_iter();
+    keys.iter().map(|key| match key {
+        AutoKey::Repo(_) => names.next().expect("one name per repo"),
+        AutoKey::SshHost(host) => host.clone(),
+    }).collect()
+}
+
+pub fn group_names(roots: &[&Path]) -> Vec<String> {
+    let components: Vec<Vec<_>> = roots.iter().map(|root| root.components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect()).collect();
+    let mut depth = vec![1; roots.len()];
+    loop {
+        let names: Vec<_> = components.iter().zip(&depth).enumerate().map(|(i, (parts, &n))| {
+            if parts.is_empty() { roots[i].display().to_string() }
+            else { parts[parts.len().saturating_sub(n)..].join("/") }
+        }).collect();
+        let mut grew = false;
+        for i in 0..names.len() {
+            if names.iter().enumerate().any(|(j, name)| j != i && name == &names[i])
+                && depth[i] < components[i].len()
+            {
+                depth[i] += 1;
+                grew = true;
+            }
+        }
+        if !grew { return names; }
+    }
+}
+
 /// Edge detection for rule 2: a tab joins a pinned folder when its cwd
 /// *enters* the folder, not whenever it happens to be inside.
 ///

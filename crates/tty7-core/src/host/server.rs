@@ -45,6 +45,8 @@ pub struct Services {
     pub machine: Option<Arc<MachineStore>>,
     pub attachments: Arc<AttachRegistry>,
     pub panes: Option<Arc<dyn PaneDirectory>>,
+    /// Enabled only by the user-private local listener, never stdio bridges.
+    pub mobile_admin: bool,
 }
 
 impl Services {
@@ -57,6 +59,7 @@ impl Services {
             machine: Some(store),
             attachments: Arc::new(AttachRegistry::default()),
             panes: None,
+            mobile_admin: false,
         }
     }
 }
@@ -297,6 +300,7 @@ where
         machine_origin: machine_sub.as_ref().map(machine::Subscription::id),
         attachments: Arc::clone(&services.attachments),
         panes: services.panes.clone(),
+        mobile_admin: services.mobile_admin,
         id: NEXT_CONN.fetch_add(1, Ordering::Relaxed),
         holder: Holder {
             token: hello.client_token.clone(),
@@ -396,6 +400,9 @@ fn handshake<R: Read>(
     // or its shells stopped with nothing saying the tab is meant to wake.
     if services.machine.is_some() && services.panes.is_some() {
         features.push(feature::TAB_HIBERNATE.to_string());
+    }
+    if services.mobile_admin {
+        features.push(feature::MOBILE_ADMIN.to_string());
     }
     // The pane daemon's features ride along, same as `protocol_version` above:
     // a pane connection answers exactly one message, so a client that wanted
@@ -944,6 +951,13 @@ fn run_request(
             }),
             Vec::new(),
         ),
+        ControlRequest::MobileAdmin { request } => {
+            if !conn.mobile_admin {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                    "mobile administration is restricted to the private local control endpoint"));
+            }
+            (ReplyOk::MobileAdmin(crate::mobile::dispatch(request)?), Vec::new())
+        }
     })
 }
 
@@ -987,6 +1001,7 @@ struct Conn {
     machine_origin: Option<machine::SubscriberId>,
     attachments: Arc<AttachRegistry>,
     panes: Option<Arc<dyn PaneDirectory>>,
+    mobile_admin: bool,
     id: u64,
     holder: Holder,
 }
@@ -1595,6 +1610,8 @@ mod sock {
                 Ok(stream) => {
                     let host = Arc::clone(&host);
                     let services = services.clone();
+                    let mut services = services;
+                    services.mobile_admin = true;
                     let spawned = std::thread::Builder::new()
                         .name("tty7-control-conn".into())
                         .spawn(move || {
@@ -1717,6 +1734,8 @@ mod wsock {
                     transport::tune(&stream);
                     let host = Arc::clone(&host);
                     let services = services.clone();
+                    let mut services = services;
+                    services.mobile_admin = true;
                     let spawned = std::thread::Builder::new()
                         .name("tty7-control-conn".into())
                         .spawn(move || {
@@ -1821,6 +1840,17 @@ mod aggregate_tests {
             Box::new(|_| {}),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn nonlocal_control_cannot_administer_mobile_access() {
+        let client = client_with(Services::none());
+        assert!(!client.hello().has_feature(feature::MOBILE_ADMIN));
+        let error = client.call(ControlRequest::MobileAdmin {
+            request: crate::mobile::AdminRequest::Status,
+        }).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        client.close();
     }
 
     #[test]
@@ -1941,6 +1971,7 @@ mod aggregate_tests {
                     owner: None,
                 }],
             })),
+            mobile_admin: false,
         };
         let client = client_with(services);
         let ReplyOk::MachineTree(machine) = client.call(ControlRequest::MachineGet).unwrap() else {
@@ -2050,6 +2081,7 @@ mod aggregate_tests {
             machine: Some(Arc::clone(&store)),
             attachments: Arc::new(AttachRegistry::default()),
             panes: Some(recorder.clone()),
+            mobile_admin: false,
         });
         assert!(client.hello().has_feature(feature::TAB_HIBERNATE));
 

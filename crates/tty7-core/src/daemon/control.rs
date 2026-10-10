@@ -61,7 +61,9 @@ use super::protocol::{MAX_FRAME, read_frame, write_frame};
 ///
 /// v12 adds `AgentSessions`: the search's Sessions tab in a remote workspace
 /// lists the coding-agent sessions of the machine the workspace is on.
-pub const CONTROL_VERSION: u32 = 12;
+///
+/// v13 adds the local-only mobile administration request and reply.
+pub const CONTROL_VERSION: u32 = 13;
 
 const DIALECT_MARKER: &str = "speaks control v";
 
@@ -158,6 +160,7 @@ pub mod feature {
     /// request, and sending it would take the link down, so a client asks for
     /// the name first and tells the user the server needs updating instead.
     pub const CONTENT_SEARCH: &str = "content-search";
+    pub const MOBILE_ADMIN: &str = "mobile-admin";
 }
 
 pub use crate::host::{
@@ -381,6 +384,9 @@ pub enum ControlRequest {
     },
     Routes,
     Status,
+    MobileAdmin {
+        request: crate::mobile::AdminRequest,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,6 +465,7 @@ impl ControlRequest {
             | PaneMove { .. }
             | PaneReplace { .. } => Duration::from_secs(10),
             AgentStates | Routes | Status => Duration::from_secs(5),
+            MobileAdmin { .. } => Duration::from_secs(15),
         }
     }
 
@@ -514,6 +521,7 @@ pub enum ReplyOk {
     PaneProcs(crate::daemon::protocol::PaneProcs),
     Routes(Vec<RouteInfo>),
     Status(ServerStatus),
+    MobileAdmin(crate::mobile::AdminReply),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -766,6 +774,17 @@ fn decode_body_exact<'a>(payload: &'a [u8], what: &str) -> io::Result<(u64, &'a 
         )));
     }
     Ok((req_id, json))
+}
+
+/// Stdio transports are not an administrative endpoint, even when they bridge
+/// to the user-private local socket. Inspect only the JSON head, never copy blobs.
+pub fn mobile_admin_frame(k: u8, payload: &[u8]) -> io::Result<bool> {
+    if k != kind::REQUEST && k != kind::REQUEST_BLOB {
+        return Ok(false);
+    }
+    let (_, head, _) = decode_body(payload)?;
+    let request: ControlRequest = from_json(head)?;
+    Ok(matches!(request, ControlRequest::MobileAdmin { .. }))
 }
 
 fn require_nonzero(req_id: u64, what: &str) -> io::Result<()> {
@@ -1646,6 +1665,7 @@ mod tests {
             ControlRequest::PaneProcs { pane_id: 7 },
             ControlRequest::Routes,
             ControlRequest::Status,
+            ControlRequest::MobileAdmin { request: crate::mobile::AdminRequest::Status },
         ]
     }
 
@@ -1733,6 +1753,7 @@ mod tests {
                 build: "26.7.5".into(),
                 socket: "/run/user/1000/tty7/daemon.sock".into(),
             })),
+            ControlReply::Ok(ReplyOk::MobileAdmin(crate::mobile::AdminReply::Unit)),
             ControlReply::Err(WireError::new(WireErrorKind::NotFound, "no such file")),
             ControlReply::Err(WireError::new(
                 WireErrorKind::PermissionDenied,
@@ -2121,6 +2142,17 @@ mod tests {
     }
 
     #[test]
+    fn mobile_admin_is_recognized_on_both_stdio_request_kinds() {
+        let request = ControlRequest::MobileAdmin { request: crate::mobile::AdminRequest::BeginPairing };
+        let head = serde_json::to_vec(&request).unwrap();
+        let payload = encode_body(1, &head, b"ignored blob").unwrap();
+        assert!(mobile_admin_frame(kind::REQUEST, &payload).unwrap());
+        assert!(mobile_admin_frame(kind::REQUEST_BLOB, &payload).unwrap());
+        let normal = encode_body(1, &serde_json::to_vec(&ControlRequest::Ping).unwrap(), &[]).unwrap();
+        assert!(!mobile_admin_frame(kind::REQUEST, &normal).unwrap());
+    }
+
+    #[test]
     fn control_kinds_sit_in_their_own_range() {
         let ours = [
             kind::HELLO,
@@ -2398,6 +2430,7 @@ mod tests {
             (R::PaneProcs { pane_id: 7 }, s(5)),
             (R::Routes, s(5)),
             (R::Status, s(5)),
+            (R::MobileAdmin { request: crate::mobile::AdminRequest::Status }, s(15)),
         ];
         assert_eq!(
             cases.len(),

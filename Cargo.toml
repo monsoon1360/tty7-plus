@@ -121,6 +121,8 @@ plist = "1"
 # vision won't accept, so we transcode to PNG. `image` is already in the tree via
 # gpui's own clipboard code, so pinning it here adds no new native code.
 image = "0.25"
+# Desktop pairing renders the authenticated bootstrap URI as a local QR image.
+qrcode = { version = "0.14", default-features = false }
 
 # HTTP client for the startup update check (`core::update`): one GET to the
 # GitHub releases API to see if a newer version has shipped. `reqwest_client`
@@ -283,7 +285,7 @@ members = ["crates/*"]
 # The root `tty7` package is a member implicitly; naming every crate here is
 # what makes a bare `cargo build` / `cargo test` at the root cover the whole
 # workspace, which is how CI invokes them.
-default-members = [".", "crates/tty7-core", "crates/tty7-server", "crates/tty7-cli"]
+default-members = [".", "crates/tty7-core", "crates/tty7-server", "crates/tty7-cli", "crates/tty7-relay"]
 
 [workspace.package]
 edition = "2024"

@@ -617,7 +617,7 @@ impl OutputGate {
         }
     }
 
-    fn add(&self, n: usize) {
+    pub(crate) fn add(&self, n: usize) {
         self.queued.fetch_add(n as i64, Ordering::Relaxed);
     }
 
@@ -2302,7 +2302,9 @@ impl DaemonPane {
         !st.alive && st.subscriber.is_none()
     }
 
-    pub fn observe(&self, observer: Sender<DaemonMsg>, gate: Arc<OutputGate>) -> u64 {
+    /// Own the bounded canonical replay before registering for live broadcasts.
+    /// Initial frames are separate from the observer's live byte budget.
+    pub fn observe(&self, observer: Sender<DaemonMsg>, gate: Arc<OutputGate>) -> (u64, Vec<DaemonMsg>) {
         let foreground_command = self.has_foreground_command();
         let mut st = self.state.lock().unwrap();
         observe_subscriber(&mut st, observer, gate, foreground_command)
@@ -2399,6 +2401,26 @@ impl DaemonPane {
 
     pub fn alive(&self) -> bool {
         self.state.lock().unwrap().alive
+    }
+
+    pub(crate) fn mobile_size(&self) -> WinSize {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).ring.tail_size()
+    }
+
+    pub(super) fn mobile_agent(
+        &self,
+    ) -> Option<(crate::core::cli_agent::CLIAgent, crate::core::cli_agent::AgentStatus)> {
+        mobile_agent(&self.state.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub(crate) fn mobile_seed(&self) -> crate::core::machine::PaneSeed {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        crate::core::machine::PaneSeed {
+            pane: self.id,
+            cwd: state.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            shell: state.shell_spec.clone(),
+            ..crate::core::machine::PaneSeed::bare(self.id)
+        }
     }
 
     pub fn info(&self) -> PaneInfo {
@@ -2865,10 +2887,10 @@ impl ReplayRing {
         }
     }
 
-    fn replay(&self, subscriber: &Sender<DaemonMsg>) {
+    fn replay(&self, mut send: impl FnMut(DaemonMsg)) {
         for seg in &self.segments {
-            let _ = subscriber.send(DaemonMsg::Size(seg.size));
-            let _ = subscriber.send(DaemonMsg::Snapshot(seg.to_vec()));
+            send(DaemonMsg::Size(seg.size));
+            send(DaemonMsg::Snapshot(seg.to_vec()));
         }
     }
 
@@ -2917,7 +2939,7 @@ fn record_output(st: &mut PaneState, bytes: &[u8]) {
 /// own the terminal right now?", asked of the pty rather than of the pane's
 /// stored state. It gates the prompt report, and that gate is not cosmetic —
 /// see [`replayed_at_prompt`].
-fn replay_state(st: &PaneState, subscriber: &Sender<DaemonMsg>, foreground_command: bool) {
+fn replay_state(st: &PaneState, mut send: impl FnMut(DaemonMsg), foreground_command: bool) {
     // Ahead of the ring, not after it: a client that is put into the alternate
     // screen first paints the replayed frames into the buffer they belong to.
     //
@@ -2930,30 +2952,30 @@ fn replay_state(st: &PaneState, subscriber: &Sender<DaemonMsg>, foreground_comma
     // no history to keep it and is left behind when the program exits. What
     // the ring carries always wins on its own terms.
     if let Some(modes) = st.modes.restore_bytes_beyond(&st.ring.modes()) {
-        let _ = subscriber.send(DaemonMsg::Snapshot(modes));
+        send(DaemonMsg::Snapshot(modes));
     }
-    st.ring.replay(subscriber);
+    st.ring.replay(&mut send);
     if let Some(cwd) = &st.cwd {
-        let _ = subscriber.send(DaemonMsg::Cwd(cwd.clone()));
+        send(DaemonMsg::Cwd(cwd.clone()));
     }
     if st.shell.active {
-        let _ = subscriber.send(DaemonMsg::Prompt {
+        send(DaemonMsg::Prompt {
             active: st.shell.active,
             at_prompt: replayed_at_prompt(st, foreground_command),
             last_exit: st.shell.last_exit_code,
         });
     }
     if st.remote.is_some() {
-        let _ = subscriber.send(DaemonMsg::RemoteContext(st.remote.clone()));
+        send(DaemonMsg::RemoteContext(st.remote.clone()));
     }
     if st.agent.is_some() {
-        let _ = subscriber.send(DaemonMsg::Agent(st.agent));
+        send(DaemonMsg::Agent(st.agent));
     }
     if st.agent_session.is_some() {
-        let _ = subscriber.send(DaemonMsg::AgentStatus(st.agent_session.clone()));
+        send(DaemonMsg::AgentStatus(st.agent_session.clone()));
     }
     if !st.alive {
-        let _ = subscriber.send(DaemonMsg::Exited { code: st.exit_code });
+        send(DaemonMsg::Exited { code: st.exit_code });
     }
 }
 
@@ -3007,7 +3029,7 @@ fn attach_subscriber_with_permissions(
 ) -> u64 {
     st.subscriber_epoch += 1;
     set_clipboard_permission(st, allow_remote_clipboard_write);
-    replay_state(st, &subscriber, foreground_command);
+    replay_state(st, |message| { let _ = subscriber.send(message); }, foreground_command);
     st.subscriber = Some(subscriber);
     st.subscriber_epoch
 }
@@ -3017,20 +3039,18 @@ fn observe_subscriber(
     observer: Sender<DaemonMsg>,
     gate: Arc<OutputGate>,
     foreground_command: bool,
-) -> u64 {
+) -> (u64, Vec<DaemonMsg>) {
+    // Snapshot vectors are created once by canonical replay and moved to the
+    // consumer. Only subsequent live broadcasts enter the gated channel.
+    let mut initial = Vec::with_capacity(st.ring.segments.len() * 2 + 7);
+    replay_state(st, |message| initial.push(message), foreground_command);
     st.observer_seq += 1;
-    replay_state(st, &observer, foreground_command);
-    // The replay just queued the whole ring into this channel. Charge it, or
-    // the first budget check would read zero while a full scrollback is already
-    // sitting there unread — an observer that never drains would be allowed a
-    // ring plus a full budget before anyone noticed.
-    gate.add(st.ring.len);
     st.observers.push(Observer {
         id: st.observer_seq,
         tx: observer,
         gate,
     });
-    st.observer_seq
+    (st.observer_seq, initial)
 }
 
 fn agent_state_snapshot(st: &PaneState) -> Option<crate::daemon::control::PaneAgentState> {
@@ -3041,6 +3061,15 @@ fn agent_state_snapshot(st: &PaneState) -> Option<crate::daemon::control::PaneAg
             agent: st.agent,
             state,
         })
+}
+
+fn mobile_agent(
+    state: &PaneState,
+) -> Option<(crate::core::cli_agent::CLIAgent, crate::core::cli_agent::AgentStatus)> {
+    Some((
+        state.agent?,
+        state.agent_session.as_ref().map(|s| s.status).unwrap_or_default(),
+    ))
 }
 
 /// What the daemon has learned about a pane that the machine tree wants to
@@ -4328,7 +4357,7 @@ mod tests {
         ring.append(b"narrow bytes");
 
         let (tx, rx) = mpsc::channel();
-        ring.replay(&tx);
+        ring.replay(|message| tx.send(message).unwrap());
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(100, 24)));
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b == b"wide bytes"));
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(80, 24)));
@@ -4350,7 +4379,7 @@ mod tests {
         ring.append(b"the new shell's prompt");
 
         let (tx, rx) = mpsc::channel();
-        ring.replay(&tx);
+        ring.replay(|message| tx.send(message).unwrap());
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(100, 24)));
         assert!(
             matches!(rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b == b"what the dead pane had on it"),
@@ -4628,7 +4657,7 @@ mod tests {
         assert_eq!(ring.segments.len(), 2);
 
         let (tx, rx) = mpsc::channel();
-        ring.replay(&tx);
+        ring.replay(|message| tx.send(message).unwrap());
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(100, 24)));
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b == b"bytes"));
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(80, 30)));
@@ -4648,8 +4677,10 @@ mod tests {
         assert_eq!(ring.len, RING_CAP);
 
         let (tx, rx) = mpsc::channel();
-        ring.replay(&tx);
+        ring.replay(|message| tx.send(message).unwrap());
         assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Size(s)) if s == ws(80, 24)));
+        assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b.len() == RING_CAP && b.iter().all(|byte| *byte == b'n')));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -5323,6 +5354,59 @@ mod tests {
             alive,
             exit_code: None,
         }
+    }
+
+    #[test]
+    fn mobile_agent_reads_current_state_including_inferred_interrupts() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent};
+        let mut state = test_state(true);
+        assert_eq!(mobile_agent(&state), None);
+        state.agent = Some(CLIAgent::Codex);
+        assert_eq!(mobile_agent(&state), Some((CLIAgent::Codex, AgentStatus::Idle)));
+        state.agent_session = Some(working_session());
+        assert_eq!(mobile_agent(&state), Some((CLIAgent::Codex, AgentStatus::Working)));
+        let generation = state.agent_clock.generation;
+        settle_interrupt(&mut state, generation);
+        assert_eq!(mobile_agent(&state).unwrap().1, state.agent_session.as_ref().unwrap().status);
+        assert_ne!(mobile_agent(&state).unwrap().1, AgentStatus::Working);
+        apply_agent(&mut state, None);
+        assert_eq!(mobile_agent(&state), None);
+    }
+
+    #[test]
+    fn observer_replay_and_live_frames_keep_controller_and_balance_budget() {
+        use crate::core::cli_agent::CLIAgent;
+        let mut state = test_state(true);
+        state.agent = Some(CLIAgent::Codex);
+        state.agent_session = Some(working_session());
+        record_output(&mut state, b"\x1b[?1049h");
+        record_output(&mut state, &vec![b'.'; RING_CAP]);
+        let (controller_tx, controller_rx) = mpsc::channel();
+        let epoch = attach_subscriber(&mut state, controller_tx);
+        drain(&controller_rx);
+        let (observer_tx, observer_rx) = mpsc::channel();
+        let observer_gate = Arc::new(OutputGate::new());
+        let size = state.ring.tail_size();
+        let (_, replay) = observe_subscriber(&mut state, observer_tx, observer_gate.clone(), true);
+        assert!(observer_rx.try_recv().is_err(), "initial replay is not in the live channel");
+        assert_eq!(replay.len(), 5, "mode prefix, Size/Snapshot and both agent metadata messages");
+        assert!(replay.iter().any(|msg| matches!(msg, DaemonMsg::Agent(Some(CLIAgent::Codex)))));
+        assert!(replay.iter().any(|msg| matches!(msg, DaemonMsg::AgentStatus(Some(s)) if s == &working_session())));
+        let bytes: usize = replay.iter().map(|msg| match msg {
+            DaemonMsg::Snapshot(bytes) => bytes.len(), _ => 0,
+        }).sum();
+        assert_eq!(bytes, RING_CAP + b"\x1b[?1049h".len());
+        assert_eq!(observer_gate.queued_bytes(), 0, "owned replay must not consume live budget");
+        let controller_gate = OutputGate::new();
+        fan_out_output(&mut state, b"\x1b[2;3Hlive", Vec::new(), &controller_gate);
+        assert!(matches!(controller_rx.try_recv(), Ok(DaemonMsg::Output(b)) if b == b"\x1b[2;3Hlive"));
+        assert!(matches!(observer_rx.try_recv(), Ok(DaemonMsg::Output(b)) if b == b"\x1b[2;3Hlive"));
+        assert_eq!(state.subscriber_epoch, epoch);
+        assert!(state.subscriber.is_some());
+        assert_eq!(state.ring.tail_size(), size, "observing never resizes the pane");
+        assert_eq!(observer_gate.queued_bytes(), 10);
+        observer_gate.sub(10);
+        assert_eq!(observer_gate.queued_bytes(), 0);
     }
 
     #[test]
@@ -6079,9 +6163,9 @@ mod tests {
         record_output(&mut st, b"\x1b[?1049h");
         record_output(&mut st, &vec![b'.'; RING_CAP]);
 
-        let (tx, rx) = mpsc::channel();
-        observe_subscriber(&mut st, tx, Arc::new(OutputGate::new()), false);
-        assert!(matches!(rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b == b"\x1b[?1049h"));
+        let (tx, _rx) = mpsc::channel();
+        let (_, replay) = observe_subscriber(&mut st, tx, Arc::new(OutputGate::new()), false);
+        assert!(matches!(&replay[0], DaemonMsg::Snapshot(b) if b == b"\x1b[?1049h"));
     }
 
     #[test]
@@ -6097,6 +6181,62 @@ mod tests {
             rx.try_recv(),
             Ok(DaemonMsg::Exited { code: None })
         ));
+    }
+
+    #[test]
+    fn owned_observer_replay_covers_exact_fifo_with_optional_metadata_and_empty_tail() {
+        use crate::core::cli_agent::CLIAgent;
+        for metadata in 0u32..32 {
+            for alive in [false, true] {
+                for segmented in [false, true] {
+                    let mut st = test_state(alive);
+                    // The current modes can outlive the bytes that enabled them.
+                    st.modes.feed(b"\x1b[?1049h");
+                    if segmented {
+                        st.ring.append(b"old geometry");
+                        st.ring.resize(ws(100, 30));
+                    }
+                    if metadata & 1 != 0 { st.cwd = Some(PathBuf::from("/work")); }
+                    if metadata & 2 != 0 { st.shell.active = true; }
+                    if metadata & 4 != 0 {
+                        st.remote = Some(RemoteContext {
+                            kind: RemoteKind::Ssh, argv: vec!["ssh".into(), "box".into()], target: "box".into(),
+                        });
+                    }
+                    if metadata & 8 != 0 { st.agent = Some(CLIAgent::Codex); }
+                    if metadata & 16 != 0 { st.agent_session = Some(working_session()); }
+                    let (tx, rx) = mpsc::channel();
+                    let gate = Arc::new(OutputGate::new());
+                    let (id, mut all) = observe_subscriber(&mut st, tx, gate.clone(), false);
+                    let replay_messages = all.len();
+                    let expected = 1 + (if segmented { 4 } else { 2 })
+                        + metadata.count_ones() as usize + usize::from(!alive);
+                    assert_eq!(replay_messages, expected);
+                    assert_eq!(st.observers[0].id, id);
+                    assert_eq!(gate.queued_bytes(), 0);
+                    assert!(rx.try_recv().is_err());
+                    fan_out_output(&mut st, b"live", Vec::new(), &OutputGate::new());
+                    let live = drain(&rx);
+                    let queued: usize = live.iter().map(|msg| match msg {
+                        DaemonMsg::Snapshot(bytes) | DaemonMsg::Output(bytes) => bytes.len(), _ => 0,
+                    }).sum();
+                    all.extend(live);
+                    assert_eq!(all.len(), replay_messages + 1);
+                    assert!(matches!(&all[0], DaemonMsg::Snapshot(bytes) if bytes == b"\x1b[?1049h"));
+                    let empty_index = if segmented { 4 } else { 2 };
+                    assert!(matches!(&all[empty_index], DaemonMsg::Snapshot(bytes) if bytes.is_empty()));
+                    let final_size = if segmented { ws(100, 30) } else { ws(80, 24) };
+                    assert!(matches!(&all[empty_index - 1], DaemonMsg::Size(size) if *size == final_size));
+                    if !alive {
+                        assert!(matches!(&all[replay_messages - 1], DaemonMsg::Exited { code: None }));
+                    }
+                    assert!(matches!(&all[replay_messages], DaemonMsg::Output(bytes) if bytes == b"live"));
+                    assert_eq!(gate.queued_bytes(), queued as i64);
+                    gate.sub(queued);
+                    assert_eq!(gate.queued_bytes(), 0);
+                }
+            }
+        }
     }
 
     fn drain(rx: &mpsc::Receiver<DaemonMsg>) -> Vec<DaemonMsg> {
@@ -6118,18 +6258,18 @@ mod tests {
         drain(&controller_rx);
 
         let (observer_tx, observer_rx) = mpsc::channel();
-        let id = observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
+        let (id, replay) = observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
+        assert_eq!(replay.len(), 3);
         assert_eq!(
             st.subscriber_epoch, epoch,
             "observing must not bump the controller epoch"
         );
         assert!(st.subscriber.is_some(), "the controller keeps its seat");
 
-        assert!(matches!(observer_rx.try_recv(), Ok(DaemonMsg::Size(_))));
-        assert!(matches!(observer_rx.try_recv(), Ok(DaemonMsg::Snapshot(b)) if b == b"screen"));
-        assert!(
-            matches!(observer_rx.try_recv(), Ok(DaemonMsg::Cwd(p)) if p == PathBuf::from("/work"))
-        );
+        assert!(matches!(&replay[0], DaemonMsg::Size(_)));
+        assert!(matches!(&replay[1], DaemonMsg::Snapshot(b) if b == b"screen"));
+        assert!(matches!(&replay[2], DaemonMsg::Cwd(p) if p == &PathBuf::from("/work")));
+        assert!(observer_rx.try_recv().is_err(), "only live messages enter the channel");
         assert!(
             controller_rx.try_recv().is_err(),
             "an observer joining must be invisible to the controller"
@@ -6158,7 +6298,6 @@ mod tests {
 
         let (observer_tx, observer_rx) = mpsc::channel();
         observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
-        drain(&observer_rx);
 
         let (second_tx, second_rx) = mpsc::channel();
         let second_epoch = attach_subscriber(&mut st, second_tx);
@@ -6200,21 +6339,54 @@ mod tests {
     }
 
     #[test]
+    fn full_initial_replay_keeps_observer_for_first_live_output() {
+        let mut st = test_state(true);
+        record_output(&mut st, &vec![b'x'; OBSERVER_BUDGET as usize]);
+        let (observer_tx, observer_rx) = mpsc::channel();
+        let gate = Arc::new(OutputGate::new());
+        let (id, initial) = observe_subscriber(&mut st, observer_tx, gate.clone(), false);
+        assert_eq!(initial.iter().map(|message| match message {
+            DaemonMsg::Snapshot(bytes) => bytes.len(), _ => 0,
+        }).sum::<usize>(), OBSERVER_BUDGET as usize);
+        assert_eq!(gate.queued_bytes(), 0);
+
+        // The PTY can publish metadata and live bytes before the observer's
+        // forwarding thread has even started consuming the initial snapshot.
+        notify(&mut st, DaemonMsg::Size(ws(80, 24)));
+        fan_out_output(&mut st, b"first live output", Vec::new(), &OutputGate::new());
+        assert!(
+            st.observers.iter().any(|observer| observer.id == id),
+            "a full history snapshot must not evict the newly registered observer",
+        );
+        assert!(
+            observer_rx.try_iter().any(|message| matches!(message,
+                DaemonMsg::Output(bytes) if bytes == b"first live output")),
+            "the initial snapshot must be followed by live bytes without a disconnect",
+        );
+    }
+
+    #[test]
     fn a_stalled_observer_is_dropped_at_its_budget_while_the_controller_streams_on() {
         let mut st = test_state(true);
         let (controller_tx, controller_rx) = mpsc::channel();
         attach_subscriber(&mut st, controller_tx);
         drain(&controller_rx);
 
+        record_output(&mut st, &vec![b'h'; OBSERVER_BUDGET as usize]);
         let (observer_tx, observer_rx) = mpsc::channel();
-        observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
-        drain(&observer_rx);
+        let observer_gate = Arc::new(OutputGate::new());
+        let (_, initial) = observe_subscriber(&mut st, observer_tx, observer_gate.clone(), false);
+        assert_eq!(observer_gate.queued_bytes(), 0);
 
         let pane_gate = OutputGate::new();
         let chunk = vec![b'x'; 1024 * 1024];
         let sends = (OBSERVER_BUDGET / chunk.len() as i64) as usize + 2;
-        for _ in 0..sends {
+        for index in 0..sends {
             fan_out_output(&mut st, &chunk, Vec::new(), &pane_gate);
+            if index + 1 == (OBSERVER_BUDGET / chunk.len() as i64) as usize {
+                assert_eq!(observer_gate.queued_bytes(), OBSERVER_BUDGET);
+                assert_eq!(st.observers.len(), 1, "the full live budget is independent of held initial history");
+            }
             pane_gate.sub(chunk.len());
         }
 
@@ -6234,11 +6406,18 @@ mod tests {
         let mut observer_bytes = 0i64;
         while let Ok(DaemonMsg::Output(b)) = observer_rx.try_recv() {
             observer_bytes += b.len() as i64;
+            observer_gate.sub(b.len());
         }
         assert!(
             observer_bytes <= OBSERVER_BUDGET,
             "a stalled observer must never hold more than its budget, held {observer_bytes}"
         );
+        assert_eq!(observer_bytes, OBSERVER_BUDGET, "the entire existing live allowance remains available");
+        assert_eq!(observer_gate.queued_bytes(), 0, "draining balances only live bytes");
+        let initial_bytes: usize = initial.iter().map(|message| match message {
+            DaemonMsg::Snapshot(bytes) => bytes.len(), _ => 0,
+        }).sum();
+        assert_eq!(initial_bytes, OBSERVER_BUDGET as usize, "stalled replay stays owned and bounded separately");
     }
 
     #[test]
@@ -6247,7 +6426,6 @@ mod tests {
         let (observer_tx, observer_rx) = mpsc::channel();
         let observer_gate = Arc::new(OutputGate::new());
         observe_subscriber(&mut st, observer_tx, observer_gate.clone(), false);
-        drain(&observer_rx);
 
         let pane_gate = OutputGate::new();
         let chunk = vec![b'y'; 1024 * 1024];
@@ -6305,7 +6483,6 @@ mod tests {
             Arc::new(OutputGate::new()),
             false,
         );
-        drain(&observer_rx);
         let (dead_tx, dead_rx) = mpsc::channel();
         DeathReporter::new(move || dead_tx.send(()).unwrap())
             .report(&with_observer_only, &AtomicBool::new(false));
@@ -6327,7 +6504,6 @@ mod tests {
             observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
         }
         drain(&controller_rx);
-        drain(&observer_rx);
         let (dead_tx, dead_rx) = mpsc::channel();
         DeathReporter::new(move || dead_tx.send(()).unwrap())
             .report(&with_both, &AtomicBool::new(false));
@@ -6863,7 +7039,6 @@ mod tests {
             observe_subscriber(&mut st, observer_tx, Arc::new(OutputGate::new()), false);
         }
         drain(&controller_rx);
-        drain(&observer_rx);
 
         let mime = base64::engine::general_purpose::STANDARD.encode("image/png");
         let data = base64::engine::general_purpose::STANDARD.encode(b"png-data");

@@ -596,21 +596,6 @@ impl Tab {
             .unwrap_or_default()
     }
 
-    /// [`Self::leaf_title`] together with what a `~` in it would mean — one
-    /// leaf lookup, so the title and the home shortening it can never come
-    /// from different panes (#580).
-    pub(crate) fn leaf_title_and_home(
-        &self,
-        window: Option<&Window>,
-        cx: &App,
-    ) -> (String, Option<std::path::PathBuf>) {
-        let Some(leaf) = self.title_leaf(window, cx) else {
-            return (String::new(), None);
-        };
-        let leaf = leaf.read(cx);
-        (leaf.title.clone(), leaf.display_home(cx))
-    }
-
     /// This tab as the shared label ladder reads it, together with what a `~`
     /// in whatever it ends up named would mean.
     ///
@@ -6943,6 +6928,7 @@ impl Tty7App {
                 }
             }),
         );
+        let mobile = crate::ui::settings::mobile::PairDevicesState::new(window, cx, &mut subs);
 
         let content_scroll = gpui::ScrollHandle::new();
         content_scroll.set_offset(self.last_settings_location.1);
@@ -6996,6 +6982,7 @@ impl Tty7App {
             agent_show_all: false,
             agent_touched: std::collections::HashSet::new(),
             agent_busy: std::collections::HashSet::new(),
+            mobile,
             _subs: subs,
         });
         let search_focus = self

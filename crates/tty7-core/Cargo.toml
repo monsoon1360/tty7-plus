@@ -14,6 +14,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
+parking_lot = "0.12"
 serde = { workspace = true }
 serde_json.workspace = true
 
@@ -24,9 +25,9 @@ serde_json.workspace = true
 # These live here rather than in the GUI because `Config` embeds
 # `Vec<SshProfile>` and `config.json` has to parse identically on the server.
 #
-# Deliberately *absent*: `keyring`. Nothing in this crate reads or writes a
-# secret — the daemon gets them pre-resolved on the wire (`NativeSshSpec`) — and
-# a headless `tty7-server` has no OS keychain to read from, so the vault's
+# Deliberately *absent*: `keyring`. SSH secrets arrive pre-resolved on the wire
+# (`NativeSshSpec`); mobile PSKs use a separate user-private credential file.
+# A headless `tty7-server` has no OS keychain, so the SSH vault's
 # storage half lives in the GUI crate instead (`tty7::core::keychain`). Keeping
 # it out here is what stops a static server binary from linking
 # `zbus`/`secret-service` and 30-odd crates behind them for code it can never
@@ -87,9 +88,9 @@ portable-pty = "0.8"
 # reuses the `rustls`/`http` versions already in the tree. `gzip` is off: the
 # assets are already-compressed binaries.
 #
-# Optional, and off by default, so the static musl `tty7-server` never links a
-# TLS stack for a code path it cannot take — it *is* the binary being
-# downloaded. The GUI package turns the feature on (see the root `Cargo.toml`).
+# Optional, and off by default, so the static musl server never links the
+# installer HTTP client for a code path it cannot take — it is the binary being
+# downloaded. Mobile relay TLS is separate. The GUI enables this feature.
 ureq = { version = "3", default-features = false, features = [
     "rustls",
     "win-system-proxy",
@@ -136,6 +137,16 @@ memchr = "2"
 # roughly 4 MB. Base64 costs 1.33× instead. Already in the tree via russh.
 base64 = "0.22"
 
+# Encrypted mobile remote access lives in the daemon, not the GUI.
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2-mobile = { package = "sha2", version = "0.10" }
+getrandom = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+url = "2"
+
 # zlib inflate for the kitty graphics protocol's `o=z` (compressed) pixel
 # payloads (`core::kitty_graphics`). Pure-Rust, no new native code, and already
 # in the tree transitively — the same crate `terminal-browser` uses for the
@@ -173,7 +184,7 @@ system-configuration-sys = { version = "0.6", optional = true }
 # against a random token it writes into the user-private port file. `getrandom`
 # is the OS CSPRNG that mints that token.
 [target.'cfg(windows)'.dependencies]
-getrandom = "0.3"
+# The same OS CSPRNG is also used by the cross-platform mobile service.
 
 # Toolhelp process enumeration + `TerminateProcess`, used by `daemon::winproc` to
 # title a pane by its foreground command and to tear down a shell's descendant
@@ -186,6 +197,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Registry",

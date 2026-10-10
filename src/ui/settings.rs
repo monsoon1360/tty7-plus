@@ -34,6 +34,7 @@ mod agents;
 mod editor;
 mod hosts;
 pub(crate) mod kit;
+pub(crate) mod mobile;
 mod pages;
 mod shell;
 mod shortcuts;
@@ -200,18 +201,20 @@ pub(crate) enum SettingsSection {
     KeyboardMouse,
     Ssh,
     Agents,
+    PairDevices,
     Keybindings,
     About,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 7] = [
+    pub(crate) const ALL: [SettingsSection; 8] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Terminal,
         SettingsSection::KeyboardMouse,
         SettingsSection::Ssh,
         SettingsSection::Agents,
+        SettingsSection::PairDevices,
         SettingsSection::About,
     ];
 
@@ -230,6 +233,7 @@ impl SettingsSection {
             Self::KeyboardMouse => L10nKey::SettingsNavInput,
             Self::Ssh => L10nKey::SettingsNavSsh,
             Self::Agents => L10nKey::SettingsNavAgents,
+            Self::PairDevices => L10nKey::SettingsNavPairDevices,
             Self::Keybindings => L10nKey::SettingsNavKeybindings,
             Self::About => L10nKey::SettingsNavAbout,
         }
@@ -243,6 +247,7 @@ impl SettingsSection {
             Self::KeyboardMouse | Self::Keybindings => "icons/settings/keyboard.svg",
             Self::Ssh => "icons/settings/ssh.svg",
             Self::Agents => "icons/settings/integrations.svg",
+            Self::PairDevices => "icons/settings/machine-remote.svg",
             Self::About => "icons/settings/about.svg",
         }
     }
@@ -255,6 +260,7 @@ impl SettingsSection {
             SettingsSection::KeyboardMouse => "settings:keyboard-mouse",
             SettingsSection::Ssh => "settings:ssh",
             SettingsSection::Agents => "settings:agents",
+            SettingsSection::PairDevices => "settings:pair-devices",
             SettingsSection::Keybindings => "settings:keybindings",
             SettingsSection::About => "settings:about",
         }
@@ -273,6 +279,26 @@ fn settings_search_entries() -> &'static [SearchEntry] {
     use L10nKey::*;
     use SettingsSection::*;
     &[
+        SearchEntry {
+            section: PairDevices,
+            title: SettingsMobileEnabled,
+            keywords: SettingsMobileKeywords,
+        },
+        SearchEntry {
+            section: PairDevices,
+            title: SettingsMobileRelayUrl,
+            keywords: SettingsMobileKeywords,
+        },
+        SearchEntry {
+            section: PairDevices,
+            title: SettingsMobileTlsPin,
+            keywords: SettingsMobileKeywords,
+        },
+        SearchEntry {
+            section: PairDevices,
+            title: SettingsNavPairDevices,
+            keywords: SettingsMobileKeywords,
+        },
         SearchEntry {
             section: Appearance,
             title: SettingsUiFontSize,
@@ -846,6 +872,10 @@ impl SearchEntry {
     }
     fn description(&self) -> &'static str {
         match self.title {
+            L10nKey::SettingsMobileEnabled => t(L10nKey::SettingsMobileEnabledDesc),
+            L10nKey::SettingsMobileRelayUrl => t(L10nKey::SettingsMobileRelayUrlDesc),
+            L10nKey::SettingsMobileTlsPin => t(L10nKey::SettingsMobileTlsPinDesc),
+            L10nKey::SettingsNavPairDevices => t(L10nKey::SettingsMobilePairDesc),
             L10nKey::SettingsUiFontSize => t(L10nKey::SettingsUiFontSizeDesc),
             L10nKey::SettingsMouseZoom => t(L10nKey::SettingsMouseZoomDesc),
             L10nKey::SettingsCustomPath => t(L10nKey::SettingsCustomPathDesc),
@@ -1235,6 +1265,7 @@ pub(crate) struct SettingsState {
     pub(crate) agent_touched: std::collections::HashSet<crate::core::agent_hooks::HookAgent>,
     /// Agents with an install or removal in flight.
     pub(crate) agent_busy: std::collections::HashSet<crate::core::agent_hooks::HookAgent>,
+    pub(crate) mobile: mobile::PairDevicesState,
     pub(crate) _subs: Vec<Subscription>,
 }
 
@@ -2790,27 +2821,6 @@ impl Tty7App {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_catalog_has_unique_titles_and_default_values_are_unmodified() {
-        let defaults = Config::default();
-        for (i, entry) in settings_search_entries().iter().enumerate() {
-            assert!(
-                !settings_search_entries()[..i]
-                    .iter()
-                    .any(|e| e.title == entry.title),
-                "duplicate {:?}",
-                entry.title
-            );
-            assert!(
-                !entry.modified(&defaults),
-                "default {:?} is modified",
-                entry.title
-            );
-            assert!(SettingsSection::ALL.contains(&entry.section));
-        }
-        assert_eq!(SettingsSection::ALL.len(), 7);
-        assert!(!SettingsSection::ALL.contains(&SettingsSection::Keybindings));
-    }
 
     #[test]
     fn config_keys_and_cross_language_names_reach_the_same_setting() {

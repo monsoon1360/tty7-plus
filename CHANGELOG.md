@@ -5,6 +5,39 @@ All notable changes to tty7 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Android remote terminals and session management.** A Kotlin Multiplatform
+  Compose app pairs through a five-minute QR with code comparison and explicit
+  desktop approval in Settings → Pair Devices. Approved saved computers reconnect
+  automatically on launch and foreground return; phones stream ANSI terminals, send input, create and switch
+  workspaces, and create or close terminals while the desktop GUI is absent.
+  Terminal viewport changes preserve existing output, and relay disconnects
+  use explicit standard close statuses for Android interoperability.
+  A Rust relay carries opaque end-to-end encrypted traffic over pinned TLS;
+  remembered device credentials are privately stored and desktop access can
+  be disabled or revoked. See [pairing, security, builds and deployment](docs/remote/workspaces.mdx#android-remote-terminals).
+
+### Fixed
+
+- **Android startup, navigation and live terminal synchronization.** Added adaptive
+  launcher icons, a Chinese-first interface and a left session drawer using the
+  desktop's repository grouping, branch labels and Agent metadata. Foreground
+  reconnect retains the selected terminal; explicit disconnect opts out of automatic
+  reconnect. Terminal entry and network recovery stay masked until the matching
+  latest snapshot has been parsed, preventing visible historical replay.
+- **Active Agent history replay no longer drops the observer.** Initial bounded
+  history is separate from the bounded live-output queue. Protocol 2 adds
+  subscription generations, parsed-output credit and an ordered snapshot-complete
+  marker; stale callbacks cannot affect a newly selected terminal. Relay backpressure
+  and committed encrypted sends prevent queue overflow and sequence gaps during
+  large replays, cancellation and switching. Observer or renderer failures keep the
+  current terminal visible behind an error/retry overlay instead of returning to
+  pairing or the session drawer. Existing pairing credentials remain valid; update
+  both Android and the desktop daemon.
+
 ## [26.9.4] - 2026-09-29
 
 ### Added

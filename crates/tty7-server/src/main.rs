@@ -161,7 +161,7 @@ fn run_stdio(args: &[String]) -> io::Result<()> {
         };
 
         match upstream {
-            Some(s) => bridge(s),
+            Some(s) => bridge(s, true),
             None => {
                 let link = StdioDuplex::take()?;
                 server::serve_with(
@@ -189,11 +189,11 @@ fn bridge_panes() -> io::Result<()> {
             transport::connect()?
         }
     };
-    bridge(upstream)
+    bridge(upstream, false)
 }
 
 #[cfg(unix)]
-fn bridge(upstream: std::os::unix::net::UnixStream) -> io::Result<()> {
+fn bridge(upstream: std::os::unix::net::UnixStream, control: bool) -> io::Result<()> {
     use std::io::{Read as _, Write as _};
     use std::net::Shutdown;
 
@@ -205,11 +205,49 @@ fn bridge(upstream: std::os::unix::net::UnixStream) -> io::Result<()> {
         .name("tty7-stdio-bridge-in".into())
         .spawn(move || {
             let mut stdin = io::stdin().lock();
-            let _ = io::copy(&mut stdin, &mut up_write);
+            if control {
+                use tty7_core::daemon::{control::mobile_admin_frame, protocol::{read_frame, write_frame}};
+                while let Ok((kind, payload)) = read_frame(&mut stdin) {
+                    // Close rather than forwarding any mobile administration:
+                    // an SSH/stdio bridge must never expose pairing secrets.
+                    match mobile_admin_frame(kind, &payload) {
+                        Ok(false) => {},
+                        _ => break,
+                    }
+                    if write_frame(&mut up_write, kind, &payload).and_then(|()| up_write.flush()).is_err() {
+                        break;
+                    }
+                }
+            } else {
+                let _ = io::copy(&mut stdin, &mut up_write);
+            }
             let _ = feeder_socket.shutdown(Shutdown::Both);
         })?;
 
     let mut stdout = io::stdout().lock();
+    if control {
+        use tty7_core::daemon::{control::{ControlServerMsg, feature, kind}, protocol::{read_frame, write_frame}};
+        loop {
+            let (frame_kind, payload) = match read_frame(&mut up_read) {
+                Ok(frame) => frame,
+                Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(error) => { let _ = upstream.shutdown(Shutdown::Both); return Err(error); },
+            };
+            if frame_kind == kind::HELLO_OK {
+                let mut message = ControlServerMsg::from_frame(frame_kind, payload)?;
+                if let ControlServerMsg::HelloOk(hello) = &mut message {
+                    hello.features.retain(|name| name != feature::MOBILE_ADMIN);
+                }
+                message.encode(&mut stdout)?;
+            } else {
+                write_frame(&mut stdout, frame_kind, &payload)?;
+            }
+            stdout.flush()?;
+        }
+        let _ = upstream.shutdown(Shutdown::Both);
+        drop(feeder);
+        return Ok(());
+    }
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         match up_read.read(&mut buf) {

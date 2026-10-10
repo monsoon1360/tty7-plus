@@ -812,6 +812,7 @@ impl Tty7App {
                 SettingsSection::KeyboardMouse => self.render_settings_input(cx),
                 SettingsSection::Ssh => self.render_settings_ssh(cx),
                 SettingsSection::Agents => self.render_settings_agents(cx),
+                SettingsSection::PairDevices => self.render_settings_mobile(window, cx),
                 SettingsSection::Keybindings => self.render_settings_keybindings(cx),
                 SettingsSection::About => self.render_settings_about(cx),
             };
@@ -1395,6 +1396,9 @@ impl Tty7App {
                 }
                 SettingsSection::Agents => {
                     self.render_command_line_rows(cx);
+                }
+                SettingsSection::PairDevices => {
+                    self.render_settings_mobile_config(cx);
                 }
                 SettingsSection::About => {
                     self.render_settings_about(cx);

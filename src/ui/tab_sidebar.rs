@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::config::Config;
 use crate::core::group_key::{
-    AutoKey, GroupId, GroupKey, PinnedGroup, WorkspaceGroups, auto_key, place,
+    AutoKey, GroupId, GroupKey, GroupSection, PinnedGroup, WorkspaceGroups, auto_key, pinned_names, place, sections,
 };
 use crate::terminal::git_status::GitStatusCache;
 use crate::ui::app::{TITLE_BAR_HEIGHT, Tab, Tty7App};
@@ -2918,18 +2918,8 @@ fn ssh_host(remote: Option<&crate::daemon::protocol::RemoteContext>) -> Option<S
         .map(|r| r.target.clone())
 }
 
-#[derive(Debug, PartialEq)]
-struct Section {
-    key: Option<GroupKey>,
-    name: Option<String>,
-    tabs: Vec<usize>,
-}
-
-impl Section {
-    fn pinned(&self) -> Option<GroupId> {
-        self.key.as_ref().and_then(GroupKey::pinned)
-    }
-}
+#[cfg(test)]
+use crate::core::group_key::group_names;
 
 /// The sidebar's sections, top to bottom: every pinned group in the user's
 /// order — an empty one too, since a kept group stays until it is deleted —
@@ -2941,57 +2931,8 @@ impl Section {
 /// yet — it is just the list, and a header over the whole of it would be a
 /// label on nothing. The same goes for a sidebar with no groups at all, which
 /// comes out as one headerless section holding every tab.
-fn sidebar_sections(keys: &[Option<GroupKey>], groups: &WorkspaceGroups) -> Vec<Section> {
-    let members = |key: &GroupKey| -> Vec<usize> {
-        (0..keys.len())
-            .filter(|&i| keys[i].as_ref() == Some(key))
-            .collect()
-    };
-    let mut auto_order: Vec<&AutoKey> = Vec::new();
-    for k in keys.iter().flatten().filter_map(GroupKey::auto) {
-        if !auto_order.contains(&k) {
-            auto_order.push(k);
-        }
-    }
-    let rest: Vec<usize> = (0..keys.len()).filter(|&i| keys[i].is_none()).collect();
-    if groups.pinned.is_empty() && auto_order.is_empty() {
-        return vec![Section {
-            key: None,
-            name: None,
-            tabs: rest,
-        }];
-    }
-    let pinned = pinned_names(&groups.pinned);
-    let auto = auto_names(&auto_order);
-    let mut sections: Vec<Section> = groups
-        .pinned
-        .iter()
-        .zip(pinned)
-        .map(|(g, name)| {
-            let key = GroupKey::Pinned(g.id);
-            Section {
-                tabs: members(&key),
-                key: Some(key),
-                name: Some(name),
-            }
-        })
-        .collect();
-    sections.extend(auto_order.iter().zip(auto).map(|(k, name)| {
-        let key = GroupKey::Auto((*k).clone());
-        Section {
-            tabs: members(&key),
-            key: Some(key),
-            name: Some(name),
-        }
-    }));
-    if !rest.is_empty() {
-        sections.push(Section {
-            key: None,
-            name: (!auto_order.is_empty()).then(|| t(L10nKey::SidebarUngroupedGroup).to_string()),
-            tabs: rest,
-        });
-    }
-    sections
+fn sidebar_sections(keys: &[Option<GroupKey>], groups: &WorkspaceGroups) -> Vec<GroupSection> {
+    sections(keys, groups, Some(t(L10nKey::SidebarUngroupedGroup).as_ref()))
 }
 
 fn reordered_rows(
@@ -3074,92 +3015,6 @@ fn reordered_pinned(
         .collect()
 }
 
-/// What each pinned group's header reads, in list order: the name the user
-/// gave it, or its folder's last component — lengthened, like a repo's, when
-/// two folders end the same way. A label group always has a given name.
-fn pinned_names(pinned: &[PinnedGroup]) -> Vec<String> {
-    let unnamed: Vec<PathBuf> = pinned
-        .iter()
-        .filter(|g| g.given_name().is_none())
-        .filter_map(|g| g.folder_path().map(Path::to_path_buf))
-        .collect();
-    let mut from_folders = group_names(&unnamed.iter().collect::<Vec<_>>()).into_iter();
-    pinned
-        .iter()
-        .map(|g| match (g.given_name(), g.folder_path()) {
-            (Some(name), _) => name.to_string(),
-            (None, Some(_)) => from_folders
-                .next()
-                .expect("group_names answers one name per folder"),
-            (None, None) => String::new(),
-        })
-        .collect()
-}
-
-/// What each auto group's header reads, in `keys` order.
-///
-/// Only repo roots go through [`group_names`]. They are paths, so two of them
-/// can perfectly well end in the same component and need lengthening until
-/// they differ. A host group reads its `user@host` target as it is.
-fn auto_names(keys: &[&AutoKey]) -> Vec<String> {
-    let roots: Vec<&PathBuf> = keys
-        .iter()
-        .filter_map(|k| match k {
-            AutoKey::Repo(p) => Some(p),
-            AutoKey::SshHost(_) => None,
-        })
-        .collect();
-    let mut disambiguated = group_names(&roots).into_iter();
-    keys.iter()
-        .map(|k| match k {
-            AutoKey::Repo(_) => disambiguated
-                .next()
-                .expect("group_names answers one name per root"),
-            AutoKey::SshHost(host) => host.clone(),
-        })
-        .collect()
-}
-
-fn group_names(roots: &[&PathBuf]) -> Vec<String> {
-    let comps: Vec<Vec<String>> = roots
-        .iter()
-        .map(|r| {
-            r.components()
-                .filter(|c| matches!(c, std::path::Component::Normal(_)))
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect()
-        })
-        .collect();
-    let mut depth = vec![1usize; roots.len()];
-    loop {
-        let names: Vec<String> = comps
-            .iter()
-            .zip(&depth)
-            .enumerate()
-            .map(|(i, (c, &d))| {
-                if c.is_empty() {
-                    roots[i].display().to_string()
-                } else {
-                    c[c.len().saturating_sub(d)..].join("/")
-                }
-            })
-            .collect();
-        let mut grew = false;
-        for i in 0..names.len() {
-            let collides = names
-                .iter()
-                .enumerate()
-                .any(|(j, n)| j != i && *n == names[i]);
-            if collides && depth[i] < comps[i].len() {
-                depth[i] += 1;
-                grew = true;
-            }
-        }
-        if !grew {
-            return names;
-        }
-    }
-}
 
 /// Where a click on a tab's diff counts opens the overlay: the focused pane's
 /// repo.
