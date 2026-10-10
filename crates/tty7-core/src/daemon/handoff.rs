@@ -94,6 +94,8 @@ struct PaneRecord {
     agent: Option<crate::core::cli_agent::CLIAgent>,
     agent_argv: Option<Vec<String>>,
     agent_session: Option<crate::core::cli_agent::AgentSessionState>,
+    #[serde(default)]
+    head_modes: Option<Vec<u8>>,
     /// Length of this pane's ring in the data section, which follows the
     /// manifest in pane order.
     ring_len: u32,
@@ -245,6 +247,7 @@ fn stage(panes: &[Carried], next_pane_id: u64) -> std::io::Result<std::fs::File>
             agent: pane.agent,
             agent_argv: pane.agent_argv.clone(),
             agent_session: pane.agent_session.clone(),
+            head_modes: pane.head_modes.clone(),
             ring_len: encoded.len() as u32,
             screen_len: pane.screen_checkpoint.as_ref().map_or(0, |bytes| bytes.len() as u64),
         });
@@ -397,6 +400,7 @@ pub fn adopt(fd: RawFd) -> Option<Adopted> {
             agent: record.agent,
             agent_argv: record.agent_argv,
             agent_session: record.agent_session,
+            head_modes: record.head_modes,
         });
     }
 
@@ -442,6 +446,7 @@ mod tests {
             agent: None,
             agent_argv: None,
             agent_session: None,
+            head_modes: None,
         }
     }
 
@@ -492,6 +497,18 @@ mod tests {
         restored.feed(b"1m!\x1b[?1049l");
         assert_eq!(mirror.snapshot().lines, restored.snapshot().lines);
         assert_eq!(mirror.snapshot().cursor, restored.snapshot().cursor);
+    }
+
+    #[test]
+    fn a_pane_keeps_the_modes_its_ring_no_longer_holds() {
+        let mut tui = carried(5, 21, b"long after startup");
+        tui.head_modes = Some(b"\x1b[>1u\x1b[?2031h".to_vec());
+        let staged = stage(&[tui], 6).expect("stage");
+        let adopted = adopt(std::os::fd::IntoRawFd::into_raw_fd(staged)).expect("read back");
+        assert_eq!(
+            adopted.panes[0].head_modes.as_deref(),
+            Some(&b"\x1b[>1u\x1b[?2031h"[..])
+        );
     }
 
     #[test]
