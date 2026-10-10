@@ -6,6 +6,7 @@
 //! connection, accepts session channels up to a limit, answers `exec` the way
 //! the test asks, and counts what the client opened and closed.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -33,6 +34,21 @@ pub(crate) enum Exec {
     Hangs,
 }
 
+/// How the server answers a request for the `sftp` subsystem.
+#[derive(Clone, Copy)]
+pub(crate) enum Subsystem {
+    /// A working SFTP server behind the channel.
+    Sftp,
+    /// CHANNEL_FAILURE: sshd with no `Subsystem sftp` line.
+    Refused,
+    /// Success, then the program behind it exits without a byte: a
+    /// `Subsystem` line naming an sftp-server that is not installed.
+    Exits,
+    /// Success, then this text ahead of anything SFTP: a shell startup file
+    /// that prints on a non-interactive login.
+    Prints(&'static [u8]),
+}
+
 #[derive(Default)]
 struct Counts {
     opened: AtomicUsize,
@@ -42,8 +58,14 @@ struct Counts {
 
 struct Sshd {
     exec: Exec,
+    subsystem: Subsystem,
+    channels: HashMap<ChannelId, Channel<server::Msg>>,
     max_sessions: Option<usize>,
     counts: Arc<Counts>,
+    /// `Some` for a server that has stopped answering: each open is held
+    /// here, neither accepted nor refused, the way a request sits when its
+    /// reply can no longer get back.
+    unanswered: Option<Vec<ChannelOpenHandle>>,
 }
 
 impl server::Handler for Sshd {
@@ -55,10 +77,14 @@ impl server::Handler for Sshd {
 
     async fn channel_open_session(
         &mut self,
-        _channel: Channel<server::Msg>,
+        channel: Channel<server::Msg>,
         reply: ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        if let Some(held) = self.unanswered.as_mut() {
+            held.push(reply);
+            return Ok(());
+        }
         let open = self
             .counts
             .opened
@@ -71,7 +97,55 @@ impl server::Handler for Sshd {
             return Ok(());
         }
         self.counts.opened.fetch_add(1, Ordering::SeqCst);
+        self.channels.insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel: ChannelId,
+        _name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        match self.subsystem {
+            Subsystem::Refused => session.channel_failure(channel)?,
+            Subsystem::Exits => {
+                session.channel_success(channel)?;
+                session.exit_status_request(channel, 127)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            Subsystem::Prints(text) => {
+                session.channel_success(channel)?;
+                session.data(channel, text)?;
+            }
+            Subsystem::Sftp => {
+                session.channel_success(channel)?;
+                if let Some(ch) = self.channels.remove(&channel) {
+                    russh_sftp::server::run(ch.into_stream(), SftpServer).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Held the same way when the server has stopped answering — which, from
+    /// the client's side, is indistinguishable from a server still waiting
+    /// on its own connect to a target that drops SYNs.
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        _channel: Channel<server::Msg>,
+        _host_to_connect: &str,
+        _port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(held) = self.unanswered.as_mut() {
+            held.push(reply);
+        }
         Ok(())
     }
 
@@ -111,6 +185,16 @@ impl server::Handler for Sshd {
     }
 }
 
+struct SftpServer;
+
+impl russh_sftp::server::Handler for SftpServer {
+    type Error = russh_sftp::protocol::StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        russh_sftp::protocol::StatusCode::OpUnsupported
+    }
+}
+
 /// One connection to a server in this process, and what the server counted.
 pub(crate) struct FakeSshd {
     pub(crate) conn: Arc<SshConnection>,
@@ -119,6 +203,26 @@ pub(crate) struct FakeSshd {
 
 impl FakeSshd {
     pub(crate) async fn connect(exec: Exec, max_sessions: Option<usize>) -> FakeSshd {
+        Self::start(exec, Subsystem::Sftp, max_sessions, false).await
+    }
+
+    /// A server that answers the `sftp` subsystem request as `subsystem` says.
+    pub(crate) async fn with_subsystem(subsystem: Subsystem) -> FakeSshd {
+        Self::start(Exec::Hangs, subsystem, None, false).await
+    }
+
+    /// A server that completes the handshake and then never answers a channel
+    /// open: the connection stays up and nothing on it errors.
+    pub(crate) async fn connect_unanswering() -> FakeSshd {
+        Self::start(Exec::Hangs, Subsystem::Sftp, None, true).await
+    }
+
+    async fn start(
+        exec: Exec,
+        subsystem: Subsystem,
+        max_sessions: Option<usize>,
+        unanswering: bool,
+    ) -> FakeSshd {
         let counts = Arc::new(Counts::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -132,8 +236,11 @@ impl FakeSshd {
             .push(PrivateKey::from(Ed25519Keypair::from_seed(&[7; 32])));
         let handler = Sshd {
             exec,
+            subsystem,
+            channels: HashMap::new(),
             max_sessions,
             counts: Arc::clone(&counts),
+            unanswered: unanswering.then(Vec::new),
         };
         tokio::spawn(async move {
             let (socket, _) = listener.accept().await.expect("accept the test client");

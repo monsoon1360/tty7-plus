@@ -1,12 +1,13 @@
-use gpui::{App, Global, KeyBinding, Keystroke};
+use gpui::{App, Global, KeyBinding, Keystroke, Modifiers};
 
 use crate::core::actions::*;
 use crate::core::config::{Config, KeybindingOverride};
 use crate::terminal::view::{
     AlternatePaste, ClearScrollback, CopyText, FindInTerminal, FindNext, FindPrevious,
-    InsertNewline, InsertNewlineFallback, PasteText,
+    InsertNewline, InsertNewlineFallback, PasteText, ToggleComposer,
 };
 use crate::ui::i18n::{L10nKey, t, t_fmt};
+use crate::ui::palette;
 use crate::ui::search::CommandGroup;
 use crate::ui::settings::humanize_action;
 use crate::ui::theme::set_menus;
@@ -38,6 +39,7 @@ pub fn init(cx: &mut App) {
     // gpui runs the window's bubble phase first and returns before the global
     // one, so the two never both fire.
     cx.on_action(|_: &NewWindow, cx: &mut App| crate::ui::windows::open(cx, None));
+    palette::init(cx);
     set_menus(cx);
 }
 
@@ -592,6 +594,13 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
             per_platform("secondary-k", "secondary-shift-k"),
         ),
         ("InsertNewline", INSERT_NEWLINE_DEFAULT),
+        // ⌘I for "input". Nothing in the table holds it, and no shell or agent
+        // reads Cmd at all. Off macOS Ctrl+I is Tab, so the chord takes Shift
+        // like every other terminal command there.
+        (
+            "ToggleComposer",
+            per_platform("secondary-i", "secondary-shift-i"),
+        ),
         ("CopyText", per_platform("", "ctrl-shift-c")),
         ("PasteText", paste_text_default()),
         ("AlternatePaste", alternate_paste_default()),
@@ -991,6 +1000,10 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
             t(L10nKey::CmdFindInTerminal).to_string(),
         ),
         "FindNext" => (CommandGroup::Terminal, t(L10nKey::CmdFindNext).to_string()),
+        "ToggleComposer" => (
+            CommandGroup::Terminal,
+            t(L10nKey::CmdToggleComposer).to_string(),
+        ),
         "FindPrevious" => (
             CommandGroup::Terminal,
             t(L10nKey::CmdFindPrevious).to_string(),
@@ -1402,6 +1415,34 @@ pub(crate) fn effective_key(action: &str, cx: &App) -> Option<String> {
         .filter(|k| !k.is_empty())
 }
 
+/// The modifier hold that raises the tab-number badges — the one the tab
+/// activation chords are really on.
+///
+/// It used to be assumed: a bare secondary, ⌘ on macOS and Ctrl everywhere
+/// else. That is one platform right and one wrong. Off macOS the nine ship on
+/// Alt, so holding Alt raised nothing while Ctrl, which activates no tab there
+/// at all, lit up every number; and any rebind — `"ActivateTab1": "alt-1"` on
+/// macOS is the same complaint the other way round — moved the chords out from
+/// under a hint that stayed where it was. Read from `ActivateTab1`, the chord
+/// the first badge is drawn for, and matched against the held modifiers
+/// exactly, so a wrong modifier, or Shift added mid-hold, takes them down.
+///
+/// `None` when there is nothing to advertise: an unbound or retired
+/// `ActivateTab1`, a chord with no modifier (a bare `1` is not a hold), a key
+/// that is not the digit the badge would draw (`alt-q` does activate tab 1, but
+/// holding Alt would then be promising a number pad no key answers), or the
+/// tmux preset's two-chord `prefix 1` — a sequence has no hold to watch, and
+/// raising the badges on the bare prefix would point at half a chord.
+pub(crate) fn tab_badge_hold(cx: &App) -> Option<Modifiers> {
+    let spec = effective_key("ActivateTab1", cx)?;
+    let mut chords = spec.split_whitespace();
+    let (chord, None) = (chords.next()?, chords.next()) else {
+        return None;
+    };
+    let ks = Keystroke::parse(chord).ok()?;
+    (ks.key == "1" && ks.modifiers.modified()).then_some(ks.modifiers)
+}
+
 pub(crate) fn spec_from_keystroke(ks: &Keystroke) -> Option<String> {
     if matches!(
         ks.key.as_str(),
@@ -1663,7 +1704,7 @@ fn keystroke_is_valid(s: &str) -> bool {
 fn action_context(action: &str) -> Option<&'static str> {
     match action {
         "FindInTerminal" | "FindNext" | "FindPrevious" | "ClearScrollback" | "InsertNewline"
-        | "CopyText" | "PasteText" => Some("Terminal"),
+        | "CopyText" | "PasteText" | "ToggleComposer" => Some("Terminal"),
         // `alt_screen` is declared by the pane whenever a full-screen program
         // owns the grid, so this binding is simply absent there and Ctrl+V
         // carries on to the PTY as SYN (#677).
@@ -1777,6 +1818,7 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "ToggleDiffViewMode" => KeyBinding::new(keystroke, ToggleDiffViewMode, None),
         "FindInTerminal" => KeyBinding::new(keystroke, FindInTerminal, action_context(action)),
         "FindNext" => KeyBinding::new(keystroke, FindNext, action_context(action)),
+        "ToggleComposer" => KeyBinding::new(keystroke, ToggleComposer, action_context(action)),
         "FindPrevious" => KeyBinding::new(keystroke, FindPrevious, action_context(action)),
         "ClearScrollback" => KeyBinding::new(keystroke, ClearScrollback, action_context(action)),
         "InsertNewline" => KeyBinding::new(keystroke, InsertNewline, action_context(action)),
@@ -3059,6 +3101,42 @@ mod gpui_tests {
                 Some(&ActivateTab1::name_for_type()),
             );
             assert_eq!(effective_key("ActivateTab2", cx), None);
+        });
+    }
+
+    /// The hold the tab-number badges answer to is the one the tab chords are
+    /// on, not the platform's secondary: off macOS the nine ship on Alt, where
+    /// a badge raised by Ctrl hints at nothing that switches a tab.
+    #[gpui::test]
+    fn the_badge_hold_follows_the_tab_chord(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            running_on_json(cx, "{}");
+            let shipped = Keystroke::parse(per_platform("secondary-1", "alt-1"))
+                .expect("the shipped chord parses");
+            assert_eq!(
+                tab_badge_hold(cx),
+                Some(shipped.modifiers),
+                "the shipped hold is the shipped chord's modifier"
+            );
+
+            for (json, expected) in [
+                (
+                    r#"{"keybindings": {"ActivateTab1": ["alt-1"]}}"#,
+                    Some(Modifiers::alt()),
+                ),
+                // Nothing to advertise: no chord at all, a chord with no
+                // modifier to hold, a key that is not the digit the badge
+                // draws, and the tmux preset's two-chord `prefix 1`.
+                (r#"{"keybindings": {"ActivateTab1": []}}"#, None),
+                (r#"{"keybindings": {"ActivateTab1": ["1"]}}"#, None),
+                (r#"{"keybindings": {"ActivateTab1": ["alt-q"]}}"#, None),
+                (r#"{"keybinding_preset": "tmux"}"#, None),
+            ] {
+                cx.set_global(Config(
+                    serde_json::from_str(json).expect("the config parses"),
+                ));
+                assert_eq!(tab_badge_hold(cx), expected, "{json}");
+            }
         });
     }
 

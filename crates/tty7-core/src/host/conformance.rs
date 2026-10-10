@@ -152,6 +152,12 @@ fn hit_names(hits: &[SearchHit]) -> Vec<&str> {
 
 fn git_repo(h: &dyn Host, dir: &Path) -> Option<()> {
     let out = h.git(dir, &["init", "--quiet"]).ok()?;
+    out.success().then_some(())?;
+    // A developer's `status.showUntrackedFiles=no` would hide the files a
+    // check just wrote.
+    let out = h
+        .git(dir, &["config", "status.showUntrackedFiles", "normal"])
+        .ok()?;
     out.success().then_some(())
 }
 

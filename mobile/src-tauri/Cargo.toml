@@ -1,0 +1,63 @@
+[package]
+name = "tty7-mobile"
+version = "0.1.0"
+edition = "2024"
+description = "tty7 on a phone: watch and drive your desktop's panes and agents from anywhere"
+license = "Apache-2.0"
+publish = false
+
+# Its own workspace, not a member of the root one: Tauri pulls in a WebView
+# stack (webkit2gtk on Linux) that the desktop build and its CI have no reason
+# to compile. It shares the protocol and client crates by path, so the wire
+# format still has exactly one definition.
+[workspace]
+
+[lib]
+# `staticlib` for iOS, `cdylib` for Android, `rlib` for the desktop dev build.
+name = "tty7_mobile_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tty7-mobile-client = { path = "../../crates/tty7-mobile-client" }
+tty7-mobile-proto = { path = "../../crates/tty7-mobile-proto" }
+
+anyhow = "1"
+iroh = "1.2"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tauri-plugin-opener = "2"
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+# Face ID / passcode before the app shows anything, when turned on.
+tauri-plugin-biometric = "2"
+# A tap felt under the finger for the keys and answers, as the phone's own
+# keyboard gives.
+tauri-plugin-haptics = "2"
+
+# Reading the system bars' size and leaving for the background (`insets`,
+# `to_background`), which the Tauri API does not reach.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+# What the Tauri API does not reach: the WKWebView's insets (`edge_to_edge`),
+# the keyboard's height and the bar WebKit puts over it (`keyboard`).
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+
+# The Android library ships as built: stripping takes it from 30 MB to 20, and
+# the APK from 32 to 23. iOS strips at export either way.
+[profile.release]
+strip = true
+
+# The phone resolves relays with iroh's DNS resolver too: the same simple-dns
+# fix as the root workspace's, from its vendored copy (see ../../Cargo.toml).
+[patch.crates-io]
+simple-dns = { path = "../../vendor/simple-dns" }

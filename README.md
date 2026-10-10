@@ -32,7 +32,7 @@ A background server owns your shells and panes — not the window. Everything
 below follows from that.
 
 - **Performance** — ~2× the throughput of Alacritty, Ghostty, or Kitty ([benchmarks](#benchmarks))
-- **Persistent sessions** — quit or reboot; your shells and supported agent sessions keep running, no tmux
+- **Persistent sessions** — quit the app and your shells keep running; after a reboot, layout, screen, and supported agent conversations come back. No tmux
 - **Agent-aware** — Claude Code, Codex & co.: status, notifications, and git context for every repo at once
 - **Scriptable by agents** — one agent opens a pane for another, hands off a task, waits, and reads the result, with or without the GUI running
 - **Editor-grade input** — suggestions, completion, highlighting, history search, with no plugin to install
@@ -52,7 +52,7 @@ Native builds for macOS, Windows, and Linux on [**Releases**](https://github.com
 
 | | |
 |---|---|
-| **Agent-aware** | per-pane detection (26 CLIs) · status dot · notifications · branch + diff · tray icon when input is needed · resume after reboot · reopen any past session from Search Everywhere · one-key launch · tab sidebar grouped by repository, with pinned groups |
+| **Agent-aware** | per-pane detection (28 CLIs) · status dot · notifications · branch + diff · tray icon when input is needed · resume after reboot · reopen any past session from Search Everywhere · one-key launch · tab sidebar grouped by repository, with pinned groups |
 | **CLI + Skills** | bundled `tty7` CLI · [agent skill](skills/tty7/SKILL.md) · `run` streams a command and exits with its code · `split` · `send` · `wait --until free` · `capture` |
 | **Editor-grade input** | ghost suggestions from history · explained tab completion · syntax highlighting · multi-line editing · click places the caret · <kbd>⌃ R</kbd> fuzzy history |
 | **Window** | tabs & splits · <kbd>⌘ P</kbd> Search Everywhere · <kbd>⌘ F</kbd> scrollback search · hibernate a tab to free its memory · IME |
@@ -68,39 +68,42 @@ Native builds for macOS, Windows, and Linux on [**Releases**](https://github.com
 **Status** takes one click under Settings → Integrations to install that agent's hook,
 and brings the status dot, notifications, the tray icon, `tty7 wait`, and resume
 after a reboot. **Fork** needs both — the agent's own fork command, and the hook
-that tells tty7 which session to fork.
+that tells tty7 which session to fork. **Past sessions** are read from the agent's
+own history files and listed in Search Everywhere, where <kbd>⏎</kbd> resumes one.
 
 <details>
-<summary>The full support matrix, all twenty-six</summary>
+<summary>The full support matrix, all twenty-eight</summary>
 
-| Agent | Detected | Status · resume | Fork |
-|---|:-:|:-:|:-:|
-| **Claude Code** | ✓ | ✓ | ✓ |
-| **Codex** | ✓ | ✓ | ✓ |
-| **TraeCode** | ✓ | ✓ | ✓ |
-| **Grok** | ✓ | ✓ | ✓ |
-| **OpenCode** | ✓ | ✓ | ✓ |
-| **Oh My Pi** | ✓ | ✓ | ✓ |
-| **Prime Agent** | ✓ | ✓ | ✓ |
-| **Droid** | ✓ | ✓ | ✓ |
-| **Qwen Code** | ✓ | ✓ | ✓ |
-| **Goose** | ✓ | ✓ | ✓ |
-| **Qoder CLI** | ✓ | ✓ | ✓ |
-| **Qoder CN CLI** | ✓ | ✓ | ✓ |
-| **CodeBuddy** | ✓ | ✓ | ✓ |
-| **Gemini** | ✓ | ✓ | |
-| **Copilot** | ✓ | ✓ | |
-| **Kimi Code** | ✓ | ✓ | |
-| **Pi** | ✓ | ✓ | |
-| **Crush** | ✓ | ✓ | |
-| **Antigravity** | ✓ | ✓ | |
-| **Cursor** | ✓ | ✓ | |
-| Aider | ✓ | | |
-| Amp | ✓ | | |
-| Auggie | ✓ | | |
-| Hermes | ✓ | | |
-| Vibe | ✓ | | |
-| Empryo | ✓ | | |
+| Agent | Detected | Status · resume | Fork | Past sessions |
+|---|:-:|:-:|:-:|:-:|
+| **Claude Code** | ✓ | ✓ | ✓ | ✓ |
+| **Codex** | ✓ | ✓ | ✓ | ✓ |
+| **TraeCode** | ✓ | ✓ | ✓ |  |
+| **Grok** | ✓ | ✓ | ✓ |  |
+| **OpenCode** | ✓ | ✓ | ✓ | ✓ |
+| **Oh My Pi** | ✓ | ✓ | ✓ | ✓ |
+| **Prime Agent** | ✓ | ✓ | ✓ |  |
+| **Droid** | ✓ | ✓ | ✓ | ✓ |
+| **Qwen Code** | ✓ | ✓ | ✓ | ✓ |
+| **Goose** | ✓ | ✓ | ✓ |  |
+| **Qoder CLI** | ✓ | ✓ | ✓ | ✓ |
+| **Qoder CN CLI** | ✓ | ✓ | ✓ | ✓ |
+| **CodeBuddy** | ✓ | ✓ | ✓ | ✓ |
+| **Gemini** | ✓ | ✓ | | ✓ |
+| **Copilot** | ✓ | ✓ | | ✓ |
+| **Kimi Code** | ✓ | ✓ | | ✓ |
+| **Pi** | ✓ | ✓ | | ✓ |
+| **Crush** | ✓ | ✓ | |  |
+| **Antigravity** | ✓ | ✓ | |  |
+| **Cursor** | ✓ | ✓ | | ✓ |
+| **Empryo** | ✓ | ✓ | |  |
+| **Muse Code** | ✓ | ✓ | |  |
+| **jcode** | ✓ | ✓ | |  |
+| Aider | ✓ | | |  |
+| Amp | ✓ | | |  |
+| Auggie | ✓ | | |  |
+| Hermes | ✓ | | |  |
+| Vibe | ✓ | | |  |
 
 </details>
 

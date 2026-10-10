@@ -78,6 +78,24 @@ pub fn quoting_for(shell_program: Option<&str>) -> Quoting {
     }
 }
 
+/// Whether `a || b` runs `b` only when `a` fails, in the shell named by
+/// `shell_program` (a binary as `ShellSpec::program` reports it).
+///
+/// An allowlist, because the shells that lack it do not skip the operator —
+/// they refuse the whole line, `a` included. Windows PowerShell 5.1 calls it an
+/// invalid statement separator (pwsh 7 added it), nu and elvish have no such
+/// operator, and fish only gained it in 3.0 — anything older is long past its
+/// end of life, so a bare `fish` counts. `wsl` is out: which shell it lands in
+/// is the distro's business.
+pub fn runs_or_list(shell_program: &str) -> bool {
+    const OR_LIST: &[&str] = &[
+        "sh", "bash", "zsh", "dash", "ash", "ksh", "mksh", "oksh", "yash", "fish", "pwsh", "cmd",
+        "csh", "tcsh", "xonsh",
+    ];
+    let base = base_name(shell_program);
+    OR_LIST.iter().any(|s| base.eq_ignore_ascii_case(s))
+}
+
 /// Quote `path` as a single argument for the shell the pane is running.
 pub fn quote_for_shell(path: &str, shell_program: Option<&str>) -> String {
     quote_as(path, quoting_for(shell_program))
@@ -163,6 +181,30 @@ pub fn unquote_word(word: &str, quoting: Quoting) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_shells_with_an_or_list_are_handed_one() {
+        for yes in [
+            "bash",
+            "/bin/zsh",
+            "/opt/homebrew/bin/fish",
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            r"C:\Program Files\Git\bin\bash.exe",
+            "CMD.EXE",
+        ] {
+            assert!(runs_or_list(yes), "{yes}");
+        }
+        for no in [
+            "powershell.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "nu",
+            "/usr/local/bin/elvish",
+            "wsl.exe",
+            "",
+        ] {
+            assert!(!runs_or_list(no), "{no}");
+        }
+    }
 
     #[test]
     fn a_plain_path_is_left_alone() {

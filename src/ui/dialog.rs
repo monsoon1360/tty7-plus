@@ -61,8 +61,19 @@ pub(crate) fn popover_rungs(cx: &App) -> Surface {
 
 /// The card itself, opaque and occluding. Callers add the header, body and
 /// footer as children, in that order.
-pub(crate) fn card(width: f32, cx: &App) -> Div {
+///
+/// `title` is what a screen reader announces the card as — a dialog, named
+/// by the question it asks.
+pub(crate) fn card(
+    id: impl Into<ElementId>,
+    title: impl Into<SharedString>,
+    width: f32,
+    cx: &App,
+) -> Stateful<Div> {
     v_flex()
+        .id(id)
+        .role(gpui::Role::Dialog)
+        .aria_label(title)
         .occlude()
         .w(px(width))
         .map(|panel| crate::ui::theme::floating_surface(panel, cx))
@@ -157,6 +168,36 @@ pub(crate) fn labelled(name: impl IntoElement, input: Input, cx: &App) -> Div {
         .gap(px(LABEL_GAP))
         .child(label(name, cx))
         .child(field(input, cx))
+}
+
+/// A label over a control that is not a text field.
+pub(crate) fn labelled_control(name: impl IntoElement, control: impl IntoElement, cx: &App) -> Div {
+    v_flex()
+        .gap(px(LABEL_GAP))
+        .child(label(name, cx))
+        .child(control)
+}
+
+/// A dropdown's closed face, in the same well as a text field, so a form of
+/// fields and choices still reads as one column.
+pub(crate) fn select_well(
+    id: impl Into<gpui::ElementId>,
+    value: impl Into<gpui::SharedString>,
+    cx: &App,
+) -> gpui::Stateful<Div> {
+    let tk = crate::ui::settings::kit::Tk::of(cx);
+    h_flex()
+        .id(id)
+        .h(px(FIELD_H))
+        .pl(px(10.))
+        .pr(px(9.))
+        .gap(px(8.))
+        .items_center()
+        .rounded(crate::ui::rounding::ROW_RADIUS)
+        .bg(well_fill(cx))
+        .cursor_pointer()
+        .child(div().flex_1().min_w_0().truncate().child(value.into()))
+        .child(crate::ui::settings::kit::chevron_down(&tk))
 }
 
 /// A block of read-only detail — a host and its key — set on the field's

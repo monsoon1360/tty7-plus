@@ -1,7 +1,9 @@
 mod boxdraw;
 mod cmd_editor;
+mod color_scheme;
 mod command_cursor;
 mod completion;
+mod composer;
 pub mod element;
 pub mod fps;
 mod fuzzy;
@@ -19,7 +21,7 @@ mod loopback;
 pub mod palette;
 pub(crate) mod pane_liveness;
 pub(crate) mod parked_cursor;
-mod prompt_reflow;
+pub(crate) mod prompt_reflow;
 mod remote;
 mod reverse_search;
 pub(crate) mod scrollbar;

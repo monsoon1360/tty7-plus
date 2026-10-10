@@ -19,6 +19,8 @@ use gpui_component::ActiveTheme as _;
 use super::view::{TerminalView, should_show_context_menu};
 use crate::core::config::Config;
 
+mod osc8_underline;
+
 const DIM_OPACITY: f32 = 0.66;
 
 /// How much of the text's own colour a link's underline keeps before the
@@ -54,6 +56,7 @@ pub(super) struct RenderCell {
     match_hit: bool,
     match_current: bool,
     link_hover: bool,
+    osc8_dots: bool,
 }
 
 impl Default for RenderCell {
@@ -74,6 +77,7 @@ impl Default for RenderCell {
             match_hit: false,
             match_current: false,
             link_hover: false,
+            osc8_dots: false,
         }
     }
 }
@@ -252,6 +256,7 @@ fn snapshot_cell(
     if flags.contains(Flags::DIM) {
         rc.fg = dim_fg(rc.fg, bgc, colors.legible_dim);
     }
+    osc8_underline::mark(&mut rc, cell);
     rc
 }
 
@@ -1708,8 +1713,10 @@ fn invert_cursor_cell(
     cell.bg = colors.caret;
     cell.draw_bg = true;
     cell.fg = ink;
+    // Keep the underline's own alpha: an OSC 8 link's held-back dots stay
+    // faint under the caret rather than turning into a full-strength line.
     if let Some(under) = cell.underline_color.as_mut() {
-        *under = ink;
+        *under = ink.opacity(under.a);
     }
     // A wide character's trailing spacer is absorbed into the lead cell's
     // background run by `paint_backgrounds`, so the fill already covers both
@@ -2004,6 +2011,7 @@ impl TerminalElement {
             let row = grid_row as usize * cols;
             for col in start.column.0..=end.column.0.min(cols.saturating_sub(1)) {
                 let cell = &mut buf[row + col];
+                osc8_underline::unmark(cell);
                 cell.link_hover = true;
                 cell.underline_color = link_underline_color(cell, link.armed);
             }
@@ -2247,9 +2255,14 @@ impl Element for TerminalElement {
         let cols = (bounds.size.width.as_f32() / cell_width.as_f32())
             .floor()
             .max(1.0) as usize;
-        let rows = (bounds.size.height.as_f32() / line_height.as_f32())
+        let fits = (bounds.size.height.as_f32() / line_height.as_f32())
             .floor()
             .max(1.0) as usize;
+        // The composer covering an input shorter than itself takes rows off
+        // the bottom (see `composer_reserved_rows`); they stay part of the
+        // pane's leftover space as far as the layer laid over it goes.
+        let reserved = self.view.read(cx).composer_reserved_rows();
+        let rows = fits.saturating_sub(reserved).max(1);
 
         self.view.update(cx, |view, cx| {
             view.set_grid_size(
@@ -2260,6 +2273,13 @@ impl Element for TerminalElement {
                 window.scale_factor(),
                 cx,
             );
+            // Whatever lays itself over the bottom rows (the composer)
+            // measures up from the bottom, past this.
+            let slack = bounds.size.height - line_height * fits as f32;
+            if view.grid_slack != slack {
+                view.grid_slack = slack;
+                cx.notify();
+            }
         });
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
@@ -2382,6 +2402,14 @@ impl Element for TerminalElement {
                 .unwrap_or((c.row, c.ime_col))
         });
         let cursor_bounds = ime_cell.map(|(row, col)| geom.cell_rect(row, col, 1));
+        // Unfocused, the anchor is forgotten so the next focus pushes it again.
+        let ime_anchor = cursor_bounds.filter(|_| focused);
+        if self
+            .view
+            .update(cx, |view, _| view.ime_anchor_moved(ime_anchor))
+        {
+            window.invalidate_character_coordinates();
+        }
         let focus_handle = self.view.read(cx).focus_handle.clone();
         window.handle_input(
             &focus_handle,
@@ -2556,7 +2584,10 @@ impl Element for TerminalElement {
             }
         });
 
-        self.view.update(cx, |view, _| view.grid_buf = buf);
+        self.view.update(cx, |view, _| {
+            view.grid_buf = buf;
+            view.cell_geom = Some(geom);
+        });
 
         self.register_mouse_handlers(geom, bounds, prepaint.hitbox.id, window);
 
@@ -2584,12 +2615,12 @@ impl Element for TerminalElement {
 }
 
 #[derive(Clone, Copy)]
-struct CellGeom {
-    origin: Point<Pixels>,
-    cell_width: Pixels,
-    line_height: Pixels,
-    cols: usize,
-    rows: usize,
+pub(super) struct CellGeom {
+    pub(super) origin: Point<Pixels>,
+    pub(super) cell_width: Pixels,
+    pub(super) line_height: Pixels,
+    pub(super) cols: usize,
+    pub(super) rows: usize,
 }
 
 impl CellGeom {
@@ -2602,7 +2633,7 @@ impl CellGeom {
         )
     }
 
-    fn pos_to_cell(&self, pos: Point<Pixels>) -> (usize, usize, bool) {
+    pub(super) fn pos_to_cell(&self, pos: Point<Pixels>) -> (usize, usize, bool) {
         let lx = (pos.x - self.origin.x).as_f32().max(0.);
         let ly = (pos.y - self.origin.y).as_f32().max(0.);
         let colf = lx / self.cell_width.as_f32();
@@ -3870,7 +3901,7 @@ mod tests {
         assert_eq!(a.as_ref(), "界");
     }
 
-    fn test_colors() -> PaintColors {
+    pub(super) fn test_colors() -> PaintColors {
         let fg = Rgb {
             r: 10,
             g: 10,

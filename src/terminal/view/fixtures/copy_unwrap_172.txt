@@ -1,0 +1,34 @@
+
+⏺ I've laid out 12 fixes across the dotfiles, each to be its own commit — removing stray shebangs, fixing &&/|| logic into proper if/else, correcting a comment-continuation
+  bug, adding a default in slow-cmd, using exact-match in path-fixup, scoping the loop in 10-focus-events, and adding suppression comments for the three intentional cases.
+  I'll start committing these one at a time now.
+
+✻ Cogitated for 23m 19s · done Wednesday 5:00 PM
+
+※ recap: Goal: clean up shuck findings in your dotfiles, most-used first; the shell startup files are done and committed locally. Next, pick Z1, Z2 or Z3 for the no-op
+  `unset GLOBAL_RCS` line, and say "push" for the 19 unpushed commits. (disable recaps in /config)
+
+❯ continue
+
+⏺ Continuing without changing GLOBAL_RCS and without pushing, since you haven't answered either. The next most-run code is the shared helpers that the scripts I've already
+  fixed call into: argparse, usage2, log-*, subcommander, scale-it. Ranking the remaining flagged files by how many places call them:
+
+⏺ Bash(git status --short; python3 - <<'EOF'
+      import collections,os,re,subprocess…)
+  ⎿  Error: Exit code 1
+      M home/.claude/settings.json
+     Traceback (most recent call last):
+       File "<stdin>", line 2, in <module>
+     FileNotFoundError: [Errno 2] No such file or directory: '/tmp/claude-501/sk3.txt'
+
+⏺ Temp files were cleared since the last session. Regenerating the findings list and rerunning the ranking:
+
+⏺ Bash(mkdir -p /tmp/claude-501 && cd /Users/adam/src/dotfiles && git log --oneline -1 && cmd=$(grep -o "shuck check --output-format concise[^\"]*" hk.pkl); MISE_QUIET…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Loaded home/.claude/CLAUDE.md
+  ⎿  Loaded 5 skills from home/.claude/skills
+  ⎿  5 skills available
+
+⏺ The findings scan plus caller ranking is still running in the background. It went over the 5-minute foreground limit, probably because shuck is slower on a cold cache.
+  I'll start on the top-ranked helper when it finishes.
+

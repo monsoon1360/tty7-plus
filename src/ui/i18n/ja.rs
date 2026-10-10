@@ -49,6 +49,51 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsDefinedIn => "定義元",
         L10nKey::SettingsConnectInNewTab => "新しいタブで接続",
         L10nKey::SettingsCopied => "コピーしました",
+        L10nKey::SettingsNavMobile => "モバイル",
+        L10nKey::SettingsMobileAccess => "スマートフォンからのアクセスを許可",
+        L10nKey::SettingsMobileAccessDesc => {
+            "ペアリングしたスマートフォンから、このマシンのペインを表示して入力できます。ウインドウをすべて閉じていても使えます。通信はエンドツーエンドで暗号化されます。"
+        }
+        L10nKey::SettingsMobileStatusStarting => "起動しています…",
+        L10nKey::SettingsMobileStatusFailed => "実行されていません: {error}",
+        L10nKey::SettingsMobileStartFailed => {
+            "スマートフォンからのアクセスを開始できませんでした: {error}"
+        }
+        L10nKey::SettingsMobileNoAnswer => {
+            "tty7 サーバーが起動しませんでした。設定 → 情報 でサーバーを再起動してから、もう一度お試しください。"
+        }
+        L10nKey::SettingsMobilePair => "スマートフォンをペアリング",
+        L10nKey::SettingsMobileShowCode => "コードを表示",
+        L10nKey::SettingsMobilePairDesc => {
+            "スマートフォンの tty7 アプリ用に、1 回限りのコードを表示します。"
+        }
+        L10nKey::SettingsMobilePairNeedsAccess => {
+            "先にスマートフォンからのアクセスをオンにしてください。"
+        }
+        L10nKey::SettingsMobilePairScan => {
+            "スマートフォンのカメラを向けるか、tty7 アプリでスキャンするか、コードをコピーして貼り付けてください。"
+        }
+        L10nKey::SettingsMobilePairValid => {
+            "あと {time} で失効します。1 台のスマートフォンに限ります。"
+        }
+        L10nKey::SettingsMobileNewCode => "新しいコード",
+        L10nKey::SettingsMobilePairExpired => {
+            "このコードは期限切れです。新しいコードを作成してペアリングしてください。"
+        }
+        L10nKey::SettingsMobilePairTried => {
+            "このコードは一度試されたため使えなくなりました（入力ミスや接続の中断など）。新しいコードを作成してペアリングしてください。"
+        }
+        L10nKey::SettingsMobilePairReplaced => {
+            "新しいコードに置き換えられました。新しいコードを作成してペアリングしてください。"
+        }
+        L10nKey::SettingsMobileCopyCode => "コードをコピー",
+        L10nKey::SettingsMobilePaired => "{name} とペアリングしました。",
+        L10nKey::SettingsMobilePhones => "ペアリング済みのスマートフォン",
+        L10nKey::SettingsMobileNoPhones => "ペアリングしたスマートフォンはまだありません。",
+        L10nKey::SettingsMobileUnpair => "ペアリングを解除",
+        L10nKey::SettingsSearchMobileKeywords => {
+            "スマホ モバイル iphone android ipad ペアリング qr コード リモート アクセス"
+        }
         L10nKey::SettingsCopySshCommand => "ssh コマンドをコピー",
         L10nKey::SettingsStoredInTty7 => "tty7 の設定に保存",
         L10nKey::SettingsClickAgainToRemove => "もう一度クリックで削除",
@@ -225,6 +270,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::CloseSshConnectionBody => "接続中です。閉じると切断されます",
         L10nKey::ClosePaneBusyTitle => "このペインを閉じますか？",
         L10nKey::CloseTabBusyTitle => "このタブを閉じますか？",
+        L10nKey::CloseIdleBody => "中のシェルも終了します。",
+        L10nKey::CloseTabsTitle => "{count} 個のタブを閉じますか？",
+        L10nKey::CloseTabsBody => "中のシェルもすべて終了します。",
         L10nKey::CloseBusyCommandBody => "{what} はまだ実行中です。閉じると終了します。",
         L10nKey::CloseBusyAgentBody => {
             "{agent} はまだ作業中です。閉じるとこのターンは中断されます。"
@@ -236,21 +284,37 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsNavSsh => "SSH",
         L10nKey::SettingsNavAgents => "連携",
         L10nKey::SettingsNavPairDevices => "デバイスのペアリング",
-        L10nKey::SettingsMobileKeywords => "モバイル Android スマートフォン ペアリング デバイス リモート リレー TLS 証明書 ピン QR 承認 取り消し",
+        L10nKey::SettingsMobileKeywords => {
+            "モバイル Android スマートフォン ペアリング デバイス リモート リレー TLS 証明書 ピン QR 承認 取り消し"
+        }
         L10nKey::SettingsMobileEnabled => "モバイルのリモートアクセス",
-        L10nKey::SettingsMobileEnabledDesc => "承認したスマートフォンからリレー経由でローカル端末にアクセスできます。デスクトップウィンドウを閉じてもシェルと接続は継続します。",
+        L10nKey::SettingsMobileEnabledDesc => {
+            "承認したスマートフォンからリレー経由でローカル端末にアクセスできます。デスクトップウィンドウを閉じてもシェルと接続は継続します。"
+        }
         L10nKey::SettingsMobileRelayUrl => "リレー URL",
-        L10nKey::SettingsMobileRelayUrlDesc => "TLS WebSocket リレー（wss://）を使用します。暗号化されない ws:// は開発時のループバックのみ使用できます。",
+        L10nKey::SettingsMobileRelayUrlDesc => {
+            "TLS WebSocket リレー（wss://）を使用します。暗号化されない ws:// は開発時のループバックのみ使用できます。"
+        }
         L10nKey::SettingsMobileTlsPin => "TLS 証明書 SHA-256 ピン",
-        L10nKey::SettingsMobileTlsPinDesc => "自己署名のプライベートリレーでは、リーフ証明書の指紋（64 桁の16進数）を入力してください。未検証の証明書を受け入れないでください。",
-        L10nKey::SettingsMobilePairDesc => "アクセスを有効にして tty7 Android アプリで QR コードをスキャンします。両方のデバイスの確認コードが一致する場合だけ承認してください。",
+        L10nKey::SettingsMobileTlsPinDesc => {
+            "自己署名のプライベートリレーでは、リーフ証明書の指紋（64 桁の16進数）を入力してください。未検証の証明書を受け入れないでください。"
+        }
+        L10nKey::SettingsPairDevicesDesc => {
+            "アクセスを有効にして tty7 Android アプリで QR コードをスキャンします。両方のデバイスの確認コードが一致する場合だけ承認してください。"
+        }
         L10nKey::SettingsMobileGenerateQr => "QR コードを生成",
         L10nKey::SettingsMobileRegenerateQr => "QR コードを再生成",
-        L10nKey::SettingsMobileScanQr => "tty7 Android アプリでスキャンしてください。このコードはペアリングの申請を許可するだけで、セッションへのアクセスは許可しません。",
+        L10nKey::SettingsMobileScanQr => {
+            "tty7 Android アプリでスキャンしてください。このコードはペアリングの申請を許可するだけで、セッションへのアクセスは許可しません。"
+        }
         L10nKey::SettingsMobileExpires => "{seconds} 秒後に期限切れ",
-        L10nKey::SettingsMobileExpired => "QR コードの期限が切れました。新しいコードを生成してください。",
+        L10nKey::SettingsMobileExpired => {
+            "QR コードの期限が切れました。新しいコードを生成してください。"
+        }
         L10nKey::SettingsMobilePending => "承認待ち",
-        L10nKey::SettingsMobileVerifyCode => "承認前に、このスマートフォンにも {code} が表示されていることを確認してください。",
+        L10nKey::SettingsMobileVerifyCode => {
+            "承認前に、このスマートフォンにも {code} が表示されていることを確認してください。"
+        }
         L10nKey::SettingsMobileApprove => "承認",
         L10nKey::SettingsMobileReject => "拒否",
         L10nKey::SettingsMobileDevices => "登録済みデバイス",
@@ -265,6 +329,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsNavKeybindings => "キーボードショートカット",
         L10nKey::SettingsNavAbout => "情報",
         L10nKey::SettingsHeader => "設定",
+        L10nKey::SettingsWindowTitle => "設定",
         L10nKey::Reset => "リセット",
         L10nKey::Save => "保存",
         L10nKey::Connect => "接続",
@@ -274,7 +339,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsThemeIntroDesc => "テーマごとにライトかダークが決まります",
         L10nKey::SettingsTypography => "タイポグラフィ",
         L10nKey::SettingsFontSize => "ターミナルの文字サイズ",
-        L10nKey::SettingsFontSizeDesc => "ターミナルテキストのサイズ（ピクセル）",
+        L10nKey::SettingsFontSizeDesc => "ターミナルテキストのサイズ（ポイント）",
         L10nKey::SettingsUiFontSize => "画面の文字サイズ",
         L10nKey::SettingsUiFontSizeDesc => "タブ・パネル・設定などの文字サイズ",
         L10nKey::SettingsUiFontFamily => "画面のフォント",
@@ -305,6 +370,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsLanguageEnglish => "English",
         L10nKey::SettingsLanguageChinese => "简体中文",
         L10nKey::SettingsLanguageJapanese => "日本語",
+        L10nKey::SettingsLanguageRussian => "Русский",
         L10nKey::SettingsSearchLanguageKeywords => {
             "言語 ロケール 英語 中国語 language locale english chinese"
         }
@@ -334,6 +400,10 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::FollowTheme => "テーマに従う",
         L10nKey::SettingsDimInactivePanes => "非アクティブなペインを暗くする",
         L10nKey::SettingsDimInactivePanesDesc => "フォーカス外のペインを暗くします",
+        L10nKey::SettingsAutoHideTitlebarButtons => "タイトルバーのボタンをホバー時に表示",
+        L10nKey::SettingsAutoHideTitlebarButtonsDesc => {
+            "新規タブやサイドバーのボタンを、ポインタがタイトルバーに乗ったときだけ表示します"
+        }
         L10nKey::SettingsOpenThemesFolder => "テーマフォルダを開く",
         L10nKey::SettingsChangeThemeImage => "変更…",
         L10nKey::SettingsChooseThemeImage => "選択…",
@@ -361,7 +431,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsInheritedByEveryHost => "すべてのホストに継承されます",
         L10nKey::SettingsNoSavedHosts => "保存済みホストはまだありません",
         L10nKey::SettingsNothingMatches => "「{query}」に一致する項目がありません",
-        L10nKey::SettingsInTty7 => "tty7 内",
+        L10nKey::SettingsInTty7 => "tty7 の設定",
         L10nKey::SettingsImportFromSshConfig => "~/.ssh/config からインポート",
         L10nKey::SettingsExpandAllGroups => "すべてのグループを展開",
         L10nKey::SettingsNoHostsYet => "まだホストがありません",
@@ -717,6 +787,13 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsShowTrayIconDesc => "エージェントの入力待ちを通知",
         L10nKey::SettingsTabs => "タブ",
         L10nKey::SettingsNewTabPosition => "新規タブの表示位置",
+        L10nKey::SettingsConfirmClose => "閉じる前に確認",
+        L10nKey::SettingsConfirmCloseDesc => {
+            "タブやペインを閉じる前に確認するタイミング。「閉じる前に警告」を有効にした SSH ホストは常に確認します"
+        }
+        L10nKey::ConfirmCloseNever => "確認しない",
+        L10nKey::ConfirmCloseWhenBusy => "実行中のときのみ",
+        L10nKey::ConfirmCloseAlways => "常に確認",
         L10nKey::SettingsNewTabPositionDesc => "新しく開いたタブが挿入される場所",
         L10nKey::SettingsTabBarPosition => "タブバーの位置",
         L10nKey::SettingsTabBarPositionDesc => {
@@ -739,6 +816,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::NotifyModeNever => "通知しない",
         L10nKey::NotifyModeUnfocused => "非フォーカス時のみ",
         L10nKey::NotifyModeAlways => "常に通知",
+        L10nKey::ProgramNotesDropped => "このペインのほかの通知は表示されませんでした",
         L10nKey::SettingsStartupNormal => "通常サイズ",
         L10nKey::SettingsStartupMaximized => "最大化",
         L10nKey::SettingsStartupFullscreen => "全画面",
@@ -892,6 +970,11 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsAgentCursorCli => "Cursor CLI",
         L10nKey::SettingsAgentPrimeAgent => "Prime Agent",
         L10nKey::SettingsAgentAntigravity => "Antigravity",
+        L10nKey::SettingsAgentEmpryo => "Empryo",
+        L10nKey::SettingsAgentJcode => "jcode",
+        L10nKey::SettingsAgentMuse => "Muse Code",
+        L10nKey::SettingsMuseManualInstall => "手動インストールが必要",
+        L10nKey::AppAgentHooksMuseManualInstall => "対象のマシンで実行: {command}",
         L10nKey::SettingsAgentQoderCn => "Qoder CN CLI",
         L10nKey::SettingsSearchAboutKeywords => {
             "バージョン ライセンス クレジット ビルド 更新 確認 github about version license credits update check"
@@ -953,6 +1036,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsSearchDimInactivePanesKeywords => {
             "非アクティブ ペイン 暗く フォーカス 分割 fade unfocused inactive split pane focus opacity highlight active dimming"
         }
+        L10nKey::SettingsSearchAutoHideTitlebarButtonsKeywords => {
+            "自動 隠す タイトルバー ボタン ホバー ポインタ すっきり 新規タブ サイドバー auto hide title bar buttons hover"
+        }
         L10nKey::SettingsSearchFocusFollowsMouseKeywords => {
             "ペイン ホバー アクティブ focus follows mouse pane hover activate"
         }
@@ -996,6 +1082,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::SettingsSearchNewTabPositionKeywords => {
             "タブ 順序 末尾 現在のタブの隣 new tab position tabs order end after current"
+        }
+        L10nKey::SettingsSearchConfirmCloseKeywords => {
+            "閉じる 確認 タブ ペイン 実行中 アイドル 常に しない confirm close tab pane ask prompt busy idle always never"
         }
         L10nKey::SettingsSearchNotifyOnCommandFinishKeywords => {
             "通知 アラート 完了 osc デスクトップ バナー 長い コマンド notify on command finish notification alert desktop"
@@ -1047,6 +1136,15 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::SettingsSearchPrimeAgentKeywords => {
             "エージェント 統合 拡張 インストール prime prime-agent primeintellect agent integration extension install"
+        }
+        L10nKey::SettingsSearchEmpryoKeywords => {
+            "エージェント 統合 フック インストール empryo agent integration hooks install"
+        }
+        L10nKey::SettingsSearchJcodeKeywords => {
+            "エージェント 統合 フック インストール jcode agent integration hooks install"
+        }
+        L10nKey::SettingsSearchMuseKeywords => {
+            "エージェント 統合 フック プラグイン インストール muse meta agent integration hooks plugins install"
         }
         L10nKey::SettingsSearchAntigravityKeywords => {
             "エージェント 統合 フック インストール antigravity agy google agent integration hooks install"
@@ -1401,6 +1499,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::PanelNoChangesHint => "ワーキングツリーはクリーンです",
         L10nKey::PanelSessionSubtitle => "セッション",
         L10nKey::PanelProcessesSubtitle => "プロセス",
+        L10nKey::PanelProcessesTotal => "合計",
         L10nKey::PanelPortsSubtitle => "ポート",
         L10nKey::PanelLatency => "遅延",
         L10nKey::PanelPortsUnsupported => "リモートの tty7-server が古く、ポートを列挙できません。",
@@ -1609,6 +1708,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::RemoteNoticeDisconnected => "未接続です — 入力しても反映されません",
         L10nKey::RemoteActionRetryNow => "今すぐ再試行",
         L10nKey::RemoteActionTakeBack => "取り戻す",
+        L10nKey::PaneLeasedBy => "{by} で使用中（その画面サイズで表示）",
         L10nKey::RemoteActionConnect => "接続",
         L10nKey::RemoteActionRetry => "再試行",
         L10nKey::RemoteActionRemoveEntry => "エントリを削除",
@@ -1699,6 +1799,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SwitcherCopyingServer => "tty7 のサーバーをコピー中… {done} / {total}",
         L10nKey::SwitcherThisWindow => "このウィンドウ",
         L10nKey::SwitcherOpen => "開く",
+        L10nKey::SwitcherOffline => "オフライン",
         L10nKey::SwitcherDisconnect => "切断",
         L10nKey::SwitcherEditHost => "ホストを編集…",
         L10nKey::SwitcherSaveAsHost => "SSH ホストとして保存…",
@@ -1731,9 +1832,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SwitcherConnectingTo => "{machine} に接続中…",
         L10nKey::SwitcherFormName => "名前",
         L10nKey::SwitcherFormHost => "ホスト",
-        L10nKey::SwitcherFormNamePlaceholder => "任意",
+        L10nKey::SwitcherFormNamePlaceholder => "ワークスペース名",
         L10nKey::SwitcherFormBack => "戻る",
-        L10nKey::SwitcherFormCreateHint => "Enter で作成 · Esc で戻る",
+        L10nKey::SwitcherFormCreate => "作成",
         L10nKey::SwitcherFormPickHint => "↑↓ で選択 · Enter で決定 · Esc で閉じる",
         L10nKey::SshPromptPasswordFor => "{user}@{host} のパスワード",
         L10nKey::SshPromptPassphraseFor => "{key_path} のパスフレーズ",
@@ -1864,6 +1965,29 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdGitToggleGraph => "Git: コミット履歴の表示切替",
         L10nKey::CmdClearScrollback => "スクロールバックをクリア",
         L10nKey::CmdFindInTerminal => "ターミナル内を検索…",
+        L10nKey::CmdToggleComposer => "メッセージ入力欄の切り替え",
+        L10nKey::ComposerModeDefault => "編集前に確認",
+        L10nKey::ComposerModeAcceptEdits => "編集を自動承認",
+        L10nKey::ComposerModePlan => "プランモード",
+        L10nKey::ComposerModeBypass => "権限確認をスキップ",
+        L10nKey::ComposerModeAuto => "自動モード",
+        L10nKey::ComposerModeTip => "権限モード  ·  Shift+Tab で切り替え",
+        L10nKey::ComposerModel => "モデル",
+        L10nKey::ComposerModelTip => "モデルを切り替え",
+        L10nKey::ComposerModelDefault => "デフォルト（推奨）",
+        L10nKey::ComposerEffort => "推論の強さ",
+        L10nKey::ComposerEffortTip => "推論の強さ  ·  クリックして変更",
+        L10nKey::ComposerPlaceholder => "{agent} にメッセージ   ·   @ ファイル   / コマンド",
+        L10nKey::ComposerPlaceholderFiles => "{agent} にメッセージ   ·   @ ファイル",
+        L10nKey::ComposerSendTip => "送信（Enter）  ·  Shift+Enter で改行",
+        L10nKey::ComposerAttach => "ファイルや画像を添付",
+        L10nKey::ComposerMenuCommands => "コマンド",
+        L10nKey::ComposerMenuFiles => "ファイル",
+        L10nKey::ComposerCmdProject => "プロジェクトのコマンド",
+        L10nKey::ComposerCmdUser => "ユーザーのコマンド",
+        L10nKey::ComposerAgentAsking => {
+            "{agent} が質問しています。ターミナルで答えてから送信してください。"
+        }
         L10nKey::CmdFindNext => "次を検索",
         L10nKey::CmdFindPrevious => "前を検索",
         L10nKey::CmdCopy => "コピー",
@@ -1931,7 +2055,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
             "config.json を読み込めませんでした。実行中の設定を保持し、ファイルもそのままです。権限か内容を直せば自動で再読み込みされます。それまでに設定を保存すると上書きされます"
         }
         L10nKey::AppWorktreeRemoveDetailDirty => {
-            "閉じたタブの {path} にあるワークツリーには未コミットの変更があります"
+            "閉じたタブの {path} にあるワークツリーには未コミットの変更があります。削除前に refs/tty7/trash/{name} へ保存します"
         }
         L10nKey::AppWorktreeRemoveDetailClean => {
             "閉じたタブの {path} にあるワークツリーはクリーンです"
@@ -1956,11 +2080,27 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::PaneDragHandleTooltip => "ドラッグしてこのペインを移動",
         L10nKey::AppWorktreeRemoved => "ワークツリー「{branch}」を削除しました",
         L10nKey::AppWorktreeRemoveFailed => "ワークツリーの削除に失敗しました: {error}",
-        L10nKey::AppForkStillConnecting => "フォークできませんでした: ペインはまだ接続中です",
+        L10nKey::WorktreePromptAgent => "起動",
+        L10nKey::WorktreePromptShell => "シェル",
+        L10nKey::WorktreePromptTask => "タスク",
+        L10nKey::WorktreePromptSetup => "最初に .tty7/setup を実行",
+        L10nKey::WorktreePromptSetupHint => {
+            ".tty7/setup がありません。追加すると新しいワークツリーで `{command}` を実行します"
+        }
+        L10nKey::AppWorktreeSetupTitle => "このリポジトリのセットアップスクリプトを実行しますか？",
+        L10nKey::AppWorktreeSetupDetail => {
+            "{path} は新しいタブで最初に実行されます。このリポジトリを信頼できる場合のみ許可してください。スクリプトが変わるたびに再確認します"
+        }
+        L10nKey::AppWorktreeSetupRun => "実行",
+        L10nKey::AppWorktreeSetupSkip => "スキップ",
+        L10nKey::AppWorktreeNotCarried => ".worktreeinclude から複製されませんでした: {paths}",
+        L10nKey::AppWorktreeRemovedBranchKept => {
+            "ワークツリーを削除しました。ブランチ「{branch}」には未マージのコミットがあるため残しました"
+        }
         L10nKey::AppPaneNoCodingAgent => "このペインはコーディングエージェントを実行していません",
         L10nKey::AppForkNoCommand => "tty7 には {name} 用のフォークコマンドがありません",
         L10nKey::AppForkLocalOnly => {
-            "{name} のセッションはローカルペインからしかフォークできません"
+            "SSH または WSL セッション内の {name} のセッションはフォークできません"
         }
         L10nKey::AppForkNoSessionId => {
             "tty7 はこのペインで {name} のセッション ID を確認できていません — 設定 → 連携でフックをインストールしてください"
@@ -2215,6 +2355,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SidebarUngroupedGroup => "未分類",
         L10nKey::SidebarMoveToGroup => "グループへ移動",
         L10nKey::SidebarNewGroup => "新規グループ…",
+        L10nKey::SidebarRemoveFromGroup => "グループから外す",
         L10nKey::SidebarNewGroupName => "新規グループ",
         L10nKey::SidebarRenameGroup => "グループ名を変更",
         L10nKey::SidebarPinGroup => "グループを固定",
@@ -2313,6 +2454,14 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::GitHubShowFullText => "全文を表示",
         L10nKey::GitHubShowHiddenComments => "ほか {count} 件のコメントを表示",
         L10nKey::GitHubShowAllReviewers => "{count} 人のレビュアーをすべて表示",
+        L10nKey::CmdCopyRaw => "そのままコピー",
+        L10nKey::SettingsSearchCopyJoinWrappedKeywords => {
+            "クリップボード コピー 折り返し 行 結合 clipboard copy wrap unwrap join lines claude raw"
+        }
+        L10nKey::SettingsCopyJoinWrapped => "コピー時に折り返し行をつなげる",
+        L10nKey::SettingsCopyJoinWrappedDesc => {
+            "Claude Code のペインで、Claude が画面端で折り返した行をつなげ、段落を 1 行として貼り付けます。⌘⌥C または「そのままコピー」で表示どおりにコピーします"
+        }
     })
 }
 
@@ -2393,6 +2542,8 @@ pub fn translate_variant_ja(key: L10nKey, branch: &'static str) -> Option<&'stat
         (L10nKey::SftpReplaceBody, "other") => {
             "{names} はこのフォルダに既に存在します。アップロードすると上書きされます。"
         }
+        (L10nKey::CloseTabsTitle, "one") => "1 個のタブを閉じますか？",
+        (L10nKey::CloseTabsTitle, "other") => "{count} 個のタブを閉じますか？",
         (L10nKey::AppTabsNotRestored, "one") => "前回のタブ 1 個を開き直せませんでした",
         (L10nKey::AppTabsNotRestored, "other") => "前回のタブ {count} 個を開き直せませんでした",
         (L10nKey::LaunchWorkspacesLeftRunning, "one") => {

@@ -159,6 +159,17 @@ impl Tty7App {
                     (_, Some((_, spec, _))) => vec![spec.clone()],
                     _ => keys,
                 };
+                // "New Tab, ⌘T": the action and what it is bound to, the way
+                // the row reads — a screen reader says ⌘ as "command".
+                let a11y_keys = match shown.is_empty() {
+                    true => "—".to_string(),
+                    false => shown
+                        .iter()
+                        .map(|spec| crate::ui::keymap::key_tokens(spec).join(""))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                };
+                let a11y_name = format!("{label}, {a11y_keys}");
                 let modified = overridden.contains(&action) && !is_recording;
                 let ring = if is_recording {
                     vec![kit::ring(tk.fg, 1., true)]
@@ -175,6 +186,8 @@ impl Tty7App {
                 let record_action = action.clone();
                 let keys_button = h_flex()
                     .id(SharedString::from(format!("kb-{action}")))
+                    .role(gpui::Role::Button)
+                    .aria_label(a11y_name)
                     .h(px(26.))
                     .min_w(px(72.))
                     .pl(px(8.))

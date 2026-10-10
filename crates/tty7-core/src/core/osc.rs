@@ -1,3 +1,5 @@
+use base64::Engine as _;
+
 const MAX_PAYLOAD: usize = 8192;
 
 pub struct OscTokenizer {
@@ -123,10 +125,15 @@ impl OscTokenizer {
     }
 }
 
-pub fn parse_notification(payload: &[u8]) -> Option<(Option<String>, String)> {
+/// A desktop notification: its title, if it has one, and its body.
+pub type Note = (Option<String>, String);
+
+pub fn parse_notification(payload: &[u8]) -> Option<Note> {
     if let Some(rest) = payload.strip_prefix(b"9;") {
         let first = rest.split(|&b| b == b';').next().unwrap_or(rest);
-        if first.len() == 1 && first[0].is_ascii_digit() {
+        // ConEmu's subcommands, 9;1 through 9;12: progress, cwd, prompt marks.
+        if (first.len() == 1 && first[0].is_ascii_digit()) || matches!(first, b"10" | b"11" | b"12")
+        {
             return None;
         }
         let body = String::from_utf8_lossy(rest).into_owned();
@@ -145,6 +152,145 @@ pub fn parse_notification(payload: &[u8]) -> Option<(Option<String>, String)> {
         return (!body.is_empty()).then_some((title, body));
     }
     None
+}
+
+/// Desktop notifications across OSC 9, 99 and 777. OSC 99 is kitty's
+/// protocol, which is stateful: a title and a body can arrive as separate
+/// chunks sharing an `i=` id, and the notification is complete at the first
+/// chunk without `d=0`. <https://sw.kovidgoyal.net/kitty/desktop-notifications/>
+#[derive(Default)]
+pub struct Notifications {
+    /// Unfinished OSC 99 notifications.
+    kitty: Vec<PendingKitty>,
+}
+
+#[derive(Default)]
+struct PendingKitty {
+    id: String,
+    title: String,
+    body: String,
+}
+
+/// Unfinished kitty notifications kept at once; a program that opens ids and
+/// never finishes them loses the oldest.
+const MAX_PENDING_KITTY: usize = 8;
+
+impl Notifications {
+    /// Reads one OSC payload, identifier included, and returns the
+    /// notification it completes, as `(title, body)`.
+    pub fn parse(&mut self, payload: &[u8]) -> Option<Note> {
+        match payload.strip_prefix(b"99;") {
+            Some(rest) => self.kitty(rest),
+            None => parse_notification(payload),
+        }
+    }
+
+    fn kitty(&mut self, rest: &[u8]) -> Option<Note> {
+        let split = rest.iter().position(|&b| b == b';');
+        let (meta, data) = match split {
+            Some(at) => (&rest[..at], &rest[at + 1..]),
+            None => (rest, &b""[..]),
+        };
+        let meta = String::from_utf8_lossy(meta);
+        let (mut id, mut done, mut part, mut b64) = ("", true, "title", false);
+        for kv in meta.split(':') {
+            match kv.split_once('=') {
+                Some(("i", v)) => id = v,
+                Some(("d", v)) => done = v != "0",
+                Some(("p", v)) => part = v,
+                Some(("e", v)) => b64 = v == "1",
+                _ => {}
+            }
+        }
+        // A close, a liveness or capability query: commands about
+        // notifications, not parts of one, so they neither show nor finish one.
+        if matches!(part, "close" | "alive" | "?") {
+            return None;
+        }
+        // Chunks without an id are each their own notification; one never
+        // continues another.
+        if id.is_empty() {
+            self.kitty.retain(|p| !p.id.is_empty());
+        }
+        let text = match b64 {
+            true => base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map(|d| String::from_utf8_lossy(&d).into_owned())
+                .unwrap_or_default(),
+            false => String::from_utf8_lossy(data).into_owned(),
+        };
+        let at = match self.kitty.iter().position(|p| p.id == id) {
+            Some(at) => at,
+            None => {
+                if self.kitty.len() == MAX_PENDING_KITTY {
+                    self.kitty.remove(0);
+                }
+                self.kitty.push(PendingKitty {
+                    id: id.to_string(),
+                    ..Default::default()
+                });
+                self.kitty.len() - 1
+            }
+        };
+        let pending = &mut self.kitty[at];
+        let field = match part {
+            "title" => Some(&mut pending.title),
+            "body" => Some(&mut pending.body),
+            _ => None,
+        };
+        if let Some(field) = field
+            && field.len() + text.len() <= MAX_PAYLOAD
+        {
+            field.push_str(&text);
+        }
+        if !done {
+            return None;
+        }
+        let PendingKitty { title, body, .. } = self.kitty.remove(at);
+        match (title.is_empty(), body.is_empty()) {
+            (true, true) => None,
+            (false, true) => Some((None, title)),
+            (true, false) => Some((None, body)),
+            (false, false) => Some((Some(title), body)),
+        }
+    }
+}
+
+/// How many of a pane's notes reach the desktop per [`NOTE_WINDOW`].
+pub const NOTES_PER_WINDOW: usize = 5;
+pub const NOTE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A pane's notification rate limit. Pane output is untrusted, and capping
+/// the queue between polls still lets a flood through a few notes per poll.
+/// At most [`NOTES_PER_WINDOW`] notes are shown per [`NOTE_WINDOW`]; the rest
+/// are dropped and said as one note when the window turns over, which takes
+/// a slot. A tumbling window: a burst straddling its edge can show twice the
+/// limit in quick succession.
+#[derive(Default)]
+pub struct NoteBudget {
+    since: Option<std::time::Instant>,
+    shown: usize,
+    dropped: usize,
+}
+
+impl NoteBudget {
+    /// Of `wanted` notes at `now`: how many to show, and whether notes were
+    /// dropped earlier and are now due to be said as one.
+    pub fn admit(&mut self, now: std::time::Instant, wanted: usize) -> (usize, bool) {
+        let mut due = false;
+        if self
+            .since
+            .is_none_or(|s| now.duration_since(s) >= NOTE_WINDOW)
+        {
+            due = std::mem::take(&mut self.dropped) > 0;
+            self.since = Some(now);
+            self.shown = usize::from(due);
+        }
+        let show = wanted.min(NOTES_PER_WINDOW.saturating_sub(self.shown));
+        self.shown += show;
+        self.dropped += wanted - show;
+        (show, due)
+    }
 }
 
 /// What a sequence did to the title a pane is showing — see
@@ -248,6 +394,33 @@ impl TitleLifetime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_flood_shows_a_few_per_window_and_one_note_for_the_rest() {
+        let mut budget = NoteBudget::default();
+        let t0 = Instant::now();
+        // Three notes a poll, every 300ms, for ten seconds.
+        let mut shown = 0;
+        for poll in 0..33 {
+            let (show, due) = budget.admit(t0 + Duration::from_millis(300 * poll), 3);
+            shown += show;
+            assert!(!due);
+        }
+        assert_eq!(shown, NOTES_PER_WINDOW);
+        assert_eq!(budget.admit(t0 + NOTE_WINDOW, 3), (3, true), "said once");
+        assert_eq!(
+            budget.admit(t0 + NOTE_WINDOW, 3),
+            (NOTES_PER_WINDOW - 4, false),
+            "the note took a slot"
+        );
+        assert_eq!(
+            budget.admit(t0 + NOTE_WINDOW * 2, 0),
+            (0, true),
+            "said even when the flood stopped"
+        );
+        assert_eq!(budget.admit(t0 + NOTE_WINDOW * 3, 0), (0, false));
+    }
 
     fn collect(ids: &'static [&'static [u8]], chunks: &[&[u8]]) -> Vec<Vec<u8>> {
         let mut tok = OscTokenizer::new(ids);
@@ -488,6 +661,90 @@ mod tests {
         assert_eq!(
             collect(&[b"9"], &[b"\x1b]9;half\x1b[0m\x1b]9;whole\x07"]),
             vec![b"9;whole".to_vec()]
+        );
+    }
+
+    fn notes(payloads: &[&[u8]]) -> Vec<Note> {
+        let mut n = Notifications::default();
+        payloads.iter().filter_map(|p| n.parse(p)).collect()
+    }
+
+    #[test]
+    fn kitty_notification_in_one_chunk_is_its_title() {
+        assert_eq!(
+            notes(&[b"99;;Build done"]),
+            vec![(None, "Build done".into())]
+        );
+        assert_eq!(notes(&[b"99;i=1;hi"]), vec![(None, "hi".into())]);
+    }
+
+    #[test]
+    fn kitty_chunks_sharing_an_id_make_one_notification() {
+        // What Claude Code writes for its `kitty` channel.
+        assert_eq!(
+            notes(&[
+                b"99;i=42:d=0:p=title;Claude Code",
+                b"99;i=42:p=body;Claude needs your permission",
+                b"99;i=42:d=1:a=focus;",
+            ]),
+            vec![(
+                Some("Claude Code".into()),
+                "Claude needs your permission".into()
+            )]
+        );
+    }
+
+    #[test]
+    fn kitty_chunks_append_and_interleaved_ids_stay_apart() {
+        assert_eq!(
+            notes(&[
+                b"99;i=a:d=0;Hel",
+                b"99;i=b:d=0:p=body;other",
+                b"99;i=a:d=0;lo",
+                b"99;i=a:p=body;world",
+            ]),
+            vec![(Some("Hello".into()), "world".into())]
+        );
+    }
+
+    #[test]
+    fn kitty_base64_payload_is_decoded() {
+        assert_eq!(
+            notes(&[b"99;e=1:p=body;aOKAkmxsbw=="]),
+            vec![(None, "h\u{2012}llo".into())]
+        );
+    }
+
+    #[test]
+    fn kitty_control_payloads_show_nothing() {
+        assert_eq!(notes(&[b"99;i=1:p=close;"]), vec![]);
+        assert_eq!(notes(&[b"99;i=1:p=?;"]), vec![]);
+    }
+
+    #[test]
+    fn kitty_control_payloads_leave_an_unfinished_note_alone() {
+        for control in [&b"99;i=1:p=close;"[..], b"99;i=1:p=alive;", b"99;i=1:p=?;"] {
+            assert_eq!(notes(&[b"99;i=1:d=0;Half", control]), vec![], "{control:?}");
+        }
+        assert_eq!(
+            notes(&[b"99;i=1:d=0;Hel", b"99;i=1:p=close;", b"99;i=1;lo"]),
+            vec![(None, "Hello".into())]
+        );
+    }
+
+    #[test]
+    fn kitty_chunks_without_an_id_never_join() {
+        assert_eq!(
+            notes(&[b"99;d=0;stale", b"99;p=body;fresh"]),
+            vec![(None, "fresh".into())]
+        );
+    }
+
+    #[test]
+    fn osc_9_and_777_still_parse_through_the_same_reader() {
+        assert_eq!(
+            notes(&[b"9;ping", b"777;notify;T;B", b"9;4;1;50"]),
+            vec![(None, "ping".into()), (Some("T".into()), "B".into())]
         );
     }
 }

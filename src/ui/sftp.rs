@@ -2230,7 +2230,7 @@ mod tests {
     #[test]
     fn the_overwrite_question_counts_correctly_in_every_locale() {
         use crate::ui::i18n::{L10nKey, t_plural};
-        for locale in ["en", "zh-CN", "ja-JP"] {
+        for locale in ["en", "zh-CN", "ja-JP", "ru-RU"] {
             crate::ui::i18n::set_locale(locale);
             for n in [1usize, 2, 7] {
                 let body = t_plural(L10nKey::SftpReplaceBody, n, &[("names", "a.txt")]);
@@ -2387,32 +2387,25 @@ mod gpui_tests {
     fn cancelling_the_edit_form_hands_focus_back(cx: &mut TestAppContext) {
         let (app, mut vcx) = harness(cx);
 
-        let box_focus = app.update_in(&mut vcx, |app, window, cx| {
+        // One update, no frame in between: the harness has no panel to draw
+        // the box in, so a frame would count its focus as lost and hand it back
+        // to the app before the cancel ever ran.
+        app.update_in(&mut vcx, |app, window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx));
             input.update(cx, |s, cx| s.focus(window, cx));
             let handle = input.read(cx).focus_handle(cx);
             app.sftp_panel.editing = Some(SftpEdit::NewFolder(input));
-            handle
+            assert!(
+                handle.is_focused(window),
+                "the box should hold focus while the form is up"
+            );
+            app.sftp_cancel_edit(window, cx);
+            assert!(app.sftp_panel.editing.is_none(), "the form is down");
+            assert!(
+                !handle.is_focused(window),
+                "the focus the box held must have gone somewhere still on screen"
+            );
         });
-        vcx.run_until_parked();
-
-        // Sanity: the box holds focus while the form is up.
-        assert!(
-            app.update_in(&mut vcx, |_, window, _| box_focus.is_focused(window)),
-            "the box should hold focus while the form is up"
-        );
-
-        app.update_in(&mut vcx, |app, window, cx| app.sftp_cancel_edit(window, cx));
-        vcx.run_until_parked();
-
-        assert!(
-            app.update_in(&mut vcx, |app, _, _| app.sftp_panel.editing.is_none()),
-            "the form is down"
-        );
-        assert!(
-            !app.update_in(&mut vcx, |_, window, _| box_focus.is_focused(window)),
-            "the focus the box held must have gone somewhere still on screen"
-        );
     }
 
     #[gpui::test]

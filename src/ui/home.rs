@@ -117,6 +117,7 @@ pub(crate) fn relative_time(now: u64, then: u64) -> String {
 /// about those (#580). `None` shows the path in full.
 pub(crate) fn display_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     let text = path.to_string_lossy();
+    let text = crate::ui::path_display::readable_path(&text);
     // Same home-abbreviation the Info panel and tab strip use: separators
     // normalized, case folded (#544).
     let shortened = crate::ui::path_display::abbreviate_home(&text, home).into_owned();
@@ -218,8 +219,12 @@ impl Tty7App {
             ),
         );
 
-        let closed_hint = self.closed.last().and_then(closed_tab_label);
-        let nothing_to_reopen = self.closed.is_empty();
+        // In the order ⌘⇧T takes them: the machine's list first, where it
+        // keeps one, then whatever this window kept itself.
+        let next_closed = crate::ui::tree_sync::newest_remembered_close(cx, self.workspace)
+            .or_else(|| self.closed.last().cloned());
+        let closed_hint = next_closed.as_ref().and_then(closed_tab_label);
+        let nothing_to_reopen = next_closed.is_none();
         // Rows on the sidebar's shape: no fill at rest, the window's hover
         // rung under the pointer, the chord in a faint cap at the far end.
         let hover = gpui::rgb(cx.global::<crate::ui::presets::Surfaces>().window.hover);

@@ -43,6 +43,39 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsDefinedIn => "定义于",
         L10nKey::SettingsConnectInNewTab => "在新标签页中连接",
         L10nKey::SettingsCopied => "已复制",
+        L10nKey::SettingsNavMobile => "手机",
+        L10nKey::SettingsMobileAccess => "允许手机访问",
+        L10nKey::SettingsMobileAccessDesc => {
+            "配对过的手机可以查看并操作这台电脑上的窗格，关掉所有窗口也可以。连接端到端加密。"
+        }
+        L10nKey::SettingsMobileStatusStarting => "正在启动…",
+        L10nKey::SettingsMobileStatusFailed => "未运行：{error}",
+        L10nKey::SettingsMobileStartFailed => "手机访问没能启动：{error}",
+        L10nKey::SettingsMobileNoAnswer => {
+            "tty7 server 没有启动它。请在 设置 → 关于 中重启 server 后再试。"
+        }
+        L10nKey::SettingsMobilePair => "配对手机",
+        L10nKey::SettingsMobileShowCode => "显示配对码",
+        L10nKey::SettingsMobilePairDesc => "生成一个一次性配对码，给手机上的 tty7 app 用。",
+        L10nKey::SettingsMobilePairNeedsAccess => "请先打开手机访问。",
+        L10nKey::SettingsMobilePairScan => {
+            "用手机相机对准它，或在 tty7 app 里扫描，或者复制配对码粘贴过去。"
+        }
+        L10nKey::SettingsMobilePairValid => "{time} 后失效，只能配对一台手机。",
+        L10nKey::SettingsMobileNewCode => "换一个配对码",
+        L10nKey::SettingsMobilePairExpired => "这个配对码已过期。生成一个新的再配对。",
+        L10nKey::SettingsMobilePairTried => {
+            "这个配对码已被尝试过，不能再用了 —— 可能是输错了，或者连接中途断了。生成一个新的再配对。"
+        }
+        L10nKey::SettingsMobilePairReplaced => "已有更新的配对码替换了它。生成一个新的再配对。",
+        L10nKey::SettingsMobileCopyCode => "复制配对码",
+        L10nKey::SettingsMobilePaired => "已与 {name} 配对。",
+        L10nKey::SettingsMobilePhones => "已配对的手机",
+        L10nKey::SettingsMobileNoPhones => "还没有配对过手机。",
+        L10nKey::SettingsMobileUnpair => "取消配对",
+        L10nKey::SettingsSearchMobileKeywords => {
+            "手机 移动 iphone android ipad 配对 二维码 远程 访问"
+        }
         L10nKey::SettingsCopySshCommand => "复制 ssh 命令",
         L10nKey::SettingsStoredInTty7 => "保存在 tty7 设置中",
         L10nKey::SettingsClickAgainToRemove => "再次点击以删除",
@@ -199,6 +232,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::CloseTabBusyTitle => "关闭这个标签页？",
         L10nKey::CloseBusyCommandBody => "{what} 还在运行，关闭会终止它。",
         L10nKey::CloseBusyAgentBody => "{agent} 还在工作，关闭会中断这一轮。",
+        L10nKey::CloseIdleBody => "里面的 shell 也会随之结束。",
+        L10nKey::CloseTabsTitle => "关闭 {count} 个标签页？",
+        L10nKey::CloseTabsBody => "里面的 shell 也会一并结束。",
         L10nKey::Keep => "保留",
         L10nKey::SettingsNavAppearance => "外观",
         L10nKey::SettingsNavTerminal => "终端",
@@ -206,17 +242,29 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsNavSsh => "SSH",
         L10nKey::SettingsNavAgents => "集成",
         L10nKey::SettingsNavPairDevices => "配对设备",
-        L10nKey::SettingsMobileKeywords => "手机 安卓 Android 配对 设备 远程 中继 TLS 证书 指纹 二维码 QR 批准 撤销",
+        L10nKey::SettingsMobileKeywords => {
+            "手机 安卓 Android 配对 设备 远程 中继 TLS 证书 指纹 二维码 QR 批准 撤销"
+        }
         L10nKey::SettingsMobileEnabled => "手机远程访问",
-        L10nKey::SettingsMobileEnabledDesc => "允许已批准的手机通过中继访问本机终端会话。关闭桌面窗口后，Shell 和连接仍会运行。",
+        L10nKey::SettingsMobileEnabledDesc => {
+            "允许已批准的手机通过中继访问本机终端会话。关闭桌面窗口后，Shell 和连接仍会运行。"
+        }
         L10nKey::SettingsMobileRelayUrl => "中继 URL",
-        L10nKey::SettingsMobileRelayUrlDesc => "使用 TLS WebSocket 中继（wss://）。仅开发时的本机回环地址允许使用未加密的 ws://。",
+        L10nKey::SettingsMobileRelayUrlDesc => {
+            "使用 TLS WebSocket 中继（wss://）。仅开发时的本机回环地址允许使用未加密的 ws://。"
+        }
         L10nKey::SettingsMobileTlsPin => "TLS 证书 SHA-256 指纹",
-        L10nKey::SettingsMobileTlsPinDesc => "私有自签名中继需要填写叶证书指纹：64 位十六进制字符。不要接受未经验证的证书。",
-        L10nKey::SettingsMobilePairDesc => "启用访问后，在 tty7 安卓应用中扫描二维码。确认两台设备的验证码一致后再批准。",
+        L10nKey::SettingsMobileTlsPinDesc => {
+            "私有自签名中继需要填写叶证书指纹：64 位十六进制字符。不要接受未经验证的证书。"
+        }
+        L10nKey::SettingsPairDevicesDesc => {
+            "启用访问后，在 tty7 安卓应用中扫描二维码。确认两台设备的验证码一致后再批准。"
+        }
         L10nKey::SettingsMobileGenerateQr => "生成二维码",
         L10nKey::SettingsMobileRegenerateQr => "重新生成二维码",
-        L10nKey::SettingsMobileScanQr => "使用 tty7 安卓应用扫描。此二维码仅允许发起配对，不会直接授予会话访问权限。",
+        L10nKey::SettingsMobileScanQr => {
+            "使用 tty7 安卓应用扫描。此二维码仅允许发起配对，不会直接授予会话访问权限。"
+        }
         L10nKey::SettingsMobileExpires => "{seconds} 秒后过期",
         L10nKey::SettingsMobileExpired => "二维码已过期，请重新生成后配对。",
         L10nKey::SettingsMobilePending => "等待批准",
@@ -235,6 +283,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsNavKeybindings => "快捷键",
         L10nKey::SettingsNavAbout => "关于",
         L10nKey::SettingsHeader => "设置",
+        L10nKey::SettingsWindowTitle => "设置",
         L10nKey::Reset => "重置",
         L10nKey::Save => "保存",
         L10nKey::Connect => "连接",
@@ -244,7 +293,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsThemeIntroDesc => "每个主题自带浅色或深色外观。",
         L10nKey::SettingsTypography => "字体排版",
         L10nKey::SettingsFontSize => "终端字号",
-        L10nKey::SettingsFontSizeDesc => "终端文字大小（像素）。",
+        L10nKey::SettingsFontSizeDesc => "终端文字大小（磅）。",
         L10nKey::SettingsUiFontSize => "界面字号",
         L10nKey::SettingsUiFontSizeDesc => "标签页、面板、设置等非终端文字的大小。",
         L10nKey::SettingsUiFontFamily => "界面字体",
@@ -273,6 +322,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsLanguageEnglish => "English",
         L10nKey::SettingsLanguageChinese => "简体中文",
         L10nKey::SettingsLanguageJapanese => "日本語",
+        L10nKey::SettingsLanguageRussian => "Русский",
         L10nKey::SettingsSearchLanguageKeywords => {
             "语言 区域设置 英文 中文 language locale english chinese"
         }
@@ -302,6 +352,10 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::FollowTheme => "跟随主题",
         L10nKey::SettingsDimInactivePanes => "调暗非活动窗格",
         L10nKey::SettingsDimInactivePanesDesc => "在分屏中淡化未聚焦的窗格，让活动窗格更突出。",
+        L10nKey::SettingsAutoHideTitlebarButtons => "悬停时显示标题栏按钮",
+        L10nKey::SettingsAutoHideTitlebarButtonsDesc => {
+            "新标签页、侧栏开关等按钮平时隐藏，鼠标移到标题栏上才出现。"
+        }
         L10nKey::SettingsOpenThemesFolder => "打开主题文件夹",
         L10nKey::SettingsChangeThemeImage => "更改…",
         L10nKey::SettingsChooseThemeImage => "选择…",
@@ -329,7 +383,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsInheritedByEveryHost => "对所有主机生效",
         L10nKey::SettingsNoSavedHosts => "还没有保存的主机。",
         L10nKey::SettingsNothingMatches => "没有匹配 {query} 的内容。",
-        L10nKey::SettingsInTty7 => "在 tty7 中",
+        L10nKey::SettingsInTty7 => "tty7 设置",
         L10nKey::SettingsImportFromSshConfig => "从 ~/.ssh/config 导入",
         L10nKey::SettingsExpandAllGroups => "展开所有分组",
         L10nKey::SettingsNoHostsYet => "还没有主机",
@@ -628,6 +682,13 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsTabs => "标签页",
         L10nKey::SettingsNewTabPosition => "新标签页位置",
         L10nKey::SettingsNewTabPositionDesc => "新打开的标签页插入的位置。",
+        L10nKey::SettingsConfirmClose => "关闭前确认",
+        L10nKey::SettingsConfirmCloseDesc => {
+            "关闭标签页或窗格前是否先问一下。设了“关闭前警告”的 SSH 主机无论如何都会询问。"
+        }
+        L10nKey::ConfirmCloseNever => "从不",
+        L10nKey::ConfirmCloseWhenBusy => "有程序在运行时",
+        L10nKey::ConfirmCloseAlways => "总是",
         L10nKey::SettingsTabBarPosition => "标签栏位置",
         L10nKey::SettingsTabBarPositionDesc => "将标签页显示为顶部横向条或左侧垂直侧栏。",
         L10nKey::SettingsSidebarGrouping => "自动分组",
@@ -645,6 +706,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::NotifyModeNever => "从不",
         L10nKey::NotifyModeUnfocused => "窗口未聚焦时",
         L10nKey::NotifyModeAlways => "总是",
+        L10nKey::ProgramNotesDropped => "此窗格的其他通知未显示",
         L10nKey::SettingsStartupNormal => "普通",
         L10nKey::SettingsStartupMaximized => "最大化",
         L10nKey::SettingsStartupFullscreen => "全屏",
@@ -782,6 +844,11 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsAgentCursorCli => "Cursor CLI",
         L10nKey::SettingsAgentPrimeAgent => "Prime Agent",
         L10nKey::SettingsAgentAntigravity => "Antigravity",
+        L10nKey::SettingsAgentEmpryo => "Empryo",
+        L10nKey::SettingsAgentJcode => "jcode",
+        L10nKey::SettingsAgentMuse => "Muse Code",
+        L10nKey::SettingsMuseManualInstall => "需要手动安装",
+        L10nKey::AppAgentHooksMuseManualInstall => "请在目标机器上运行: {command}",
         L10nKey::SettingsAgentQoderCn => "Qoder CN CLI",
         L10nKey::SettingsSearchAboutKeywords => {
             "关于 版本 许可证 致谢 构建 更新 检查 github about version license credits update"
@@ -841,6 +908,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsSearchDimInactivePanesKeywords => {
             "调暗 非活动窗格 淡化 未聚焦 分屏 高亮 active dimming pane focus"
         }
+        L10nKey::SettingsSearchAutoHideTitlebarButtonsKeywords => {
+            "自动隐藏 标题栏 按钮 悬停 鼠标 简洁 新标签页 侧栏 auto hide title bar buttons hover"
+        }
         L10nKey::SettingsSearchFocusFollowsMouseKeywords => {
             "焦点跟随鼠标 悬停 激活 窗格 focus follows mouse hover activate pane"
         }
@@ -884,6 +954,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::SettingsSearchNewTabPositionKeywords => {
             "新标签页位置 标签页 顺序 末尾 当前之后 new tab position tabs order end after current"
+        }
+        L10nKey::SettingsSearchConfirmCloseKeywords => {
+            "关闭前确认 关闭 标签页 窗格 询问 提示 运行中 空闲 总是 从不 confirm close tab pane ask prompt busy idle always never"
         }
         L10nKey::SettingsSearchNotifyOnCommandFinishKeywords => {
             "命令完成时通知 通知 提醒 命令 notify command finish notification alert desktop"
@@ -932,6 +1005,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsSearchPrimeAgentKeywords => {
             "Prime Agent agent 集成 扩展 安装 prime prime-agent primeintellect"
         }
+        L10nKey::SettingsSearchEmpryoKeywords => "Empryo agent 集成 钩子 安装 empryo",
+        L10nKey::SettingsSearchJcodeKeywords => "jcode agent 集成 钩子 安装 jcode",
+        L10nKey::SettingsSearchMuseKeywords => "Muse Code agent 集成 钩子 插件 安装 muse meta",
         L10nKey::SettingsSearchAntigravityKeywords => {
             "Antigravity agent 集成 钩子 安装 antigravity agy google"
         }
@@ -1261,6 +1337,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::PanelNoChangesHint => "worktree 是干净的。",
         L10nKey::PanelSessionSubtitle => "会话",
         L10nKey::PanelProcessesSubtitle => "进程",
+        L10nKey::PanelProcessesTotal => "合计",
         L10nKey::PanelPortsSubtitle => "端口",
         L10nKey::PanelLatency => "延迟",
         L10nKey::PanelPortsUnsupported => "对端的 tty7-server 太旧，列不出端口。",
@@ -1448,6 +1525,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::RemoteNoticeDisconnected => "未连接——输入无效",
         L10nKey::RemoteActionRetryNow => "立即重试",
         L10nKey::RemoteActionTakeBack => "收回",
+        L10nKey::PaneLeasedBy => "正在 {by} 上使用，按它的屏幕尺寸显示",
         L10nKey::RemoteActionConnect => "连接",
         L10nKey::RemoteActionRetry => "重试",
         L10nKey::RemoteActionRemoveEntry => "移除条目",
@@ -1533,6 +1611,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SwitcherCopyingServer => "正在复制 tty7 server… {done} / {total}",
         L10nKey::SwitcherThisWindow => "当前窗口",
         L10nKey::SwitcherOpen => "已打开",
+        L10nKey::SwitcherOffline => "离线",
         L10nKey::SwitcherDisconnect => "断开连接",
         L10nKey::SwitcherEditHost => "编辑主机…",
         L10nKey::SwitcherSaveAsHost => "保存为 SSH 主机…",
@@ -1561,9 +1640,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SwitcherConnectingTo => "正在连接 {machine}…",
         L10nKey::SwitcherFormName => "名字",
         L10nKey::SwitcherFormHost => "主机",
-        L10nKey::SwitcherFormNamePlaceholder => "可选",
+        L10nKey::SwitcherFormNamePlaceholder => "工作区名称",
         L10nKey::SwitcherFormBack => "返回",
-        L10nKey::SwitcherFormCreateHint => "Enter 创建 · Esc 返回",
+        L10nKey::SwitcherFormCreate => "创建",
         L10nKey::SwitcherFormPickHint => "↑↓ 选择 · Enter 确定 · Esc 收起",
         L10nKey::SshPromptPasswordFor => "{user}@{host} 的密码",
         L10nKey::SshPromptPassphraseFor => "{key_path} 的口令",
@@ -1690,6 +1769,27 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdGitFetch => "Git：获取",
         L10nKey::CmdGitToggleGraph => "Git：显示 / 隐藏提交历史",
         L10nKey::CmdFindInTerminal => "在终端中查找…",
+        L10nKey::CmdToggleComposer => "切换消息输入框",
+        L10nKey::ComposerModeDefault => "编辑前询问",
+        L10nKey::ComposerModeAcceptEdits => "自动接受编辑",
+        L10nKey::ComposerModePlan => "计划模式",
+        L10nKey::ComposerModeBypass => "跳过权限确认",
+        L10nKey::ComposerModeAuto => "自动模式",
+        L10nKey::ComposerModeTip => "权限模式  ·  Shift+Tab 切换",
+        L10nKey::ComposerModel => "模型",
+        L10nKey::ComposerModelTip => "切换模型",
+        L10nKey::ComposerModelDefault => "默认（推荐）",
+        L10nKey::ComposerEffort => "推理强度",
+        L10nKey::ComposerEffortTip => "推理强度  ·  点击切换",
+        L10nKey::ComposerPlaceholder => "给 {agent} 发消息   ·   @ 文件   / 命令",
+        L10nKey::ComposerPlaceholderFiles => "给 {agent} 发消息   ·   @ 文件",
+        L10nKey::ComposerSendTip => "发送（Enter）  ·  Shift+Enter 换行",
+        L10nKey::ComposerAttach => "附加文件或图片",
+        L10nKey::ComposerMenuCommands => "命令",
+        L10nKey::ComposerMenuFiles => "文件",
+        L10nKey::ComposerCmdProject => "项目命令",
+        L10nKey::ComposerCmdUser => "用户命令",
+        L10nKey::ComposerAgentAsking => "{agent} 正在等你回答，请先在终端里回答再发送。",
         L10nKey::CmdFindNext => "查找下一个",
         L10nKey::CmdFindPrevious => "查找上一个",
         L10nKey::CmdCopy => "复制",
@@ -1757,7 +1857,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
             "config.json 读取失败。tty7 保留了当前在用的设置，文件也原样保留。修好权限或内容后会自动重载；在此之前保存设置会覆盖它。"
         }
         L10nKey::AppWorktreeRemoveDetailDirty => {
-            "位于 {path} 的已关闭标签页的 worktree 有未提交的变更。"
+            "位于 {path} 的已关闭标签页的 worktree 有未提交的变更。删除前会先存到 refs/tty7/trash/{name}。"
         }
         L10nKey::AppWorktreeRemoveDetailClean => "位于 {path} 的已关闭标签页的 worktree 是干净的。",
         L10nKey::AppWorktreeRemoveTitle => "删除 worktree“{branch}”？",
@@ -1778,10 +1878,26 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::PaneDragHandleTooltip => "拖动可把这个窗格挪到别处",
         L10nKey::AppWorktreeRemoved => "已删除 worktree“{branch}”",
         L10nKey::AppWorktreeRemoveFailed => "删除 worktree 失败：{error}",
-        L10nKey::AppForkStillConnecting => "无法 fork：窗格仍在连接中",
+        L10nKey::WorktreePromptAgent => "启动",
+        L10nKey::WorktreePromptShell => "终端",
+        L10nKey::WorktreePromptTask => "任务",
+        L10nKey::WorktreePromptSetup => "先运行 .tty7/setup",
+        L10nKey::WorktreePromptSetupHint => {
+            "没有 .tty7/setup。加一个，新 worktree 就会先运行 `{command}`"
+        }
+        L10nKey::AppWorktreeSetupTitle => "运行这个仓库的 setup 脚本？",
+        L10nKey::AppWorktreeSetupDetail => {
+            "{path} 会在新标签页里最先运行。只在信任这个仓库时批准；脚本内容一变，tty7 会再问一次。"
+        }
+        L10nKey::AppWorktreeSetupRun => "运行",
+        L10nKey::AppWorktreeSetupSkip => "跳过",
+        L10nKey::AppWorktreeNotCarried => "未按 .worktreeinclude 复制：{paths}",
+        L10nKey::AppWorktreeRemovedBranchKept => {
+            "已删除 worktree；分支“{branch}”有未合并的提交，已保留"
+        }
         L10nKey::AppPaneNoCodingAgent => "此窗格未运行编码 agent",
         L10nKey::AppForkNoCommand => "tty7 没有用于 {name} 的 fork 命令",
-        L10nKey::AppForkLocalOnly => "{name} 会话只能从本地窗格 fork",
+        L10nKey::AppForkLocalOnly => "无法在 SSH 或 WSL 会话里 fork {name} 会话",
         L10nKey::AppForkNoSessionId => {
             "tty7 尚未在此窗格中看到 {name} 的会话 ID，请在“设置 → 集成”中安装其 hook"
         }
@@ -2017,6 +2133,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::SidebarUngroupedGroup => "未分组",
         L10nKey::SidebarMoveToGroup => "移到分组",
         L10nKey::SidebarNewGroup => "新建分组…",
+        L10nKey::SidebarRemoveFromGroup => "移出分组",
         L10nKey::SidebarNewGroupName => "新建分组",
         L10nKey::SidebarRenameGroup => "重命名分组",
         L10nKey::SidebarPinGroup => "固定分组",
@@ -2107,6 +2224,14 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::GitHubShowFullText => "展开全文",
         L10nKey::GitHubShowHiddenComments => "显示另外 {count} 条评论",
         L10nKey::GitHubShowAllReviewers => "显示全部 {count} 位审查人",
+        L10nKey::CmdCopyRaw => "原样复制",
+        L10nKey::SettingsSearchCopyJoinWrappedKeywords => {
+            "剪贴板 复制 折行 合并 clipboard copy wrap unwrap join lines claude raw"
+        }
+        L10nKey::SettingsCopyJoinWrapped => "复制时合并折行",
+        L10nKey::SettingsCopyJoinWrappedDesc => {
+            "在 Claude Code 窗格中，将 Claude 在窗格边缘折行的内容重新合并，段落粘贴为一行。⌘⌥C 或“原样复制”按显示内容复制"
+        }
     })
 }
 
@@ -2177,6 +2302,8 @@ pub fn translate_variant_zh(key: L10nKey, branch: &'static str) -> Option<&'stat
         }
         (L10nKey::SftpReplaceBody, "one") => "{names} 在这个文件夹里已经存在，上传会覆盖它。",
         (L10nKey::SftpReplaceBody, "other") => "{names} 在这个文件夹里已经存在，上传会覆盖它们。",
+        (L10nKey::CloseTabsTitle, "one") => "关闭 1 个标签页？",
+        (L10nKey::CloseTabsTitle, "other") => "关闭 {count} 个标签页？",
         (L10nKey::AppTabsNotRestored, "one") => "上次的 1 个标签页没能重新打开",
         (L10nKey::AppTabsNotRestored, "other") => "上次的 {count} 个标签页没能重新打开",
         (L10nKey::LaunchWorkspacesLeftRunning, "one") => {

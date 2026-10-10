@@ -1,29 +1,61 @@
-use std::{fs::File, io::{self, BufReader}, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs::File,
+    io::{self, BufReader},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{Extension, Router};
 use hyper::server::conn::http1;
-use hyper_util::{rt::{TokioIo, TokioTimer}, service::TowerToHyperService};
-use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpListener, sync::Semaphore, task::JoinSet, time::timeout};
-use tokio_rustls::{TlsAcceptor, rustls::{self, ServerConfig}};
+use hyper_util::{
+    rt::{TokioIo, TokioTimer},
+    service::TowerToHyperService,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpListener,
+    sync::Semaphore,
+    task::JoinSet,
+    time::timeout,
+};
+use tokio_rustls::{
+    TlsAcceptor,
+    rustls::{self, ServerConfig},
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::{config::MAX_CONNECTIONS, registry::Registry, service::{self, ConnectionLease, HANDSHAKE_TIMEOUT}};
+use crate::{
+    config::MAX_CONNECTIONS,
+    registry::Registry,
+    service::{self, ConnectionLease, HANDSHAKE_TIMEOUT},
+};
 
 pub(crate) fn tls_acceptor(cert: &Path, key: &Path) -> io::Result<TlsAcceptor> {
     let mut cert_reader = BufReader::new(File::open(cert)?);
     let certificates = rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
     if certificates.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "TLS certificate file contains no certificates"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS certificate file contains no certificates",
+        ));
     }
     let mut key_reader = BufReader::new(File::open(key)?);
-    let key = rustls_pemfile::private_key(&mut key_reader)?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "TLS key file contains no supported private key"))?;
+    let key = rustls_pemfile::private_key(&mut key_reader)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS key file contains no supported private key",
+        )
+    })?;
     // Explicit provider avoids a workspace dependency enabling a different
     // rustls provider and making default-provider selection ambiguous.
-    let mut config = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions().map_err(io::Error::other)?
-        .with_no_client_auth()
-        .with_single_cert(certificates, key).map_err(io::Error::other)?;
+    let mut config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(io::Error::other)?
+            .with_no_client_auth()
+            .with_single_cert(certificates, key)
+            .map_err(io::Error::other)?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
@@ -33,21 +65,26 @@ where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut builder = http1::Builder::new();
-    builder.keep_alive(true)
+    builder
+        .keep_alive(true)
         .max_headers(64)
         .max_buf_size(16 * 1024)
         .timer(TokioTimer::new())
         .header_read_timeout(HANDSHAKE_TIMEOUT);
-    let connection = builder.serve_connection(
-        TokioIo::new(stream), TowerToHyperService::new(application),
-    ).with_upgrades();
+    let connection = builder
+        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(application))
+        .with_upgrades();
     tokio::select! {
         _ = shutdown.cancelled() => {},
         _ = timeout(HANDSHAKE_TIMEOUT, connection) => {},
     }
 }
 
-pub(crate) async fn serve(listener: TcpListener, tls: Option<TlsAcceptor>, registry: Arc<Registry>) -> io::Result<()> {
+pub(crate) async fn serve(
+    listener: TcpListener,
+    tls: Option<TlsAcceptor>,
+    registry: Arc<Registry>,
+) -> io::Result<()> {
     let application = service::router(Arc::clone(&registry));
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
@@ -89,7 +126,8 @@ pub(crate) async fn serve(listener: TcpListener, tls: Option<TlsAcceptor>, regis
     let _ = timeout(Duration::from_secs(10), async {
         while tasks.join_next().await.is_some() {}
         let _all_connections = connections.acquire_many(MAX_CONNECTIONS as u32).await;
-    }).await;
+    })
+    .await;
     tasks.abort_all();
     Ok(())
 }

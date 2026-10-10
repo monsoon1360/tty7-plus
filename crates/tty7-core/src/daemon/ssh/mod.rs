@@ -66,7 +66,52 @@ impl ConnectionKey {
     }
 }
 
-type ConnSlot = Arc<tokio::sync::Mutex<Weak<SshConnection>>>;
+/// Every connection held open to one destination, oldest first.
+///
+/// Usually one. A second appears when the first is at the server's session
+/// limit: sshd allows ten sessions per connection by default and each remote
+/// pane is one of them, so a workspace with more panes than that spans several
+/// connections. Weak, like the single connection this used to be — a link
+/// lives as long as something is using it, not as long as the cache.
+#[derive(Default)]
+struct ConnPool {
+    conns: Vec<Weak<SshConnection>>,
+}
+
+impl ConnPool {
+    fn live(&self) -> impl Iterator<Item = Arc<SshConnection>> + '_ {
+        self.conns
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|conn| conn.is_alive())
+    }
+
+    /// A connection that can take another session, as far as anyone knows.
+    fn usable(&self) -> Option<Arc<SshConnection>> {
+        self.live().find(|conn| !conn.is_saturated())
+    }
+
+    fn any_live(&self) -> bool {
+        self.live().next().is_some()
+    }
+
+    fn add(&mut self, conn: &Arc<SshConnection>) {
+        self.prune();
+        self.conns.push(Arc::downgrade(conn));
+    }
+
+    fn prune(&mut self) {
+        self.conns
+            .retain(|weak| weak.upgrade().is_some_and(|conn| conn.is_alive()));
+    }
+}
+
+type ConnSlot = Arc<tokio::sync::Mutex<ConnPool>>;
+
+/// How many times one open goes back to the cache after a connection turned
+/// out to be full. Each refusal takes that connection out of rotation for a
+/// while, so this only bounds a pathological server, not ordinary use.
+const MAX_SATURATED_RETRIES: usize = 8;
 
 pub struct SshManager {
     runtime: tokio::runtime::Runtime,
@@ -155,10 +200,17 @@ impl SshManager {
         ))
     }
 
+    /// Dial `spec` and bridge its shell channel into the pane's pipes.
+    ///
+    /// `remote_start_dir` is a directory on the far host for the shell to
+    /// start in — see [`remote::bootstrap_command`] for how it gets there and
+    /// why a session without shell integration ignores it.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_native_session(
         &'static self,
         pane_id: u64,
         spec: Box<NativeSshSpec>,
+        remote_start_dir: Option<String>,
         size: WinSize,
         broker: Arc<PromptBroker>,
         data_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -170,6 +222,7 @@ impl SshManager {
                 .run_session(
                     pane_id,
                     &spec,
+                    remote_start_dir.as_deref(),
                     size,
                     &broker,
                     data_tx.clone(),
@@ -229,10 +282,12 @@ impl SshManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_session(
         &'static self,
         pane_id: u64,
         spec: &NativeSshSpec,
+        remote_start_dir: Option<&str>,
         size: WinSize,
         broker: &Arc<PromptBroker>,
         data_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -250,8 +305,24 @@ impl SshManager {
 
         broker.status(SshPhase::Connected);
 
-        let channel = match conn.open_session_channel().await {
+        let mut channel = conn.open_session_channel().await;
+        let mut retries = 0;
+        while channel.is_err() && conn.is_saturated() && reused && retries < MAX_SATURATED_RETRIES {
+            retries += 1;
+            (conn, _) = self
+                .open_connection(spec, broker)
+                .await
+                .map_err(|e| format!("{e}"))?;
+            *conn_slot.lock().unwrap() = Arc::downgrade(&conn);
+            channel = conn.open_session_channel().await;
+        }
+        let channel = match channel {
             Ok(channel) => channel,
+            Err(e) if conn.is_saturated() => {
+                return Err(format!(
+                    "open shell channel failed: the server refused another session ({e})"
+                ));
+            }
             Err(e) if reused => {
                 log::info!(
                     "reused ssh connection to {}:{} was dead ({e}); reconnecting",
@@ -304,8 +375,12 @@ impl SshManager {
             let _ = channel.agent_forward(false).await;
         }
 
+        // Only a bootstrap can carry the start directory. A bare shell request
+        // has nowhere to put it short of typing a `cd` at the prompt, which
+        // would show on screen, land in history, and go to whatever answers
+        // first — a jump host's menu as readily as a shell.
         let bootstrap = match spec.shell_integration {
-            true => self.remote_bootstrap(&conn).await,
+            true => self.remote_bootstrap(&conn, remote_start_dir).await,
             false => None,
         };
         match bootstrap {
@@ -335,8 +410,37 @@ impl SshManager {
         setup: &RouteSetup,
         server_command: Option<&str>,
     ) -> anyhow::Result<(RemoteLink, Arc<SshConnection>)> {
-        let (conn, _reused) = self.open_connection(spec, &setup.broker).await?;
+        let mut retries = 0;
+        loop {
+            let (conn, reused) = self.open_connection(spec, &setup.broker).await?;
+            match self.open_remote_link_on(&conn, setup, server_command).await {
+                // Full, not broken: the cache passes this one over now, so
+                // asking again lands on a connection with room, or a new one.
+                // A connection dialled just for this that refuses its very
+                // first sessions will refuse the next one too.
+                Err(e) if conn.is_saturated() && reused && retries < MAX_SATURATED_RETRIES => {
+                    retries += 1;
+                    log::info!(
+                        "ssh {:?}: this connection is at the server's session limit ({e}); \
+                         trying another",
+                        conn.key()
+                    );
+                }
+                result => return result.map(|link| (link, conn)),
+            }
+        }
+    }
 
+    async fn open_remote_link_on(
+        &self,
+        conn: &Arc<SshConnection>,
+        setup: &RouteSetup,
+        server_command: Option<&str>,
+    ) -> anyhow::Result<RemoteLink> {
+        // Whether the server below comes from this connection's note rather
+        // than from asking: the note outlives the server it names when that
+        // server dies with the link still up.
+        let from_note = conn.remembered_server().is_some();
         let installed = {
             let install_conn = conn.clone();
             setup
@@ -346,10 +450,7 @@ impl SshManager {
 
         let base = match server_command {
             Some(explicit) => explicit.to_string(),
-            None => format!(
-                "{} --stdio",
-                crate::daemon::install::shell_quote(&installed)
-            ),
+            None => crate::daemon::install::server_stdio_command(&installed),
         };
         let command = setup.channel.bridge_command(&base);
 
@@ -357,19 +458,51 @@ impl SshManager {
             RouteChannel::Pane => RemoteEntry::SessionExec {
                 command: command.clone(),
             },
-            RouteChannel::Control => {
-                conn.remote_entry_or_init(|| async {
-                    let env = probe_remote_env(&conn).await;
-                    let socket = env.as_ref().and_then(remote_link::remote_control_socket);
-                    remote_link::choose_entry(socket.as_deref(), true, &command)
-                })
-                .await
-            }
+            RouteChannel::Control => match remote_link::fixed_entry(&installed, &command) {
+                Some(entry) => entry,
+                None => {
+                    conn.remote_entry_or_init(|| async {
+                        let env = probe_remote_env(conn).await;
+                        let socket = env.as_ref().and_then(remote_link::remote_control_socket);
+                        remote_link::choose_entry(socket.as_deref(), true, &command)
+                    })
+                    .await
+                }
+            },
         };
 
         if let RemoteEntry::StreamLocal { socket } = &entry {
-            match conn.open_direct_streamlocal(socket).await {
-                Ok(channel) => return Ok((RemoteLink::stream_local(channel), conn)),
+            let mut opened = conn.open_direct_streamlocal(socket).await;
+            if from_note && matches!(opened, Err(russh::Error::ChannelOpenFailure(_))) {
+                // Nothing is listening where the note said a server was: it
+                // exited, or the host rebooted, while this connection stayed
+                // up. Asking again starts it; falling straight back to a
+                // per-link `--stdio` server would leave the machine without
+                // the daemon that keeps its panes alive.
+                log::info!(
+                    "ssh {:?}: nothing answers on {socket}; proving the server again",
+                    conn.key()
+                );
+                let install_conn = conn.clone();
+                let reproved = setup
+                    .blocking(move || {
+                        crate::daemon::install::forget_remote_server(&install_conn);
+                        crate::daemon::install::ensure_remote_server(&install_conn)
+                    })
+                    .await
+                    .and_then(|proved| proved);
+                // A re-prove that fails still leaves the `--stdio` fallback
+                // below, which is where this link went before it asked at all.
+                match reproved {
+                    Ok(_) => opened = conn.open_direct_streamlocal(socket).await,
+                    Err(e) => log::warn!(
+                        "ssh {:?}: proving the server again failed ({e})",
+                        conn.key()
+                    ),
+                }
+            }
+            match opened {
+                Ok(channel) => return Ok(RemoteLink::stream_local(channel)),
                 Err(e) => {
                     log::info!(
                         "ssh {:?}: direct-streamlocal to {socket} refused ({e}); \
@@ -390,7 +523,7 @@ impl SshManager {
             .exec(false, command.as_bytes())
             .await
             .map_err(|e| anyhow::anyhow!("exec `{command}` on the remote failed: {e}"))?;
-        Ok((RemoteLink::session_exec(channel), conn))
+        Ok(RemoteLink::session_exec(channel))
     }
 
     pub async fn restart_remote_server(
@@ -467,7 +600,7 @@ impl SshManager {
         if let Some(slot) = slot
             && let Ok(mut held) = slot.try_lock()
         {
-            *held = Weak::new();
+            held.prune();
         }
     }
 
@@ -477,7 +610,7 @@ impl SshManager {
             .iter()
             .map(|(key, slot)| {
                 let connected = match slot.try_lock() {
-                    Ok(weak) => weak.upgrade().is_some_and(|conn| conn.is_alive()),
+                    Ok(pool) => pool.any_live(),
                     // The slot is held by whoever is opening or using this link
                     // right now. Busy is not down — and callers act on this:
                     // the CLI's `-m <machine>` refuses to route over a link it
@@ -497,7 +630,14 @@ impl SshManager {
         routes
     }
 
-    async fn remote_bootstrap(&self, conn: &Arc<SshConnection>) -> Option<String> {
+    /// The bootstrap for a new session on `conn`, starting in `start_dir` on
+    /// the far host. What is cached per connection is the probed shell only:
+    /// the start directory belongs to the pane being dialled, not the host.
+    async fn remote_bootstrap(
+        &self,
+        conn: &Arc<SshConnection>,
+        start_dir: Option<&str>,
+    ) -> Option<String> {
         let key = conn.key().clone();
         let cached = { self.probes.lock().unwrap().get(&key).cloned() };
         let probed = match cached {
@@ -513,13 +653,13 @@ impl SshManager {
                 // A probe the link would not carry says nothing about the
                 // shell. Remembered, its nothing would keep integration off
                 // this host for the rest of the run, fresh links included.
-                if probed.is_some() || conn.is_alive() {
+                if probed.is_some() || (conn.is_alive() && !conn.is_saturated()) {
                     self.probes.lock().unwrap().insert(key, probed.clone());
                 }
                 probed
             }
         };
-        probed.map(|(shell, path)| remote::bootstrap_command(shell, &path))
+        probed.map(|(shell, path)| remote::bootstrap_command(shell, &path, start_dir))
     }
 
     fn open_connection<'a>(
@@ -554,15 +694,17 @@ impl SshManager {
                 true => {
                     let slot: ConnSlot = {
                         let mut map = self.conns.lock().unwrap();
-                        map.entry(key.clone())
-                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(Weak::new())))
-                            .clone()
+                        map.entry(key.clone()).or_default().clone()
                     };
                     let guard = slot.lock_owned().await;
-                    if let Some(conn) = guard.upgrade()
-                        && conn.is_alive()
-                    {
+                    if let Some(conn) = guard.usable() {
                         return Ok((conn, true));
+                    }
+                    if guard.any_live() {
+                        log::info!(
+                            "ssh {key:?}: every connection is at the server's session limit; \
+                             dialling another beside them"
+                        );
                     }
                     Some(guard)
                 }
@@ -623,7 +765,7 @@ impl SshManager {
 
             let conn = SshConnection::new(handle, key, remote_forwards);
             if let Some(guard) = guard.as_mut() {
-                **guard = Arc::downgrade(&conn);
+                guard.add(&conn);
             }
             Ok((conn, false))
         })
@@ -672,7 +814,10 @@ const PROBE_OUTPUT_LIMIT: usize = 8 * 1024;
 
 async fn probe_remote_shell(conn: &SshConnection) -> Option<(remote::RemoteShell, String)> {
     let mut channel = conn.open_command_channel().await.ok()?;
-    channel.exec(true, remote::PROBE_COMMAND).await.ok()?;
+    tokio::time::timeout(PROBE_TIMEOUT, channel.exec(true, remote::PROBE_COMMAND))
+        .await
+        .ok()?
+        .ok()?;
 
     let mut out: Vec<u8> = Vec::new();
     let collect = async {
@@ -691,15 +836,25 @@ async fn probe_remote_shell(conn: &SshConnection) -> Option<(remote::RemoteShell
     };
     let _ = tokio::time::timeout(PROBE_TIMEOUT, collect).await;
 
-    remote::parse_probe(&String::from_utf8_lossy(&out))
+    let out = String::from_utf8_lossy(&out);
+    if remote::probe_answered_by_cmd(&out) {
+        log::debug!(
+            "ssh {:?}: default shell is cmd.exe, left as it is",
+            conn.key()
+        );
+    }
+    remote::parse_probe(&out)
 }
 
 async fn probe_remote_env(conn: &SshConnection) -> Option<remote_link::RemoteEnv> {
     let mut channel = conn.open_command_channel().await.ok()?;
-    channel
-        .exec(true, remote_link::REMOTE_ENV_PROBE)
-        .await
-        .ok()?;
+    tokio::time::timeout(
+        PROBE_TIMEOUT,
+        channel.exec(true, remote_link::REMOTE_ENV_PROBE),
+    )
+    .await
+    .ok()?
+    .ok()?;
 
     let mut out: Vec<u8> = Vec::new();
     let collect = async {
@@ -762,8 +917,11 @@ mod tests {
         let mgr = manager();
         mgr.runtime.block_on(async {
             let sshd = FakeSshd::connect(Exec::Hangs, Some(0)).await;
-            assert!(mgr.remote_bootstrap(&sshd.conn).await.is_none());
-            assert!(!sshd.conn.is_alive(), "a refused session retires the link");
+            assert!(mgr.remote_bootstrap(&sshd.conn, None).await.is_none());
+            assert!(
+                sshd.conn.is_saturated(),
+                "a refused session marks the link full"
+            );
             assert!(
                 !mgr.probes.lock().unwrap().contains_key(sshd.conn.key()),
                 "the next session, on a fresh link, must ask again"
@@ -776,7 +934,7 @@ mod tests {
         let mgr = manager();
         mgr.runtime.block_on(async {
             let sshd = FakeSshd::connect(Exec::Exits, None).await;
-            assert!(mgr.remote_bootstrap(&sshd.conn).await.is_none());
+            assert!(mgr.remote_bootstrap(&sshd.conn, None).await.is_none());
             assert!(sshd.conn.is_alive());
             assert!(mgr.probes.lock().unwrap().contains_key(sshd.conn.key()));
             sshd.wait_for_closed(1).await;
@@ -834,7 +992,7 @@ mod tests {
     fn evict_connection_empties_the_slot_without_replacing_it() {
         let mgr = bare_manager();
         let key = ConnectionKey::from_spec(&base_spec());
-        let slot: ConnSlot = Arc::new(tokio::sync::Mutex::new(Weak::new()));
+        let slot: ConnSlot = ConnSlot::default();
         mgr.conns.lock().unwrap().insert(key.clone(), slot.clone());
 
         mgr.evict_connection(&key);
@@ -850,7 +1008,7 @@ mod tests {
         assert!(
             held.try_lock()
                 .expect("nobody holds it here")
-                .upgrade()
+                .usable()
                 .is_none(),
             "what the slot pointed at is gone, so the next dial does not reuse it"
         );
@@ -863,7 +1021,7 @@ mod tests {
     fn evict_connection_leaves_a_slot_that_is_being_dialled_on_alone() {
         let mgr = bare_manager();
         let key = ConnectionKey::from_spec(&base_spec());
-        let slot: ConnSlot = Arc::new(tokio::sync::Mutex::new(Weak::new()));
+        let slot: ConnSlot = ConnSlot::default();
         mgr.conns.lock().unwrap().insert(key.clone(), slot.clone());
 
         let _dialling = slot.try_lock().expect("nobody else holds it in this test");
@@ -892,10 +1050,10 @@ mod tests {
         let mut other = base_spec();
         other.host = "build-box".into();
         for spec in [&base_spec(), &other] {
-            mgr.conns.lock().unwrap().insert(
-                ConnectionKey::from_spec(spec),
-                Arc::new(tokio::sync::Mutex::new(Weak::new())),
-            );
+            mgr.conns
+                .lock()
+                .unwrap()
+                .insert(ConnectionKey::from_spec(spec), ConnSlot::default());
         }
 
         let routes = mgr.routes();
@@ -925,7 +1083,7 @@ mod tests {
             forwards: SshForwardRegistry::default(),
             probes: Mutex::new(HashMap::new()),
         };
-        let slot: ConnSlot = Arc::new(tokio::sync::Mutex::new(Weak::new()));
+        let slot: ConnSlot = ConnSlot::default();
         mgr.conns
             .lock()
             .unwrap()
@@ -942,6 +1100,58 @@ mod tests {
             "a link whose slot is momentarily held is busy, not down — calling it \
              down makes `tty7 -m <machine>` refuse to route over a live connection"
         );
+    }
+
+    /// A workspace with more panes than the server's `MaxSessions` fills its
+    /// first connection. The pool has to hand the next pane the connection
+    /// with room rather than the full one — and must not drop the full one,
+    /// which is carrying every pane that fit.
+    #[tokio::test]
+    async fn a_full_connection_is_passed_over_for_one_with_room() {
+        let full = FakeSshd::connect(Exec::Hangs, Some(1)).await;
+        let roomy = FakeSshd::connect(Exec::Hangs, None).await;
+        let _pane = full
+            .conn
+            .open_session_channel()
+            .await
+            .expect("the one slot");
+        assert!(full.conn.open_session_channel().await.is_err());
+
+        let mut pool = ConnPool::default();
+        pool.add(&full.conn);
+        pool.add(&roomy.conn);
+
+        let picked = pool.usable().expect("the second connection has room");
+        assert!(Arc::ptr_eq(&picked, &roomy.conn));
+        assert_eq!(pool.live().count(), 2, "the full one stays in the pool");
+        assert!(pool.any_live(), "and the machine still reads as connected");
+    }
+
+    /// Only full connections: nothing to hand out, so the caller dials one
+    /// more — but the machine is not down.
+    #[tokio::test]
+    async fn a_pool_of_full_connections_asks_for_another_without_reading_as_down() {
+        let full = FakeSshd::connect(Exec::Hangs, Some(0)).await;
+        assert!(full.conn.open_session_channel().await.is_err());
+
+        let mut pool = ConnPool::default();
+        pool.add(&full.conn);
+        assert!(pool.usable().is_none());
+        assert!(pool.any_live());
+    }
+
+    #[tokio::test]
+    async fn a_dead_connection_leaves_the_pool() {
+        let gone = FakeSshd::connect(Exec::Hangs, None).await;
+        let kept = FakeSshd::connect(Exec::Hangs, None).await;
+        let mut pool = ConnPool::default();
+        pool.add(&gone.conn);
+        pool.add(&kept.conn);
+
+        gone.conn.mark_dead();
+        pool.prune();
+        assert_eq!(pool.conns.len(), 1);
+        assert!(Arc::ptr_eq(&pool.usable().unwrap(), &kept.conn));
     }
 
     #[test]

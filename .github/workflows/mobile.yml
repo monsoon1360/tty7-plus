@@ -1,0 +1,212 @@
+name: Mobile
+
+# The phone app, both platforms at one version. A `mobile-v<x.y.z>` tag, cut
+# from a commit whose tauri.conf.json says x.y.z:
+# - Android: a signed APK, attached to a draft release of the same name.
+# - iOS: a build uploaded to TestFlight, as <x.y.z>.<build number>.
+# A manual run builds both at tauri.conf.json's version and uploads nothing:
+# the APK is kept as a workflow artifact, the iOS build is only signed.
+#
+# The mobile app is versioned apart from the desktop's `v*` tags. Android
+# installs one build over another only when its versionCode is higher, and
+# Tauri derives it from the version (major * 1000000 + minor * 1000 + patch),
+# so each version must be higher than the last.
+
+on:
+  push:
+    tags: ["mobile-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The release key's certificate. A build signed with any other key could not
+  # be installed over the ones people already have, so it is refused here.
+  CERT_SHA256: c54b8b466e7ac45bac2c9d79e44ec3e6ab8fef1d00818adafa11bb747163d75f
+  NDK_VERSION: 28.2.13676358
+
+jobs:
+  # The version is the one in the tagged commit, so the repo always says what
+  # was shipped; a tag that disagrees with it is a mistake, not an override.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version mobile/src-tauri/tauri.conf.json)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tauri.conf.json's version must be <major>.<minor>.<patch>, got $VERSION"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/mobile-v* && "$GITHUB_REF_NAME" != "mobile-v$VERSION" ]]; then
+            echo "::error::$GITHUB_REF_NAME is on a commit whose tauri.conf.json says $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri
+
+      # The runner has an SDK and some NDK; the NDK is pinned so a runner image
+      # update cannot change the toolchain under a release.
+      - name: Android NDK
+        run: |
+          set -euo pipefail
+          # `yes` dies of SIGPIPE once sdkmanager stops reading, which
+          # pipefail would take for a failure.
+          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::the ANDROID_KEYSTORE_* secrets are not set"
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          # Read by gen/android/app/build.gradle.kts; git ignores it.
+          {
+            echo "storeFile=$RUNNER_TEMP/release.jks"
+            echo "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            echo "keyAlias=$ANDROID_KEY_ALIAS"
+            echo "keyPassword=$ANDROID_KEYSTORE_PASSWORD"
+          } > mobile/src-tauri/gen/android/keystore.properties
+
+      # arm64 only: every phone of the last several years, with one copy of
+      # the native library instead of four.
+      - name: Build
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          npm ci
+          npx tauri android build --apk --target aarch64
+
+      - name: Check and name the APK
+        run: |
+          set -euo pipefail
+          APK=mobile/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          # Newer apksigners name the signer by its SDK range ("Signer
+          # (minSdkVersion=24, …)") rather than "Signer #1", so only the
+          # digest itself is matched. Every signer must be the release key.
+          CERTS=$("$APKSIGNER" verify --print-certs "$APK")
+          DIGESTS=$(grep -o 'certificate SHA-256 digest: [0-9a-f]*' <<<"$CERTS" | awk '{print $NF}' | sort -u)
+          if [ "$DIGESTS" != "$CERT_SHA256" ]; then
+            echo "$CERTS"
+            echo "::error::APK is not signed with the release key alone"
+            exit 1
+          fi
+          mkdir dist
+          cp "$APK" "dist/tty7-$VERSION-android-arm64.apk"
+          (cd dist && sha256sum *.apk > SHA256SUMS)
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tty7-android-${{ env.VERSION }}
+          path: dist/*
+
+      # A draft, published by hand as the desktop's are. Never marked latest:
+      # the desktop updater reads /releases/latest and would take this for a
+      # desktop release.
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/mobile-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName -q '.[].tagName')
+          if grep -Fxq "$GITHUB_REF_NAME" <<<"$EXISTING"; then
+            echo "release $GITHUB_REF_NAME already exists; reusing it"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --latest=false --title "tty7 mobile $VERSION" \
+              --notes-file .github/mobile-install.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  ios:
+    needs: version
+    # Xcode 26: App Store Connect takes only builds made with the iOS 26 SDK.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri
+
+      # An App Store Connect API key signs in for Xcode: it signs the build
+      # with a certificate Apple keeps, and uploads it.
+      - name: App Store Connect key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::the ASC_* secrets are not set"
+            exit 1
+          fi
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # The build number defaults to the time (scripts/testflight.sh), so it
+      # rises from any machine without a counter.
+      - name: Build and upload
+        working-directory: mobile
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          npm ci
+          if [[ "$GITHUB_REF" == refs/tags/mobile-v* ]]; then
+            scripts/testflight.sh
+          else
+            scripts/testflight.sh --no-upload
+          fi

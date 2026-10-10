@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub use crate::core::git::{GitStatus, RepoSnapshot, probe};
+pub use crate::core::git::{GitStatus, RepoProbe, RepoSnapshot, probe_repo};
 use crate::ui::host_ops::{ByHost, HostId, InFlight};
 
 /// The spelling a directory is keyed by in here.
@@ -87,21 +87,32 @@ impl GitStatusCache {
         cwd: &Path,
         min_interval: Duration,
     ) -> bool {
+        if !self.probe_due(host, cwd, min_interval) {
+            return false;
+        }
+        let cwd = key(host, cwd);
+        let throttle = self.throttle_key(host, &cwd).to_path_buf();
+        self.last_probe.insert(host, throttle, Instant::now());
+        self.probes.begin((host, cwd.into_owned()));
+        true
+    }
+
+    /// Whether [`GitStatusCache::begin_probe_throttled`] would start a probe,
+    /// asked without claiming anything.
+    ///
+    /// For a caller polling on a timer: reaching this cache through
+    /// `update_global` wakes everything observing it even when the answer is
+    /// "not yet", and a pane asking three times a second redraws the window
+    /// three times a second to be told no.
+    pub fn probe_due(&self, host: HostId, cwd: &Path, min_interval: Duration) -> bool {
         let cwd = key(host, cwd);
         if self.probes.is_pending(&(host, cwd.to_path_buf())) {
             return false;
         }
-        let throttle = self.throttle_key(host, &cwd).to_path_buf();
-        if self
+        !self
             .last_probe
-            .get(host, throttle.as_path())
+            .get(host, self.throttle_key(host, &cwd))
             .is_some_and(|at| at.elapsed() < min_interval)
-        {
-            return false;
-        }
-        self.last_probe.insert(host, throttle, Instant::now());
-        self.probes.begin((host, cwd.into_owned()));
-        true
     }
 
     /// `cwd` is already in the cache's own spelling — every caller of this one
@@ -211,6 +222,22 @@ impl GitStatusCache {
                 self.roots.insert(host, cwd.to_path_buf(), None);
             }
         }
+        rerun
+    }
+
+    /// Land a probe that got no answer ([`RepoProbe::Failed`]).
+    ///
+    /// Only the bookkeeping moves: the probe is no longer in flight, and the
+    /// throttle counts from now so a retry waits its turn. What the cache
+    /// knew about `cwd` stays exactly as it was — a repository it had found
+    /// is still that repository, and a cwd it had never answered stays
+    /// unanswered, which is what lets a tab keep the group it remembers
+    /// instead of dropping into Ungrouped on a `git` that did not run.
+    pub fn fail_probe(&mut self, host: HostId, cwd: &Path) -> bool {
+        let cwd = key(host, cwd);
+        let rerun = !self.probes.finish(&(host, cwd.to_path_buf()));
+        let throttle = self.throttle_key(host, &cwd).to_path_buf();
+        self.last_probe.insert(host, throttle, Instant::now());
         rerun
     }
 }
@@ -401,6 +428,34 @@ mod tests {
         cache.finish_probe(L, a, None);
         assert_eq!(cache.status_for(L, a), None);
         assert!(cache.status_for(L, b).is_some());
+    }
+
+    #[test]
+    fn a_failed_probe_leaves_what_was_known() {
+        let mut cache = GitStatusCache::default();
+        let (repo, unseen) = (Path::new("/repo/a"), Path::new("/repo/b"));
+        cache.finish_probe(L, repo, Some(snap("/repo", "main", Some((1, 0)))));
+
+        assert!(cache.begin_probe(L, repo));
+        assert!(!cache.fail_probe(L, repo));
+        assert_eq!(
+            cache.known_repo_for(L, repo),
+            Some(Some(PathBuf::from("/repo"))),
+            "a git that did not run says nothing about the repository"
+        );
+        assert_eq!(cache.status_for(L, repo).unwrap().branch, "main");
+
+        assert!(cache.begin_probe(L, unseen));
+        cache.fail_probe(L, unseen);
+        assert_eq!(
+            cache.known_repo_for(L, unseen),
+            None,
+            "still unknown, not \"not a repository\""
+        );
+        assert!(
+            !cache.begin_probe_throttled(L, unseen, Duration::from_secs(60)),
+            "the retry waits out the throttle"
+        );
     }
 
     #[test]

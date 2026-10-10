@@ -410,7 +410,15 @@ mod tests {
         // an inherited descriptor as a second reference to one lock, not a
         // second lock, so the seat is not free the instant this process drops
         // it.
-        let inherited = unsafe { libc::dup(held_fd().expect("the seat records its descriptor")) };
+        // CLOEXEC: a plain `dup` leaks into any child a parallel test spawns
+        // meanwhile, which then holds the seat for its whole life.
+        let inherited = unsafe {
+            libc::fcntl(
+                held_fd().expect("the seat records its descriptor"),
+                libc::F_DUPFD_CLOEXEC,
+                0,
+            )
+        };
         assert!(inherited >= 0, "dup the seat descriptor");
         drop(seat);
         let released = std::thread::spawn(move || {
@@ -515,7 +523,15 @@ mod tests {
             Claim::Held(s) => s,
             other => panic!("the claim must be granted, got {other:?}"),
         };
-        let inherited = unsafe { libc::dup(held_fd().expect("the seat records its descriptor")) };
+        // CLOEXEC: a plain `dup` leaks into any child a parallel test spawns
+        // meanwhile, which then holds the seat for its whole life.
+        let inherited = unsafe {
+            libc::fcntl(
+                held_fd().expect("the seat records its descriptor"),
+                libc::F_DUPFD_CLOEXEC,
+                0,
+            )
+        };
         assert!(inherited >= 0, "dup the seat descriptor");
         drop(seat);
         let released = std::thread::spawn(move || {

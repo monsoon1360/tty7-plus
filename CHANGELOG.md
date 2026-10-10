@@ -37,6 +37,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current terminal visible behind an error/retry overlay instead of returning to
   pairing or the session drawer. Existing pairing credentials remain valid; update
   both Android and the desktop daemon.
+- **Deployment identity stays out of source and examples.** Relay examples and
+  defaults use a reserved hostname, with no preconfigured certificate pin.
+  New mobile credential stores remain disabled until configured; existing
+  saved addresses, certificate pins and approved devices are preserved.
+
+- **Volta shims, and anything else that reads its own argv[0], work again in
+  the Linux AppImage** (#1100). The AppImage runtime exports `ARGV0` into
+  tty7's environment and every pane inherited it. zsh gives an exported
+  `ARGV0` to every external command as its argv[0], so `node` started up as
+  `tty7-….AppImage` and Volta answered `Could not find executable`. Panes now
+  start without `ARGV0`. An `env` entry in the config can still set it.
+
+- **Sidebar controls keep their size and alignment when toggled** — New Tab
+  and the left sidebar toggle now use the same title-bar button and icon sizes
+  with the sidebar open or closed. On macOS, the right panel toggle keeps the
+  same trailing inset and vertical centre when it moves into the open panel's
+  header, preventing a position jump during toggling (#1099).
+
+- **A pane with a long history keeps updating on the phone.** Opening it
+  showed the latest screen, and then nothing more until it was closed and
+  opened again. The server charges a watcher for the history it replays, but
+  never credited that replay back once sent. Its budget was also no larger
+  than a full history, so a busy pane could drop the phone while the replay
+  was still going out. The drop was silent, too: the connection stayed open
+  with nothing ever sent down it again. Now the replay is credited by the same
+  rule as live output, and the budget leaves room for a full replay plus as
+  much live output again. A watcher that really does fall behind is told so
+  and its stream ends, so the phone reconnects on its own.
+
+- **The phone app no longer drops its connection every time the screen
+  locks.** Coming back from the background, the app now asks the computer
+  whether the connection still answers (a round trip of up to three seconds)
+  and, if it does, keeps the open pane and tree as they were. Before, it
+  closed the pane and opened it again every time, clearing the screen and
+  replaying it. A connection that did drop is retried quietly under the
+  screen that is up, and the "Reconnecting…" banner shows only if that takes
+  more than three seconds. Lost keystrokes are still reported at once. On
+  iOS, leaving the app asks for the system's background grace period (about
+  half a minute), so a short screen lock comes back to the same connection.
+  On Android, a foreground service with a "Connected to …" notification
+  keeps the connection up while a machine or pane is open, as SSH apps there
+  do.
+
+
+- **Escape keeps reaching an agent CLI after the window reopens on a long
+  session** (#1074). A program that asks for the kitty keyboard protocol does
+  so once, at startup, and a long enough session pushes that request out of the
+  8 MB the daemon keeps for replay. A window that reattached after that — a
+  restart, or reopening from the tray — rebuilt the pane without the protocol
+  and sent Escape as a bare `ESC`, which the program, still parsing the kitty
+  form, never took for a key. The daemon now tracks the kitty keyboard flag
+  stacks, one per screen, alongside the modes it already restores, and puts
+  them back as they stood where the replay begins, so the pushes and pops the
+  replay still carries land on the stack they were written against.
+
+- **A title that only swaps its status mark no longer repaints the window.**
+  An agent that animates its title (Claude Code turns a circle one quadrant at
+  a time) sends a new OSC title every few hundred milliseconds, and each one
+  rebuilt the whole window for a tab that reads the same: the tab never draws
+  the mark. The pane's own title now takes the same `strip_status_mark` reading
+  as the label, so `settle_title` drops such a frame, and a pane-facts delta
+  that leaves everything a tab shows as it was no longer ends in a
+  `cx.notify()` on the root view. A title whose words change still lands as
+  before, so a ticking counter in the title repaints as often as it did.
+
+- **The macOS traffic lights sit on the same line as the tiles beside them.**
+  The buttons AppKit draws are 14 points tall and gpui hangs the top of the
+  frame `y` points below the window's top edge, so the lights' centre falls
+  seven points under the bar's top; the New Tab and sidebar tiles are centred
+  in the bar's content box instead — its height less the hairline `TitleBar`
+  draws along the bottom edge. The position was still the one the 40-point bar
+  called for, carried over by hand when the bar grew to 48 without that
+  hairline in it, which left the lights half a point below everything else in
+  the row: one device pixel on a Retina panel. `traffic_light_position()` now
+  derives it from `TITLE_BAR_HEIGHT`, and a test holds the lights to the tile
+  line through the next change of bar height.
+
+### Changed
+
+- **Sidebar toggle icons reflect whether the sidebar is visible** — The left
+  and right toggles leave the sidebar region unfilled when collapsed and fill
+  it when expanded, keeping the same outline, stroke weight, and size (#1099).
 
 ## [26.9.4] - 2026-09-29
 
@@ -498,6 +580,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the rest are kept and still used. (#973)
 
 ### Fixed
+
+- **The tab-number badges follow the chord the tabs are actually on.** Holding
+  the modifier that switches tabs draws the numbers 1…9 on the tab strip and
+  the sidebar, but the modifier was assumed: the platform's secondary, ⌘ on
+  macOS and Ctrl everywhere else, whatever `ActivateTab1`…`ActivateTab9` were
+  bound to. Off macOS — where the nine ship on Alt — holding Alt raised
+  nothing while Ctrl, which switches no tab there, lit every number up, and a
+  tab row rebound onto Alt still had to be held with Ctrl to see the hint; on
+  macOS a rebind onto Alt failed the same way the other way round. The hold is
+  now read from `ActivateTab1`, so it moves with the binding (Alt, ⌘, or the
+  Ctrl+Alt a config asked for) and is held exactly: an action with no chord, a
+  chord with no modifier, a key that is not the number the badge draws, or the
+  tmux preset's `prefix 1` raise no badges at all, rather than promising
+  numbers no key answers.
 
 - **Quick launch found only the agents in the GUI's own bare `PATH`.** The app
   starts with the launchd environment (`/usr/bin:/bin:/usr/sbin:/sbin`) and

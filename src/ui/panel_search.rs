@@ -320,6 +320,8 @@ impl Tty7App {
                 // Off reads as a hint of what can be turned on, not as three
                 // words in body ink beside the query.
                 .when(!on, |b| b.text_color(muted))
+                // Read out by name, not as the glyphs drawn ("A a", "dot star").
+                .accessible_label(t(tip))
                 .tooltip(t(tip))
                 .on_click(cx.listener(move |this, _, _window, cx| {
                     flip(&mut this.panel_search);

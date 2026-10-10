@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg};
@@ -13,6 +14,29 @@ use super::ConnectionKey;
 use super::forward::RemoteForwardTable;
 
 const DATA_CHANNEL_DEPTH: usize = 16;
+
+/// How long a connection the server refused a session on is passed over when
+/// the cache hands one out. Nothing tells us when one of its sessions closes,
+/// so after this it is asked again: one refused round trip if it is still
+/// full, a free slot if a pane on it has gone since.
+const SATURATION_HOLD: Duration = Duration::from_secs(30);
+
+/// How long a channel open may wait for the server's answer before the
+/// connection it was asked on is written off. Only for the opens the server
+/// answers by itself (session, direct-streamlocal) — not direct-tcpip, whose
+/// answer waits on a connect of the server's own.
+///
+/// One round trip on a healthy link. A connection whose peer stopped
+/// answering — a stalled path, a host that rebooted under it — never answers
+/// and never errors either: its TCP socket stays established for as long as
+/// nothing is sent on it, and russh waits on the confirmation for ever. Every
+/// open on such a connection used to hang, the cache kept handing it out, and
+/// the link it backed showed "connected" while nothing could reach the
+/// machine.
+#[cfg(not(test))]
+const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(20);
+#[cfg(test)]
+const CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub type SharedConnection = Arc<Mutex<Weak<SshConnection>>>;
 
@@ -216,7 +240,8 @@ impl Drop for CommandChannel {
 
 /// sshd's answer to a session open once the connection's `MaxSessions` are
 /// all taken, by channels still running or by ones never closed. It says
-/// nothing about this channel and everything about the connection.
+/// nothing about this channel and everything about the connection — which is
+/// full, not broken: every session already on it keeps working.
 fn refuses_every_session(e: &russh::Error) -> bool {
     matches!(
         e,
@@ -225,7 +250,12 @@ fn refuses_every_session(e: &russh::Error) -> bool {
 }
 
 pub struct SshConnection {
-    handle: tokio::sync::Mutex<russh::client::Handle<super::handler::ClientHandler>>,
+    /// Not behind a lock. Every request on it takes `&self` and waits on a
+    /// reply of its own, and a lock held across that wait — a full network
+    /// round trip — made every pane on the connection open its channel after
+    /// the one before it: a workspace of twenty tabs on a 300ms link took ten
+    /// seconds to come back, one tab at a time.
+    handle: russh::client::Handle<super::handler::ClientHandler>,
     #[allow(dead_code)]
     key: ConnectionKey,
     remote_forwards: RemoteForwardTable,
@@ -234,6 +264,9 @@ pub struct SshConnection {
     /// What this connection's server probe proved, once it has. See
     /// [`SshConnection::proved_server`].
     proved_server: Mutex<Option<ProvedServer>>,
+    /// When the server last refused a session here for being at its limit.
+    /// See [`SshConnection::is_saturated`].
+    saturated_at: Mutex<Option<Instant>>,
 }
 
 impl SshConnection {
@@ -243,12 +276,13 @@ impl SshConnection {
         remote_forwards: RemoteForwardTable,
     ) -> Arc<Self> {
         Arc::new(Self {
-            handle: tokio::sync::Mutex::new(handle),
+            handle,
             key,
             remote_forwards,
             alive: AtomicBool::new(true),
             remote_entry: tokio::sync::Mutex::new(None),
             proved_server: Mutex::new(None),
+            saturated_at: Mutex::new(None),
         })
     }
 
@@ -261,23 +295,68 @@ impl SshConnection {
         if !self.alive.load(Ordering::SeqCst) {
             return false;
         }
-        match self.handle.try_lock() {
-            Ok(handle) => !handle.is_closed(),
-            Err(_) => true,
-        }
+        !self.handle.is_closed()
     }
 
     pub(super) fn mark_dead(&self) {
         self.alive.store(false, Ordering::SeqCst);
     }
 
+    /// Whether the server recently refused a session here because every one
+    /// it allows on this connection is taken (sshd's `MaxSessions`, ten by
+    /// default — one per remote pane).
+    ///
+    /// A full connection is not a dead one. Retiring it used to be the answer,
+    /// and it took the connection out of the cache while every pane on it was
+    /// still using it: the next pane dialled a fresh link and paid a whole
+    /// handshake and server probe for it, and so did everything short-lived
+    /// after that, because nothing held the replacement. The cache passes a
+    /// full connection over instead and adds another beside it.
+    pub fn is_saturated(&self) -> bool {
+        self.saturated_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|at| at.elapsed() < SATURATION_HOLD)
+    }
+
+    fn set_saturated(&self, saturated: bool) {
+        *self
+            .saturated_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = saturated.then(Instant::now);
+    }
+
+    /// Waits out `open` for at most [`CHANNEL_OPEN_TIMEOUT`]. A connection
+    /// that does not answer in time is marked dead, so the cache stops handing
+    /// it out and the next open dials a fresh one; whatever is already running
+    /// on it is left alone.
+    async fn bounded_open<T>(
+        &self,
+        what: &str,
+        open: impl std::future::Future<Output = Result<T, russh::Error>>,
+    ) -> Result<T, russh::Error> {
+        match tokio::time::timeout(CHANNEL_OPEN_TIMEOUT, open).await {
+            Ok(result) => result,
+            Err(_) => {
+                log::warn!(
+                    "ssh {:?}: {what} got no answer in {CHANNEL_OPEN_TIMEOUT:?}; \
+                     retiring this connection",
+                    self.key
+                );
+                self.mark_dead();
+                Err(russh::Error::ConnectionTimeout)
+            }
+        }
+    }
+
     pub async fn open_session_channel(&self) -> Result<Channel<Msg>, russh::Error> {
-        let opened = self.handle.lock().await.channel_open_session().await;
-        // `is_alive` is what decides whether the cache hands this connection
-        // out again, and one that refuses sessions keeps refusing them until
-        // it is dropped: every retry on it would fail exactly this way.
-        if opened.as_ref().is_err_and(refuses_every_session) {
-            self.mark_dead();
+        let opened = self
+            .bounded_open("a session channel", self.handle.channel_open_session())
+            .await;
+        match &opened {
+            Ok(_) => self.set_saturated(false),
+            Err(e) if refuses_every_session(e) => self.set_saturated(true),
+            Err(_) => {}
         }
         opened
     }
@@ -288,14 +367,20 @@ impl SshConnection {
         self.open_session_channel().await.map(CommandChannel::new)
     }
 
+    /// Not bounded by [`CHANNEL_OPEN_TIMEOUT`]: the server answers a
+    /// direct-tcpip open only once its own connect to `host:port` succeeds or
+    /// fails, and a target that drops SYNs keeps it waiting a TCP connect
+    /// timeout — a minute or more — on a perfectly healthy link. Writing the
+    /// connection off then would stop every forward on it (they quit once it
+    /// reads dead) and send the next pane to dial and authenticate afresh. A
+    /// peer that really has stopped answering is caught by the keepalive,
+    /// which fails this open along with the session.
     pub async fn open_direct_tcpip(
         &self,
         host: &str,
         port: u16,
     ) -> Result<Channel<Msg>, russh::Error> {
         self.handle
-            .lock()
-            .await
             .channel_open_direct_tcpip(
                 host.to_string(),
                 u32::from(port),
@@ -309,11 +394,12 @@ impl SshConnection {
         &self,
         socket_path: &str,
     ) -> Result<Channel<Msg>, russh::Error> {
-        self.handle
-            .lock()
-            .await
-            .channel_open_direct_streamlocal(socket_path.to_string())
-            .await
+        self.bounded_open(
+            "a direct-streamlocal channel",
+            self.handle
+                .channel_open_direct_streamlocal(socket_path.to_string()),
+        )
+        .await
     }
 
     pub async fn remote_entry_or_init<F, Fut>(&self, init: F) -> RemoteEntry
@@ -388,8 +474,6 @@ impl SshConnection {
         }
         let requested = self
             .handle
-            .lock()
-            .await
             .tcpip_forward(bind_host.to_string(), u32::from(bind_port))
             .await;
         match requested {
@@ -415,8 +499,6 @@ impl SshConnection {
         self.remote_forwards.unregister(bind_host, bind_port);
         let _ = self
             .handle
-            .lock()
-            .await
             .cancel_tcpip_forward(bind_host.to_string(), u32::from(bind_port))
             .await;
     }
@@ -499,10 +581,52 @@ mod tests {
         assert_eq!(sshd.opened(), 1);
     }
 
+    /// The peer stopped answering with the connection still up: a stalled
+    /// path, or a host that rebooted under it. The open gives up instead of
+    /// waiting for ever, and the connection is out of the cache's hands so
+    /// the next open dials a fresh one.
     #[tokio::test]
-    async fn a_link_that_refuses_a_session_is_not_handed_out_again() {
+    async fn an_open_the_peer_never_answers_retires_the_connection() {
+        let sshd = FakeSshd::connect_unanswering().await;
+        assert!(sshd.conn.is_alive());
+
+        let opened =
+            tokio::time::timeout(CHANNEL_OPEN_TIMEOUT * 2, sshd.conn.open_session_channel())
+                .await
+                .expect("the open waited on a peer that will never answer");
+        assert!(
+            matches!(opened, Err(russh::Error::ConnectionTimeout)),
+            "the open must give up: {opened:?}"
+        );
+        assert!(
+            !sshd.conn.is_alive(),
+            "a connection that stopped answering must not be handed out again"
+        );
+    }
+
+    /// A direct-tcpip open waits on the server's own connect to the target,
+    /// which can outlast the open timeout on a healthy link. Retiring the
+    /// connection for that would stop every forward on it.
+    #[tokio::test]
+    async fn a_slow_forward_target_does_not_retire_the_connection() {
+        let sshd = FakeSshd::connect_unanswering().await;
+
+        let opened = tokio::time::timeout(
+            CHANNEL_OPEN_TIMEOUT * 2,
+            sshd.conn.open_direct_tcpip("10.255.255.1", 80),
+        )
+        .await;
+        assert!(opened.is_err(), "the open is still waiting on the target");
+        assert!(
+            sshd.conn.is_alive(),
+            "a forward target that is slow to answer says nothing about the link"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_at_its_session_limit_is_full_not_dead() {
         let sshd = FakeSshd::connect(Exec::Hangs, Some(1)).await;
-        let _held = sshd
+        let held = sshd
             .conn
             .open_session_channel()
             .await
@@ -520,10 +644,26 @@ mod tests {
             "the fake answers like sshd at MaxSessions: {refused:?}"
         );
         assert!(
-            !sshd.conn.is_alive(),
-            "the cache must dial afresh rather than retry this link"
+            sshd.conn.is_saturated(),
+            "the cache must pass this link over for the next session"
+        );
+        assert!(
+            sshd.conn.is_alive(),
+            "the session already on it is still in use"
         );
         assert_eq!(sshd.refused(), 1);
+
+        held.close().await.expect("close the held session");
+        sshd.wait_for_closed(1).await;
+        let _again = sshd
+            .conn
+            .open_session_channel()
+            .await
+            .expect("a slot freed up");
+        assert!(
+            !sshd.conn.is_saturated(),
+            "a session that opens says the link has room again"
+        );
     }
 
     #[test]

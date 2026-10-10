@@ -7,6 +7,10 @@
 # Signing posture is chosen from the environment:
 #   * Developer ID secrets present (APPLE_SIGNING_IDENTITY + APPLE_CERTIFICATE)
 #     -> hardened-runtime signature, then notarize + staple. Passes Gatekeeper.
+#     Notarization uses ASC_KEY_P8/ASC_KEY_ID/ASC_ISSUER_ID if set, else
+#     APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID.
+#   * APPLE_SIGNING_IDENTITY alone -> that identity from the login keychain,
+#     without a secure timestamp unless notarization credentials are set.
 #   * Otherwise -> adhoc signature, same as before. Fine for local dev, but the
 #     OS will quarantine it on other machines.
 #
@@ -27,18 +31,24 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
   exit 1
 fi
 PACKAGE_UPDATE_ZIP="${TTY7_PACKAGE_UPDATE_ZIP:-1}"
-APP="dist/tty7.app"
+# A rebranded or local build sets its own name and id, binary dir and output
+# dir. TTY7_BUNDLE_ONLY stops after the .app, before the update zip and DMG.
+APP_NAME="${TTY7_APP_NAME:-tty7}"
+BUNDLE_ID="${TTY7_BUNDLE_ID:-com.github.tty7}"
+BIN_DIR="${TTY7_BIN_DIR:-target/${TARGET}/release}"
+DIST="${TTY7_DIST:-dist}"
+APP="$DIST/$APP_NAME.app"
 
-rm -rf dist
+rm -rf "$DIST"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "target/${TARGET}/release/tty7-app" "$APP/Contents/MacOS/tty7-app"
+cp "$BIN_DIR/tty7-app" "$APP/Contents/MacOS/tty7-app"
 chmod +x "$APP/Contents/MacOS/tty7-app"
 # The CLI rides inside the bundle rather than beside it: a DMG is drag-to-
 # Applications, so anything not in the .app never reaches the user's disk. The
 # GUI symlinks it onto PATH at launch (see core::cli_install), which is why it
 # sits next to tty7-app under MacOS/ — that is the directory the GUI resolves
 # relative to its own executable.
-cp "target/${TARGET}/release/tty7" "$APP/Contents/MacOS/tty7"
+cp "$BIN_DIR/tty7" "$APP/Contents/MacOS/tty7"
 chmod +x "$APP/Contents/MacOS/tty7"
 if [[ "$PACKAGE_UPDATE_ZIP" != "0" ]]; then
     # A focused out-of-process updater can replace the bundle after the GUI
@@ -47,7 +57,7 @@ if [[ "$PACKAGE_UPDATE_ZIP" != "0" ]]; then
     # is covered by the outer bundle — including Nightly, whose users are
     # offered the stable release that supersedes their prerelease and need a
     # working helper to get there.
-    cp "target/${TARGET}/release/tty7-updater" "$APP/Contents/MacOS/tty7-updater"
+    cp "$BIN_DIR/tty7-updater" "$APP/Contents/MacOS/tty7-updater"
     chmod +x "$APP/Contents/MacOS/tty7-updater"
 fi
 cp assets/tty7.icns "$APP/Contents/Resources/tty7.icns"
@@ -56,15 +66,19 @@ cp assets/tty7.icns "$APP/Contents/Resources/tty7.icns"
 mkdir -p "$APP/Contents/Resources/completions"
 cp assets/completions/*.json "$APP/Contents/Resources/completions/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+if [[ -n "${TTY7_LOCAL_BUILD_ID:-}" ]]; then
+    # A local install's build id, which a running app can watch to offer a restart.
+    printf '%s\n' "$TTY7_LOCAL_BUILD_ID" > "$APP/Contents/Resources/local-build-id"
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>tty7</string>
-    <key>CFBundleDisplayName</key><string>tty7</string>
-    <key>CFBundleIdentifier</key><string>com.github.tty7</string>
+    <key>CFBundleName</key><string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleExecutable</key><string>tty7-app</string>
@@ -145,33 +159,58 @@ PLIST
 
 SIGN_ID="${APPLE_SIGNING_IDENTITY:-}"
 
-if [[ -n "$SIGN_ID" && -n "${APPLE_CERTIFICATE:-}" ]]; then
-    # ---- Developer ID signing ------------------------------------------------
-    # Import the cert into a throwaway keychain so we never touch the login one.
-    KEYCHAIN="${RUNNER_TEMP:-/tmp}/tty7-sign.keychain-db"
-    CERT_PATH="${RUNNER_TEMP:-/tmp}/tty7-cert.p12"
-    KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-tty7-ci}"
-    # Scrub the decoded cert + temp keychain on any exit path.
+# Notarization credentials: an App Store Connect API key, else an Apple ID
+# password. Decided before signing, because notarization rejects a signature
+# that carries no secure timestamp.
+NOTARY_WITH=""
+if [[ -n "${ASC_KEY_P8:-}" && -n "${ASC_KEY_ID:-}" && -n "${ASC_ISSUER_ID:-}" ]]; then
+    NOTARY_WITH=asc
+elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+    NOTARY_WITH=apple-id
+fi
+
+if [[ -n "$SIGN_ID" ]]; then
+    # With a certificate (CI) it is imported into a throwaway keychain; without
+    # one, the identity is looked up in the login keychain (a local build). The
+    # secure timestamp is skipped only for a local build that is not notarized.
+    TIMESTAMP=--timestamp=none
+    if [[ -n "${APPLE_CERTIFICATE:-}" || -n "$NOTARY_WITH" ]]; then
+        TIMESTAMP=--timestamp
+    fi
+    KEYCHAIN=""
+    CERT_PATH=""
+    ASC_KEY_PATH=""
+    # Scrub the decoded cert, temp keychain and API key on any exit path.
     cleanup() {
-        security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
-        rm -f "$CERT_PATH"
+        if [[ -n "$KEYCHAIN" ]]; then
+            security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
+        fi
+        rm -f "$CERT_PATH" "$ASC_KEY_PATH"
     }
     trap cleanup EXIT
 
-    security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-    security set-keychain-settings -lut 21600 "$KEYCHAIN"
-    security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-    echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
-    security import "$CERT_PATH" -P "${APPLE_CERTIFICATE_PASSWORD:-}" \
-        -A -t cert -f pkcs12 -k "$KEYCHAIN"
-    security set-key-partition-list -S apple-tool:,apple:,codesign: \
-        -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
-    security list-keychains -d user -s "$KEYCHAIN" login.keychain
+    if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
+        # ---- Developer ID signing --------------------------------------------
+        # Import the cert into a throwaway keychain so we never touch the login one.
+        KEYCHAIN="${RUNNER_TEMP:-/tmp}/tty7-sign.keychain-db"
+        CERT_PATH="${RUNNER_TEMP:-/tmp}/tty7-cert.p12"
+        KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-tty7-ci}"
+
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+        security import "$CERT_PATH" -P "${APPLE_CERTIFICATE_PASSWORD:-}" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+        security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+        security list-keychains -d user -s "$KEYCHAIN" login.keychain
+    fi
 
     # Hardened runtime forbids JIT / unsigned executable memory by default; the
     # GPU/Metal path gpui uses needs them, so grant them explicitly or the
     # notarized build crashes on launch.
-    ENTITLEMENTS="dist/entitlements.plist"
+    ENTITLEMENTS="$DIST/entitlements.plist"
     cat > "$ENTITLEMENTS" <<'ENT'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -205,28 +244,36 @@ ENT
     # entitlements: the JIT and library-validation exemptions exist for gpui's
     # Metal path, and a CLI that never renders anything has no business holding
     # them.
-    codesign --force --options runtime --timestamp \
+    codesign --force --options runtime "$TIMESTAMP" \
         --sign "$SIGN_ID" "$APP/Contents/MacOS/tty7"
     if [[ "$PACKAGE_UPDATE_ZIP" != "0" ]]; then
-        codesign --force --options runtime --timestamp \
+        codesign --force --options runtime "$TIMESTAMP" \
             --sign "$SIGN_ID" "$APP/Contents/MacOS/tty7-updater"
     fi
-    codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" \
+    codesign --force --options runtime "$TIMESTAMP" --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_ID" "$APP/Contents/MacOS/tty7-app"
-    codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" \
+    codesign --force --options runtime "$TIMESTAMP" --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_ID" "$APP"
     codesign --verify --strict --verbose=2 "$APP"
 
     # ---- Notarization --------------------------------------------------------
-    if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+    NOTARY_AUTH=()
+    if [[ "$NOTARY_WITH" == asc ]]; then
+        # notarytool reads the key from a file. mktemp creates it 0600, so the
+        # key is never readable by others in a shared temp dir.
+        ASC_KEY_PATH="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tty7-asc-key.XXXXXX")"
+        printf '%s\n' "$ASC_KEY_P8" > "$ASC_KEY_PATH"
+        NOTARY_AUTH=(--key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+    elif [[ "$NOTARY_WITH" == apple-id ]]; then
+        NOTARY_AUTH=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
+    fi
+    if [[ ${#NOTARY_AUTH[@]} -gt 0 ]]; then
         # Submit a zip of the .app; on success staple the ticket onto the bundle
         # so it validates offline (the distributed zip below then carries it).
-        ditto -c -k --keepParent "$APP" "dist/notarize.zip"
-        xcrun notarytool submit "dist/notarize.zip" \
-            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait
+        ditto -c -k --keepParent "$APP" "$DIST/notarize.zip"
+        xcrun notarytool submit "$DIST/notarize.zip" "${NOTARY_AUTH[@]}" --wait
         xcrun stapler staple "$APP"
-        rm -f "dist/notarize.zip"
+        rm -f "$DIST/notarize.zip"
         echo "✅ signed + notarized + stapled"
     else
         echo "⚠️  signed with Developer ID but notarization secrets missing — skipping notarize"
@@ -317,6 +364,9 @@ if [[ "$BUNDLE_FAIL" -ne 0 ]]; then
     exit 1
 fi
 echo "✅ every Mach-O in $APP is a thin ${ARCH} binary (${SWEEP_SEEN} checked)"
+if [[ "${TTY7_BUNDLE_ONLY:-0}" != "0" ]]; then
+    exit 0
+fi
 
 # The in-app updater needs the signed, notarized .app itself rather than a disk
 # image that requires Finder interaction. The helper re-reads the full embedded
@@ -324,13 +374,13 @@ echo "✅ every Mach-O in $APP is a thin ${ARCH} binary (${SWEEP_SEEN} checked)"
 # it was told to install.
 ZIP=""
 if [[ "$PACKAGE_UPDATE_ZIP" != "0" ]]; then
-    ZIP="dist/tty7-${VERSION}-macos-${ARCH}.zip"
+    ZIP="$DIST/tty7-${VERSION}-macos-${ARCH}.zip"
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
 
 # Package the (now stapled) bundle as a drag-to-Applications DMG.
-DMG="dist/tty7-${VERSION}-macos-${ARCH}.dmg"
-STAGE="dist/dmg-stage"
+DMG="$DIST/tty7-${VERSION}-macos-${ARCH}.dmg"
+STAGE="$DIST/dmg-stage"
 rm -rf "$STAGE"
 mkdir "$STAGE"
 # `mv`, not `cp -R`: this is the peak, and a second full copy of the bundle is
@@ -354,7 +404,7 @@ ln -s /Applications "$STAGE/Applications"
 # measured against a stage of this shape, 127 MiB of empty volume cost 672 KiB
 # in the published DMG.
 STAGE_KB="$(du -sk "$STAGE" | awk '{print $1}')"
-hdiutil create -volname "tty7" -srcfolder "$STAGE" -ov -format UDZO \
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO \
     -size "$(( STAGE_KB * 2 + 65536 ))k" "$DMG"
 rm -rf "$STAGE"
 if [[ -n "$SIGN_ID" && -n "${APPLE_CERTIFICATE:-}" ]]; then

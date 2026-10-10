@@ -103,6 +103,12 @@ pub mod state {
     pub const SELECTED: f32 = 1.30;
     pub const PRESSED: f32 = 1.55;
     pub const CURSOR: f32 = 1.70;
+    /// The side panels' own, lighter rungs (see `Theme::panel_surface`).
+    /// A panel lists many rows at once, and at the window's 1.30 the current
+    /// one read as a dark slab; these land on #ededec / #e8e8e7 on the
+    /// default light rail (#f5f5f4).
+    pub const PANEL_HOVER: f32 = 1.07;
+    pub const PANEL_SELECTED: f32 = 1.12;
     pub const TEXT_RESTING: f32 = 4.6;
     pub const TEXT_STEP: f32 = 1.4;
 }
@@ -285,6 +291,24 @@ impl Theme {
         }
     }
 
+    /// A side panel's surface — the tab rail on the left, the docked panel on
+    /// the right. Both list many rows at once, so they step on the lighter
+    /// `PANEL_*` rungs, and toward the panel's own shade rather than `fg`: a
+    /// cool foreground (the default light's #1c1c1e) bleaches a warm panel's
+    /// tint out of a rung this faint, and the row reads as a grey patch on
+    /// cream.
+    fn panel_surface(&self, base: u32, text_resting: u32, fg: u32) -> Surface {
+        let shade = shade_of(base, fg);
+        let selected = raise(base, shade, state::PANEL_SELECTED);
+        Surface {
+            hover: raise(base, shade, state::PANEL_HOVER),
+            selected,
+            text_resting,
+            text_selected: stepped_ink(selected, base, fg, text_resting),
+            ..self.surface(base)
+        }
+    }
+
     pub(crate) fn interactions(&self) -> Interactions {
         let m = self.neutrals();
         // Menus use a blue wash; the switcher uses the solid companion fill.
@@ -403,18 +427,12 @@ impl Theme {
     pub fn surfaces(&self) -> Surfaces {
         let m = self.neutrals();
         let fg = legible_foreground(self.background_color(), self.foreground);
-        // The rail climbs the window's ladder. It used to take a rung above
-        // (1.50) because a regular-weight current tab measured as the faintest
-        // mark in its column; the current title is SEMIBOLD now and carries
-        // that on its own, and at 1.50 on a white rail the row read as a
-        // pressed button rather than as a place.
-        let mut sidebar = self.surface(m.sidebar);
-        sidebar.text_resting = m.sidebar_fg;
-        sidebar.text_selected =
-            stepped_ink(sidebar.selected, sidebar.base, fg, sidebar.text_resting);
-        let mut rail = self.surface(m.rail);
-        rail.text_resting = m.rail_fg;
-        rail.text_selected = stepped_ink(rail.selected, rail.base, fg, rail.text_resting);
+        // The panels once climbed a rung *above* the window (1.50), when a
+        // regular-weight current tab was the faintest mark in its column. The
+        // current title is SEMIBOLD now and carries that on its own; a heavy
+        // fill on top of it read as a pressed button rather than as a place.
+        let sidebar = self.panel_surface(m.sidebar, m.sidebar_fg, fg);
+        let rail = self.panel_surface(m.rail, m.rail_fg, fg);
         Surfaces {
             window: self.surface(m.background),
             sidebar,
@@ -505,6 +523,18 @@ fn bisect_contrast(from: u32, toward: u32, against: u32, target: f32) -> u32 {
 
 fn raise(base: u32, toward: u32, target: f32) -> u32 {
     bisect_contrast(base, toward, base, target)
+}
+
+/// The darkest (or, on a dark surface, lightest) colour that keeps every
+/// channel of `base` the same distance apart, so blending toward it only
+/// changes lightness: #f5f5f3 steps to #e8e8e6, never to #e8e8e8.
+fn shade_of(base: u32, fg: u32) -> u32 {
+    let ch = [base >> 16 & 0xff, base >> 8 & 0xff, base & 0xff];
+    let shift = match relative_luminance(fg) < relative_luminance(base) {
+        true => ch.map(|c| c - ch.iter().min().unwrap()),
+        false => ch.map(|c| c + (0xff - ch.iter().max().unwrap())),
+    };
+    (shift[0] << 16) | (shift[1] << 8) | shift[2]
 }
 
 fn dim(ink: u32, surface: u32, target: f32) -> u32 {
@@ -644,7 +674,7 @@ pub(crate) fn legible_dim(ink: u32, bg: u32, opacity: f32) -> Option<u32> {
     Some(bisect_contrast(faded, ink, bg, floor))
 }
 
-fn is_dark(bg: u32) -> bool {
+pub(crate) fn is_dark(bg: u32) -> bool {
     relative_luminance(bg) < 0.5
 }
 
@@ -1158,7 +1188,11 @@ fn load_iterm_theme(path: &std::path::Path) -> Result<Theme, String> {
     let color = |key: &str| -> Option<u32> {
         let c = dict.get(key)?.as_dictionary()?;
         let comp = |k: &str| -> Option<u32> {
-            let f = c.get(k)?.as_real()?;
+            // iTerm2 and plistlib write exact 0 and 1 as `<integer>`.
+            let v = c.get(k)?;
+            let f = v
+                .as_real()
+                .or_else(|| v.as_signed_integer().map(|i| i as f64))?;
             Some((f.clamp(0.0, 1.0) * 255.0).round() as u32)
         };
         Some(
@@ -1750,12 +1784,9 @@ mod tests {
     fn state_ladder_is_separable_on_every_surface() {
         for t in builtins() {
             let s = t.surfaces();
-            for (name, sf) in [
-                ("window", s.window),
-                ("sidebar", s.sidebar),
-                ("rail", s.rail),
-                ("popover", s.popover),
-            ] {
+            // The side panels run their own lighter rungs;
+            // `panel_state_ladder_…` holds those apart instead.
+            for (name, sf) in [("window", s.window), ("popover", s.popover)] {
                 let sel_base = contrast(sf.selected, sf.base);
                 let sel_hover = contrast(sf.selected, sf.hover);
                 let hover_base = contrast(sf.hover, sf.base);
@@ -1778,6 +1809,32 @@ mod tests {
                 assert!(
                     hover_base >= 1.1,
                     "{}/{name}: hover is only {hover_base:.2}:1 from the surface",
+                    t.id
+                );
+                assert!(
+                    contrast(sf.pressed, sf.base) > sel_base,
+                    "{}/{name}: pressed must read past selected",
+                    t.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn panel_state_ladder_is_separable_in_every_theme() {
+        for t in builtins() {
+            let s = t.surfaces();
+            for (name, sf) in [("sidebar", s.sidebar), ("rail", s.rail)] {
+                let hover_base = contrast(sf.hover, sf.base);
+                let sel_base = contrast(sf.selected, sf.base);
+                assert!(
+                    hover_base >= state::PANEL_HOVER - 0.02,
+                    "{}/{name}: hover is only {hover_base:.2}:1 from the surface",
+                    t.id
+                );
+                assert!(
+                    sel_base >= state::PANEL_SELECTED - 0.02 && sel_base > hover_base,
+                    "{}/{name}: selected is only {sel_base:.2}:1 from the surface",
                     t.id
                 );
                 assert!(
@@ -2529,6 +2586,35 @@ ansi:
         let img = file.background_image.expect("image field lost");
         assert_eq!(img.path, "/pictures/koi.jpg");
         assert_eq!(img.opacity, 0.4);
+    }
+
+    #[test]
+    fn iterm_theme_accepts_integer_components_and_no_alpha() {
+        let entry = |key: String, r: &str| {
+            format!(
+                "<key>{key}</key><dict><key>Red Component</key>{r}\
+                 <key>Green Component</key><real>0.5</real>\
+                 <key>Blue Component</key><integer>0</integer></dict>"
+            )
+        };
+        let mut body: String = (0..16)
+            .map(|i| entry(format!("Ansi {i} Color"), "<integer>1</integer>"))
+            .collect();
+        body += &entry("Background Color".into(), "<integer>0</integer>");
+        body += &entry("Foreground Color".into(), "<real>1.0</real>");
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <plist version=\"1.0\"><dict>{body}</dict></plist>"
+        );
+        let path =
+            std::env::temp_dir().join(format!("tty7-int-{}.itermcolors", std::process::id()));
+        std::fs::write(&path, xml).unwrap();
+        let theme = load_iterm_theme(&path);
+        let _ = std::fs::remove_file(&path);
+        let theme = theme.unwrap();
+        assert_eq!(theme.ansi16[2], (0xff, 0x80, 0x00));
+        assert_eq!(theme.background_color(), 0x008000);
+        assert_eq!(theme.foreground, 0xff8000);
     }
 
     #[test]

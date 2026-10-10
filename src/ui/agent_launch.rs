@@ -147,11 +147,38 @@ pub(crate) fn fork_line(
     agent.fork_command(session_id, Some(&argv))
 }
 
+/// How long a new shell is given to reach its first prompt before a queued
+/// command is typed anyway.
+const PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+const PROMPT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Type `command` into the shell `slot` holds — now if it is up, or the
 /// moment it lands if it is still connecting.
-fn run_when_ready(slot: &PaneSlot, command: String, cx: &mut App) {
+///
+/// A shell that is up is not yet at its prompt: typed straight in, the line
+/// was echoed by the tty above everything the shell prints while it starts (a
+/// banner, `fastfetch`) and read only afterwards. It waits for the shell's
+/// first prompt instead — up to [`PROMPT_WAIT`], for a shell with no
+/// integration to say when that is.
+pub(crate) fn run_when_ready(slot: &PaneSlot, command: String, cx: &mut App) {
     match slot {
-        PaneSlot::Ready(view) => view.read(cx).run_command_line(&command),
+        PaneSlot::Ready(view) => {
+            let view = view.downgrade();
+            cx.spawn(async move |cx| {
+                let deadline = std::time::Instant::now() + PROMPT_WAIT;
+                loop {
+                    let ready = view
+                        .read_with(cx, |view, _| view.terminal.at_prompt())
+                        .unwrap_or(true);
+                    if ready || std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    cx.background_executor().timer(PROMPT_POLL).await;
+                }
+                let _ = view.read_with(cx, |view, _| view.run_command_line(&command));
+            })
+            .detach();
+        }
         PaneSlot::Connecting(pending) => {
             pending.update(cx, |pending, _| pending.spawn.run_on_land = Some(command));
         }

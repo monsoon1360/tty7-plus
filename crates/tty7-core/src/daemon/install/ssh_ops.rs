@@ -54,7 +54,8 @@ impl RemoteOps for SshRemoteOps {
             match tokio::time::timeout(COMMAND_TIMEOUT, exec(&conn, &cmd)).await {
                 Ok(result) => result,
                 Err(_) => Err(format!(
-                    "the remote did not finish `{cmd}` within {COMMAND_TIMEOUT:?}"
+                    "the remote did not finish `{}` within {COMMAND_TIMEOUT:?}",
+                    super::windows_host::label(&cmd)
                 )),
             }
         })
@@ -164,7 +165,7 @@ async fn exec(conn: &Arc<SshConnection>, cmd: &str) -> Result<ExecOutput, String
     channel
         .exec(true, cmd)
         .await
-        .map_err(|e| format!("could not run `{cmd}`: {e}"))?;
+        .map_err(|e| format!("could not run `{}`: {e}", super::windows_host::label(cmd)))?;
     let _ = channel.eof().await;
 
     let mut stdout = Vec::new();
@@ -261,7 +262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_command_channel_retires_the_connection() {
+    async fn a_refused_command_channel_marks_the_connection_full() {
         let sshd = FakeSshd::connect(Exec::Hangs, Some(0)).await;
         let err = exec(&sshd.conn, "true")
             .await
@@ -271,8 +272,8 @@ mod tests {
             "{err}"
         );
         assert!(
-            !sshd.conn.is_alive(),
-            "Try Again must dial afresh, not retry the spent link"
+            sshd.conn.is_saturated(),
+            "Try Again must be handed another connection, not this full one"
         );
     }
 }

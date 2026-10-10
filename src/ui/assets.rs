@@ -34,6 +34,12 @@ fn agent_icon(path: &str) -> Option<&'static [u8]> {
         "icons/git-commit.svg" => include_bytes!("../../assets/icons/git-commit.svg"),
         "icons/panel-left.svg" => include_bytes!("../../assets/icons/panel-left.svg"),
         "icons/panel-right.svg" => include_bytes!("../../assets/icons/panel-right.svg"),
+        "icons/panel-left-collapsed.svg" => {
+            include_bytes!("../../assets/icons/panel-left-collapsed.svg")
+        }
+        "icons/panel-right-collapsed.svg" => {
+            include_bytes!("../../assets/icons/panel-right-collapsed.svg")
+        }
         "icons/plus.svg" => include_bytes!("../../assets/icons/plus.svg"),
         "icons/ellipsis.svg" => include_bytes!("../../assets/icons/ellipsis.svg"),
         "icons/folder-closed.svg" => include_bytes!("../../assets/icons/folder-closed.svg"),
@@ -45,6 +51,7 @@ fn agent_icon(path: &str) -> Option<&'static [u8]> {
         "icons/copy.svg" => include_bytes!("../../assets/icons/copy.svg"),
         "icons/folder.svg" => include_bytes!("../../assets/icons/folder.svg"),
         "icons/file.svg" => include_bytes!("../../assets/icons/file.svg"),
+        "icons/image.svg" => include_bytes!("../../assets/icons/image.svg"),
         "icons/circle-info.svg" => include_bytes!("../../assets/icons/circle-info.svg"),
         "icons/machine-local.svg" => include_bytes!("../../assets/icons/machine-local.svg"),
         "icons/machine-remote.svg" => include_bytes!("../../assets/icons/machine-remote.svg"),
@@ -65,6 +72,7 @@ fn agent_icon(path: &str) -> Option<&'static [u8]> {
             include_bytes!("../../assets/icons/settings/chevron-right.svg")
         }
         "icons/settings/close.svg" => include_bytes!("../../assets/icons/settings/close.svg"),
+        "icons/settings/mobile.svg" => include_bytes!("../../assets/icons/settings/mobile.svg"),
         "icons/settings/general.svg" => include_bytes!("../../assets/icons/settings/general.svg"),
         "icons/settings/integrations.svg" => {
             include_bytes!("../../assets/icons/settings/integrations.svg")

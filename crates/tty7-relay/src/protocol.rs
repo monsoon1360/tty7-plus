@@ -47,14 +47,18 @@ pub(crate) fn registration(text: &str) -> Result<ValidRegistration, &'static str
     if text.len() > MAX_REGISTRATION_BYTES {
         return Err("registration is too large");
     }
-    let mut registration: Registration = serde_json::from_str(text).map_err(|_| "invalid registration")?;
+    let mut registration: Registration =
+        serde_json::from_str(text).map_err(|_| "invalid registration")?;
     if registration.frame_type != "register" || !valid_host_id(&registration.host_id) {
         return Err("invalid registration");
     }
     let role = match registration.role {
         Role::Client => RegisteredRole::Client,
         Role::Host => {
-            let token = registration.token.as_ref().ok_or("invalid host authentication")?;
+            let token = registration
+                .token
+                .as_ref()
+                .ok_or("invalid host authentication")?;
             if token.len() != 43 {
                 return Err("invalid host authentication");
             }
@@ -72,11 +76,17 @@ pub(crate) fn registration(text: &str) -> Result<ValidRegistration, &'static str
             RegisteredRole::Host
         }
     };
-    Ok(ValidRegistration { role, host_id: std::mem::take(&mut registration.host_id) })
+    Ok(ValidRegistration {
+        role,
+        host_id: std::mem::take(&mut registration.host_id),
+    })
 }
 
 fn valid_host_id(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Deserialize)]
@@ -90,17 +100,27 @@ struct Envelope {
 }
 
 pub(crate) enum Incoming {
-    Data { client_id: Option<Box<serde_json::value::RawValue>>, payload: String },
-    Disconnect { client_id: Uuid },
+    Data {
+        client_id: Option<Box<serde_json::value::RawValue>>,
+        payload: String,
+    },
+    Disconnect {
+        client_id: Uuid,
+    },
 }
 
 pub(crate) fn incoming(text: &str) -> Result<Incoming, ()> {
     let envelope: Envelope = serde_json::from_str(text).map_err(|_| ())?;
     match envelope.kind.as_str() {
-        "data" => Ok(Incoming::Data { client_id: envelope.client_id, payload: envelope.payload.ok_or(())? }),
+        "data" => Ok(Incoming::Data {
+            client_id: envelope.client_id,
+            payload: envelope.payload.ok_or(())?,
+        }),
         "disconnect" => {
             let client_id = envelope.client_id.ok_or(())?;
-            Ok(Incoming::Disconnect { client_id: serde_json::from_str(client_id.get()).map_err(|_| ())? })
+            Ok(Incoming::Disconnect {
+                client_id: serde_json::from_str(client_id.get()).map_err(|_| ())?,
+            })
         }
         _ => Err(()),
     }
@@ -113,10 +133,19 @@ pub(crate) enum Frame<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         client_id: Option<Uuid>,
     },
-    PeerJoined { client_id: Uuid },
-    PeerLeft { client_id: Uuid },
-    Data { client_id: Uuid, payload: &'a str },
-    Error { message: &'a str },
+    PeerJoined {
+        client_id: Uuid,
+    },
+    PeerLeft {
+        client_id: Uuid,
+    },
+    Data {
+        client_id: Uuid,
+        payload: &'a str,
+    },
+    Error {
+        message: &'a str,
+    },
 }
 
 struct BoundedJson(Vec<u8>);
@@ -175,15 +204,28 @@ mod tests {
 
     #[test]
     fn client_identity_field_is_not_a_validation_or_spoofing_input() {
-        let frame = incoming(r#"{"type":"data","client_id":{"spoof":true},"payload":"opaque"}"#).unwrap();
+        let frame =
+            incoming(r#"{"type":"data","client_id":{"spoof":true},"payload":"opaque"}"#).unwrap();
         assert!(matches!(frame, Incoming::Data { .. }));
     }
 
     #[test]
     fn outgoing_envelope_also_obeys_frame_limit() {
         let payload = "x".repeat(MAX_MESSAGE_BYTES);
-        assert!(encode(&Frame::Data { client_id: Uuid::new_v4(), payload: &payload }).is_err());
+        assert!(
+            encode(&Frame::Data {
+                client_id: Uuid::new_v4(),
+                payload: &payload
+            })
+            .is_err()
+        );
         let payload = "x".repeat(MAX_MESSAGE_BYTES - 128);
-        assert!(encode(&Frame::Data { client_id: Uuid::new_v4(), payload: &payload }).is_ok());
+        assert!(
+            encode(&Frame::Data {
+                client_id: Uuid::new_v4(),
+                payload: &payload
+            })
+            .is_ok()
+        );
     }
 }

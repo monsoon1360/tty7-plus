@@ -250,7 +250,18 @@ pub fn list(t: &dyn Transport, q: &ListQuery, page: u32) -> Result<ListPage, Api
 /// request, its branches, size and changed files.
 pub fn detail(t: &dyn Transport, slug: &RepoSlug, number: u64) -> Result<Detail, ApiError> {
     let base = repo_path(slug);
-    let issue: RawIssue = decode(&t.get_full(&format!("{base}/issues/{number}"))?)?;
+    // Requests that do not depend on each other go out together: a detail is
+    // two round trips (three for a pull request) instead of seven.
+    let (issue, comments) = std::thread::scope(|s| {
+        let comments = s.spawn(|| {
+            t.get_full(&format!(
+                "{base}/issues/{number}/comments?per_page={DETAIL_PAGE}"
+            ))
+        });
+        let issue = t.get_full(&format!("{base}/issues/{number}"));
+        (issue, join(comments))
+    });
+    let issue: RawIssue = decode(&issue?)?;
     let is_pr = issue.is_pr();
     let body = super::markdown::sign_attachments(
         issue.body.as_deref().unwrap_or_default(),
@@ -258,9 +269,7 @@ pub fn detail(t: &dyn Transport, slug: &RepoSlug, number: u64) -> Result<Detail,
     );
     let mut item = issue.into_item();
 
-    let reply = t.get_full(&format!(
-        "{base}/issues/{number}/comments?per_page={DETAIL_PAGE}"
-    ))?;
+    let reply = comments?;
     let comments: Vec<Comment> = decode::<Vec<RawComment>>(&reply)?
         .into_iter()
         .map(RawComment::into_comment)
@@ -270,7 +279,32 @@ pub fn detail(t: &dyn Transport, slug: &RepoSlug, number: u64) -> Result<Detail,
     let (mut pull, mut files, mut files_truncated) = (None, None, false);
     let (mut checks_out, mut reviewers_out) = (None, None);
     if is_pr {
-        let mut raw: RawPull = decode(&t.get(&format!("{base}/pulls/{number}"))?)?;
+        let (raw, reviews, files_reply) = std::thread::scope(|s| {
+            let reviews = s.spawn(|| {
+                t.get(&format!(
+                    "{base}/pulls/{number}/reviews?per_page={DETAIL_PAGE}"
+                ))
+            });
+            let files = s.spawn(|| {
+                t.get(&format!(
+                    "{base}/pulls/{number}/files?per_page={DETAIL_PAGE}"
+                ))
+            });
+            let raw = t
+                .get(&format!("{base}/pulls/{number}"))
+                .and_then(|r| decode::<RawPull>(&r));
+            // Checks need the head commit, so they wait on the pull request,
+            // still alongside the other two.
+            if let Ok(raw) = &raw
+                && !raw.head_sha().is_empty()
+            {
+                checks_out = checks(t, slug, raw.head_sha())
+                    .inspect_err(|e| log::warn!("github: checks of {}#{number}: {e}", slug.full()))
+                    .ok();
+            }
+            (raw, join(reviews), join(files))
+        });
+        let mut raw = raw?;
         let teams = raw.requested_team_names(&slug.owner);
         let requested = std::mem::take(&mut raw.requested_reviewers);
         let (pr_item, info) = raw.into_item();
@@ -281,23 +315,13 @@ pub fn detail(t: &dyn Transport, slug: &RepoSlug, number: u64) -> Result<Detail,
         // itself: one that cannot be read is left out rather than failing
         // the whole view (an old commit's checks can be gone, a token can be
         // scoped away from them).
-        if !info.head_sha.is_empty() {
-            checks_out = checks(t, slug, &info.head_sha)
-                .inspect_err(|e| log::warn!("github: checks of {}#{number}: {e}", slug.full()))
-                .ok();
-        }
-        reviewers_out = t
-            .get(&format!(
-                "{base}/pulls/{number}/reviews?per_page={DETAIL_PAGE}"
-            ))
+        reviewers_out = reviews
             .and_then(|r| decode::<Vec<RawReview>>(&r))
             .inspect_err(|e| log::warn!("github: reviews of {}#{number}: {e}", slug.full()))
             .ok()
             .map(|reviews| super::model::reviewers(&item.author, reviews, requested, teams));
         pull = Some(info);
-        let reply = t.get(&format!(
-            "{base}/pulls/{number}/files?per_page={DETAIL_PAGE}"
-        ))?;
+        let reply = files_reply?;
         files = Some(
             decode::<Vec<RawFile>>(&reply)?
                 .into_iter()
@@ -320,18 +344,34 @@ pub fn detail(t: &dyn Transport, slug: &RepoSlug, number: u64) -> Result<Detail,
     })
 }
 
+/// A scoped request's answer; a request that panicked is a failed one.
+fn join(
+    handle: std::thread::ScopedJoinHandle<'_, Result<Reply, ApiError>>,
+) -> Result<Reply, ApiError> {
+    handle
+        .join()
+        .unwrap_or_else(|_| Err(ApiError::Network("request thread panicked".into())))
+}
+
 /// Every check on commit `sha`: its check runs and its commit statuses.
 /// This is also what a pending pull request is polled with, so it stays two
 /// requests however the detail around it grows.
 pub fn checks(t: &dyn Transport, slug: &RepoSlug, sha: &str) -> Result<Checks, ApiError> {
     let base = repo_path(slug);
     let sha = super::remote::escape_path(sha);
-    let runs: RawCheckRuns = decode(&t.get(&format!(
-        "{base}/commits/{sha}/check-runs?per_page={DETAIL_PAGE}"
-    ))?)?;
-    let statuses: RawCombinedStatus = decode(&t.get(&format!(
-        "{base}/commits/{sha}/status?per_page={DETAIL_PAGE}"
-    ))?)?;
+    let (runs, statuses) = std::thread::scope(|s| {
+        let statuses = s.spawn(|| {
+            t.get(&format!(
+                "{base}/commits/{sha}/status?per_page={DETAIL_PAGE}"
+            ))
+        });
+        let runs = t.get(&format!(
+            "{base}/commits/{sha}/check-runs?per_page={DETAIL_PAGE}"
+        ));
+        (runs, join(statuses))
+    });
+    let runs: RawCheckRuns = decode(&runs?)?;
+    let statuses: RawCombinedStatus = decode(&statuses?)?;
     Ok(super::model::checks(runs, statuses))
 }
 
@@ -684,6 +724,49 @@ pub(crate) mod tests {
             ],
             "the author's own reply is not a review"
         );
+    }
+
+    /// Counts requests in flight at once. Each one is held until three are
+    /// in flight, or for a second at most, so the overlap shows however slow
+    /// the machine is to start the threads.
+    struct Slow {
+        inner: Fixture,
+        now: std::sync::atomic::AtomicUsize,
+        peak: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Transport for Slow {
+        fn get(&self, path: &str) -> Result<Reply, ApiError> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let n = self.now.fetch_add(1, SeqCst) + 1;
+            self.peak.fetch_max(n, SeqCst);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            while self.peak.load(SeqCst) < 3 && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.now.fetch_sub(1, SeqCst);
+            self.inner.get(path)
+        }
+
+        fn authenticated(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_pull_request_detail_sends_its_independent_requests_together() {
+        let mut inner = Fixture::new();
+        pull_fixture(&mut inner, PULL_31);
+        let t = Slow {
+            inner,
+            now: Default::default(),
+            peak: Default::default(),
+        };
+        detail(&t, &slug(), 31).unwrap();
+        // Seven requests, three round trips: issue ‖ comments, then
+        // pull → (check-runs ‖ status) alongside reviews ‖ files.
+        assert_eq!(t.inner.asked.lock().unwrap().len(), 7);
+        assert!(t.peak.load(std::sync::atomic::Ordering::SeqCst) >= 3);
     }
 
     #[test]

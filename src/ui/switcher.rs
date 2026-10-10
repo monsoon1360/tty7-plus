@@ -294,9 +294,9 @@ pub(crate) enum Page {
     Create(CreateForm),
 }
 
-/// The "New Workspace" form: a name prefilled with what the workspace would
-/// have called itself anyway, and a host picked from a combobox that folds
-/// however many machines are configured into one row.
+/// The "New Workspace" form: a name the user has to give, and a host picked
+/// from a combobox that folds however many machines are configured into one
+/// row.
 pub(crate) struct CreateForm {
     name: Entity<InputState>,
     /// The combobox's filter text. Only meaningful while `open`.
@@ -307,10 +307,15 @@ pub(crate) struct CreateForm {
     sel: usize,
     /// The picked host. `None` is this computer.
     chosen: Option<HostChoice>,
-    /// What the name box was prefilled with. While its value still says this
-    /// (or nothing), picking another host refills it; one keystroke of the
-    /// user's own and it is theirs.
-    prefill: String,
+}
+
+impl CreateForm {
+    /// The typed name, trimmed; `None` while the box is blank, which is also
+    /// when Create stays disabled.
+    fn name(&self, cx: &App) -> Option<String> {
+        let name = self.name.read(cx).value().trim().to_string();
+        (!name.is_empty()).then_some(name)
+    }
 }
 
 /// A create the user asked for on a machine that was not connected yet: the
@@ -329,6 +334,10 @@ pub(crate) struct Switcher {
     /// asynchronously after the panel opens; empty both while the listing is
     /// in flight and when there is nothing to reap.
     orphans: Vec<OrphanPane>,
+    /// Why the last Close on an orphan did not take, by pane id. Said on the
+    /// orphan's own line: a Close that fails in silence reads as a dead
+    /// button.
+    orphan_failures: HashMap<u64, String>,
     column: Column,
     left_sel: usize,
     right_sel: usize,
@@ -405,8 +414,12 @@ fn flatten(groups: &[Group], query: &str) -> Vec<Nav> {
     }
     nav.sort_by(|&(ga, ra), &(gb, rb)| {
         let (a, b) = (&groups[ga].rows[ra], &groups[gb].rows[rb]);
-        b.current
-            .cmp(&a.current)
+        // How a row matched comes before which one is current: "qa" is the
+        // workspace named qa, not this window's one whose tabs sit in
+        // `/tmp/t7qa`, and Enter takes the top row.
+        a.name_match(query)
+            .cmp(&b.name_match(query))
+            .then_with(|| b.current.cmp(&a.current))
             .then_with(|| b.last_active.cmp(&a.last_active))
             .then_with(|| a.name.cmp(&b.name))
     });
@@ -421,19 +434,6 @@ enum HostItem {
     /// Pinned last, filter or no filter: the way out when the machine wanted
     /// is not configured yet.
     AddHost,
-}
-
-/// What the form's name box starts out saying: the same codename a workspace
-/// created without one would have been given anyway (`fresh_workspace_name` —
-/// "quiet-otter"), rolled against the chosen machine so it stays unique
-/// there. Editable before it is spent; clearing the box creates a nameless
-/// workspace that shows its directory, the old fallback.
-fn default_workspace_name(chosen: Option<&HostChoice>, cx: &App) -> String {
-    let host = match chosen {
-        None => tty7_core::host::HostId::LOCAL,
-        Some(choice) => choice.target.host_id(),
-    };
-    crate::ui::tree_sync::fresh_workspace_name(cx, host)
 }
 
 fn host_items(hosts: Vec<HostChoice>, query: &str, local_label: &str) -> Vec<HostItem> {
@@ -510,6 +510,7 @@ impl Tty7App {
             page: Page::List,
             renaming: None,
             orphans: Vec::new(),
+            orphan_failures: HashMap::new(),
             column,
             left_sel: 0,
             right_sel: 0,
@@ -584,12 +585,19 @@ impl Tty7App {
                 Ok(listed) => listed,
                 Err(e) => {
                     log::warn!(target: "tty7::switcher", "closing orphan %{pane_id} failed: {e}");
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(sw) = this.switcher.as_mut() {
+                            sw.orphan_failures.insert(pane_id, e.to_string());
+                        }
+                        cx.notify();
+                    });
                     return;
                 }
             };
             let _ = this.update(cx, |this, cx| {
                 let held = held_local_pane_ids(cx);
                 if let Some(sw) = this.switcher.as_mut() {
+                    sw.orphan_failures.remove(&pane_id);
                     sw.orphans = orphan_panes_of(listed, &held);
                 }
                 cx.notify();
@@ -916,6 +924,15 @@ impl Tty7App {
         for group in &mut groups {
             let Some(target) = group.target.clone() else {
                 group.link = Link::Local;
+                // A remote client can take one of this computer's workspaces
+                // too, and the row says so the same way.
+                let taken: HashSet<WorkspaceId> =
+                    RemoteLinks::preempted_on(cx, crate::core::session::HostId::LOCAL)
+                        .into_iter()
+                        .collect();
+                for row in &mut group.rows {
+                    row.preempted = taken.contains(&row.id);
+                }
                 continue;
             };
             if let Some(known) = configured.iter().find(|h| h.target == target) {
@@ -948,11 +965,14 @@ impl Tty7App {
             // the reconnect that has been failing for an hour, have nowhere at
             // all to be said.
             if group.error.is_none() {
-                group.error = match supervised {
-                    Some(MachineStatus::Failed(e)) => Some(e),
-                    Some(MachineStatus::Reconnecting { last_error, .. }) => last_error,
-                    _ => None,
-                };
+                group.error = RemoteLinks::machine_error(cx, id);
+            }
+            // A connect of this window's own is on the wire: whatever failed
+            // before it is the question it is answering, and the band has to
+            // say Connecting — an old reason left up reads as a button that
+            // did nothing.
+            if matches!(group.link, Link::Connecting) {
+                group.error = None;
             }
             let taken: HashSet<WorkspaceId> =
                 RemoteLinks::preempted_on(cx, id).into_iter().collect();
@@ -1191,7 +1211,7 @@ impl Tty7App {
 
     /// `⌘⇧N` and the footer button. Raises the switcher if it is down and
     /// flips the card to the create form, host defaulting to this computer —
-    /// so `⌘⇧N` then Enter is still "a fresh local workspace", two keys.
+    /// so `⌘⇧N`, a name, then Enter is a fresh local workspace.
     pub(crate) fn open_workspace_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.switcher.is_none() {
             self.open_switcher(window, cx);
@@ -1205,12 +1225,20 @@ impl Tty7App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prefill = default_workspace_name(chosen.as_ref(), cx);
         let name = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(t(L10nKey::SwitcherFormNamePlaceholder))
-                .default_value(prefill.clone())
+            InputState::new(window, cx).placeholder(t(L10nKey::SwitcherFormNamePlaceholder))
         });
+        // Create is enabled by what the box says, so the card redraws as it
+        // goes from blank to named and back.
+        let name_sub = cx.subscribe_in(
+            &name,
+            window,
+            |_this, _input, ev: &InputEvent, _window, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        );
         let host = cx.new(|cx| InputState::new(window, cx).placeholder(t(L10nKey::FilterHosts)));
         // Retyping the filter moves the dropdown cursor back onto the first hit.
         let sub = cx.subscribe_in(
@@ -1234,9 +1262,9 @@ impl Tty7App {
                 open: false,
                 sel: 0,
                 chosen,
-                prefill,
             });
             sw._subs.push(sub);
+            sw._subs.push(name_sub);
         }
         cx.notify();
     }
@@ -1316,7 +1344,6 @@ impl Tty7App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let prefill = default_workspace_name(chosen.as_ref(), cx);
         if let Some(sw) = self.switcher.as_mut()
             && let Page::Create(form) = &mut sw.page
         {
@@ -1324,26 +1351,17 @@ impl Tty7App {
             form.open = false;
             form.sel = 0;
             let (host, name) = (form.host.clone(), form.name.clone());
-            // A name the user has not touched follows the host; one they have
-            // is theirs and stays.
-            let untouched = {
-                let value = name.read(cx).value().trim().to_string();
-                value.is_empty() || value == form.prefill
-            };
-            if untouched {
-                form.prefill = prefill.clone();
-                name.update(cx, |state, cx| state.set_value(&prefill, window, cx));
-            }
             host.update(cx, |state, cx| state.set_value("", window, cx));
             name.update(cx, |state, cx| state.focus(window, cx));
         }
         cx.notify();
     }
 
-    /// Enter on the form. Local and already-connected machines create on the
-    /// spot; a machine with no live link has to connect first — the create is
-    /// parked on the app and `finish_connect` completes it, because only a
-    /// live link knows the home directory a fresh workspace is rooted at.
+    /// Enter or Create on the form. Nothing happens until the name box says
+    /// something. Local and already-connected machines create on the spot; a
+    /// machine with no live link has to connect first — the create is parked
+    /// on the app and `finish_connect` completes it, because only a live link
+    /// knows the home directory a fresh workspace is rooted at.
     fn switcher_form_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (name, chosen) = {
             let Some(sw) = self.switcher.as_ref() else {
@@ -1352,8 +1370,10 @@ impl Tty7App {
             let Page::Create(form) = &sw.page else {
                 return;
             };
-            let name = form.name.read(cx).value().trim().to_string();
-            ((!name.is_empty()).then_some(name), form.chosen.clone())
+            let Some(name) = form.name(cx) else {
+                return;
+            };
+            (Some(name), form.chosen.clone())
         };
         match chosen {
             None => {
@@ -1999,11 +2019,13 @@ impl Tty7App {
                     self.render_install_progress(&group.label, phase, cx)
                         .into_any_element(),
                 );
-            } else if group.parked
-                && !self.parked_dismissed.contains(&group.key)
-                && !group.rows.is_empty()
-            {
-                out.push(self.render_parked_notice(group, cx).into_any_element());
+            } else if group.parked && !group.rows.is_empty() {
+                // Dismissed means quiet. Falling through would put the
+                // failure that came with the parking straight back up as the
+                // error band, under a route nothing can retry.
+                if !self.parked_dismissed.contains(&group.key) {
+                    out.push(self.render_parked_notice(group, cx).into_any_element());
+                }
             } else if let Some(error) = group.error.clone() {
                 out.push(self.render_error_band(group, &error, cx));
             } else if matches!(group.link, Link::Connecting | Link::Reconnecting { .. }) {
@@ -2047,6 +2069,7 @@ impl Tty7App {
         let replace_key = group.key.clone();
         let dismiss_key = group.key.clone();
         let dismiss_target = group.target.clone();
+        let dismiss_error = error.to_string();
         // The band no longer sits under a machine header, so plain errors
         // carry the machine's name themselves; the dialect restatement
         // already names it.
@@ -2069,30 +2092,46 @@ impl Tty7App {
             .child(
                 h_flex()
                     .gap(px(4.))
-                    .child(
-                        Button::new(gpui::SharedString::from(format!(
-                            "switcher-retry:{}",
-                            group.key
-                        )))
-                        .label(t(L10nKey::TryAgain))
-                        .ghost()
-                        .xsmall()
-                        .on_click(cx.listener(
-                            move |this, _, _window, cx| {
-                                this.remote_host_errors.remove(&retry_key);
-                                if let Some(target) = retry.target.clone() {
-                                    this.connect_to_host(
-                                        HostChoice {
-                                            target,
-                                            label: retry.label.clone(),
-                                            detail: String::new(),
-                                        },
-                                        cx,
-                                    );
-                                }
-                            },
-                        )),
-                    )
+                    // A route that no longer resolves cannot be retried into
+                    // working (#485); a button that can only fail again is
+                    // worse than none.
+                    .when(!group.parked, |row| {
+                        row.child(
+                            Button::new(gpui::SharedString::from(format!(
+                                "switcher-retry:{}",
+                                group.key
+                            )))
+                            .label(t(L10nKey::TryAgain))
+                            .ghost()
+                            .xsmall()
+                            .on_click(cx.listener(
+                                move |this, _, _window, cx| {
+                                    let ours = this.remote_host_errors.remove(&retry_key).is_some()
+                                        || matches!(
+                                            &this.connect,
+                                            Some(ConnectFlow::Failed { choice, .. })
+                                                if Some(&choice.target) == retry.target.as_ref()
+                                        );
+                                    if let Some(target) = retry.target.clone() {
+                                        let host = target.host_id();
+                                        if !ours && RemoteLinks::machine_error(cx, host).is_some() {
+                                            RemoteLinks::retry_machine_now(cx, host);
+                                            cx.notify();
+                                            return;
+                                        }
+                                        this.connect_to_host(
+                                            HostChoice {
+                                                target,
+                                                label: retry.label.clone(),
+                                                detail: String::new(),
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                },
+                            )),
+                        )
+                    })
                     .when(
                         crate::daemon::control::is_dialect_refusal(error)
                             // Same gate as the workspace strip's: a machine
@@ -2140,6 +2179,22 @@ impl Tty7App {
                         .on_click(cx.listener(
                             move |this, _, _window, cx| {
                                 this.remote_host_errors.remove(&dismiss_key);
+                                // The supervisor keeps its own copy of the
+                                // reason, and it is the one that outlives every
+                                // other source: without this the band is back
+                                // on the very next frame.
+                                if let Some(target) = &dismiss_target {
+                                    let host = target.host_id();
+                                    if RemoteLinks::machine_error(cx, host).as_ref()
+                                        == Some(&dismiss_error)
+                                    {
+                                        RemoteLinks::dismiss_machine_error(
+                                            cx,
+                                            host,
+                                            &dismiss_error,
+                                        );
+                                    }
+                                }
                                 // The other half of this block can come from a
                                 // failed connect. Retire that too, but only when
                                 // it is this host's failure — a connect to
@@ -2178,7 +2233,7 @@ impl Tty7App {
         };
         // Resolved up front, while `cx` can still be borrowed as an `App`: the
         // render loop below needs it mutably for the Close listener.
-        let lines: Vec<(u64, String)> = switcher
+        let lines: Vec<(u64, String, Option<String>)> = switcher
             .orphans
             .iter()
             .map(|orphan| {
@@ -2191,11 +2246,15 @@ impl Tty7App {
                 } else if !orphan.title.is_empty() {
                     bits.push(orphan.title.clone());
                 }
-                (orphan.pane_id, bits.join(" · "))
+                (
+                    orphan.pane_id,
+                    bits.join(" · "),
+                    switcher.orphan_failures.get(&orphan.pane_id).cloned(),
+                )
             })
             .collect();
         let mut list = v_flex().gap(px(2.));
-        for (pane_id, line) in lines {
+        for (pane_id, line, failure) in lines {
             list = list.child(
                 h_flex()
                     .items_center()
@@ -2213,7 +2272,10 @@ impl Tty7App {
                             .truncate()
                             .text_size(gpui::rems(11. / 16.))
                             .text_color(theme.foreground)
-                            .child(line),
+                            .child(line)
+                            .when_some(failure, |el, failure| {
+                                el.child(div().truncate().text_color(theme.danger).child(failure))
+                            }),
                     )
                     .child(
                         div().flex_shrink_0().child(
@@ -2407,6 +2469,11 @@ impl Tty7App {
             Some((t(L10nKey::SwitcherThisWindow), true))
         } else if row.open {
             Some((t(L10nKey::SwitcherOpen), false))
+        } else if group.target.is_some() && group.link == Link::Offline {
+            // Said in words where the other states go, not as a dot: the
+            // normal case carries nothing extra, so the exception is the
+            // only thing that speaks.
+            Some((t(L10nKey::SwitcherOffline), false))
         } else {
             None
         };
@@ -2415,21 +2482,15 @@ impl Tty7App {
         // workspace name plus path plus badge plus timestamp on one row pushes
         // the trailing pieces straight out over the divider. The second line
         // leads with the machine the workspace lives on — the flat list's only
-        // grouping. Its link state rides on the disc as a dot: green while the
-        // workspace is reachable, faint while it is not, and the warning or
-        // danger ink while a connect is in flight or has failed.
-        let faint = fg.opacity(0.22);
-        let live: gpui::Hsla = gpui::rgb(crate::ui::tab_strip::LIVE_DOT).into();
+        // grouping. A reachable workspace carries nothing extra; an offline
+        // one says so in the state column and dims its disc. Only the states
+        // that want attention — a connect in flight, a failure, a machine
+        // another client took over — keep a dot on the disc.
         let state_dot = match group.link {
-            Link::Local => match row.live {
-                Liveness::Alive => live,
-                Liveness::Unknown | Liveness::Stopped => faint,
-            },
-            Link::Connected if group.preempted => warn,
-            Link::Connected => live,
-            Link::Connecting | Link::Reconnecting { .. } => warn,
-            Link::Failed => theme.danger,
-            Link::Offline => faint,
+            Link::Connected if group.preempted => Some(warn),
+            Link::Connecting | Link::Reconnecting { .. } => Some(warn),
+            Link::Failed => Some(theme.danger),
+            Link::Local | Link::Connected | Link::Offline => None,
         };
         let host_label = match group.target.is_some() {
             true => group.label.clone(),
@@ -2457,6 +2518,7 @@ impl Tty7App {
             .child(
                 div()
                     .size(px(WS_AVATAR))
+                    .when(unlit, |d| d.opacity(0.5))
                     .rounded_full()
                     .bg(theme.secondary)
                     .flex()
@@ -2467,7 +2529,7 @@ impl Tty7App {
                     .text_color(fg.opacity(0.6))
                     .child(initial),
             )
-            .child(
+            .children(state_dot.map(|state_dot| {
                 // The ring is the row's own fill, so the dot reads as cut
                 // out of the disc whichever state the row is in.
                 div()
@@ -2481,8 +2543,8 @@ impl Tty7App {
                     .when(!picked, |d| {
                         d.group_hover("switcher-row", move |d| d.border_color(hover))
                     })
-                    .bg(state_dot),
-            );
+                    .bg(state_dot)
+            }));
 
         let line = h_flex()
             .id(("switcher-row", key))
@@ -2880,18 +2942,39 @@ impl Tty7App {
             )
             .child(host_block);
 
-        let footer = h_flex()
-            .items_center()
-            .h(px(crate::ui::dialog::FOOTER_H))
-            .px(px(crate::ui::dialog::INSET))
-            .border_t_1()
-            .border_color(border)
-            .text_size(gpui::rems(11. / 16.))
-            .text_color(muted)
-            .child(match form.open {
-                true => t(L10nKey::SwitcherFormPickHint),
-                false => t(L10nKey::SwitcherFormCreateHint),
-            });
+        // The same button row as the other cards. While the dropdown is open
+        // Enter picks a host rather than creating, so the row says so.
+        let footer = crate::ui::dialog::footer(cx)
+            .when(form.open, |row| {
+                row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .pl(px(crate::ui::dialog::INSET - 6.))
+                        .text_size(gpui::rems(11. / 16.))
+                        .text_color(muted)
+                        .child(t(L10nKey::SwitcherFormPickHint)),
+                )
+            })
+            .child(crate::ui::dialog::button(
+                "switcher-form-cancel",
+                t(L10nKey::Cancel),
+                crate::ui::dialog::Tone::Secondary,
+                true,
+                sf,
+                cx,
+                cx.listener(|this, _, window, cx| this.switcher_back_to_list(window, cx)),
+            ))
+            .child(crate::ui::dialog::button(
+                "switcher-form-create",
+                t(L10nKey::SwitcherFormCreate),
+                crate::ui::dialog::Tone::Primary,
+                form.name(cx).is_some(),
+                sf,
+                cx,
+                cx.listener(|this, _, window, cx| this.switcher_form_create(window, cx)),
+            ));
 
         v_flex()
             .w(px(card_w))
@@ -3122,6 +3205,22 @@ fn visible_tabs(row: &Row, query: &str) -> Vec<usize> {
 }
 
 impl Row {
+    /// How closely the workspace's own name answers `query`, best first: the
+    /// name itself, the start of it, anywhere in it, then not at all (the row
+    /// is listed for its path or a tab). Every row ties on an empty query.
+    fn name_match(&self, query: &str) -> u8 {
+        if query.is_empty() {
+            return 0;
+        }
+        let name = self.name.to_lowercase();
+        match () {
+            _ if name == query => 0,
+            _ if name.starts_with(query) => 1,
+            _ if name.contains(query) => 2,
+            _ => 3,
+        }
+    }
+
     /// A workspace stays in the list when its own name or path matches, and
     /// also when any of its tabs does — searching "claude" should surface the
     /// workspaces running one.
@@ -3804,6 +3903,18 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_named_by_the_query_outranks_one_matched_by_its_tabs() {
+        // This window's workspace has its tabs under `/tmp/t7qa`, so "qa"
+        // lists it — but the workspace called qa is what was asked for, and
+        // Enter takes the top row.
+        let mut here = aged(row("keen-crane", vec![tab("zsh", "/tmp/t7qa/fixture")]), 50);
+        here.current = true;
+        let groups = vec![group(vec![here, aged(row("qa", vec![]), 10)])];
+        let first = flatten(&groups, "qa")[0];
+        assert_eq!(groups[first.0].rows[first.1].name, "qa");
+    }
+
+    #[test]
     fn a_query_matching_a_machines_name_keeps_all_of_its_rows() {
         // Searching "devbox" is how the retired per-machine grouping is asked
         // for now, so a host-name hit must surface every row of that machine
@@ -4182,14 +4293,31 @@ mod gpui_tests {
             let super::Page::Create(form) = &sw.page else {
                 panic!("the card shows the create form");
             };
-            assert!(
-                form.chosen.is_none(),
-                "the host defaults to this computer, so Enter alone creates locally"
-            );
+            assert!(form.chosen.is_none(), "the host defaults to this computer");
             assert!(!form.open, "the dropdown starts folded");
             assert!(
-                !form.name.read(cx).value().trim().is_empty(),
-                "the name box starts prefilled with the generated default"
+                form.name(cx).is_none(),
+                "the name box starts empty; nothing is suggested for the user"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn the_create_form_will_not_create_without_a_name(cx: &mut TestAppContext) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
+        let before = app.update(cx, |app, _| app.workspace);
+
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.open_workspace_form(window, cx);
+            app.switcher_form_create(window, cx);
+        });
+
+        app.update(cx, |app, _| {
+            assert_eq!(app.workspace, before, "no workspace was created");
+            let sw = app.switcher.as_ref().expect("the form stays up");
+            assert!(
+                matches!(sw.page, super::Page::Create(_)),
+                "the card is still the create form, waiting for a name"
             );
         });
     }

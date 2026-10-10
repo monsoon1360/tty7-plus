@@ -3,13 +3,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::daemon::protocol::{
-    ClientMsg, DaemonMsg, DaemonVersion, PaneInfo, PaneProcs, ShellSpec, WinSize, is_error_kind,
-    peek_frame_kind, take_frame,
+    ClientMsg, DaemonMsg, DaemonVersion, LeaseRequest, PaneInfo, PaneProcs, ShellSpec, WinSize,
+    is_error_kind, peek_frame_kind, take_frame,
 };
 use crate::daemon::router::{RouteAction, RouteChannel, RouteHeader, RouteTarget, negotiate};
 use crate::daemon::transport;
 
 const OPEN_REPLY_WAIT: Duration = Duration::from_secs(15);
+
+/// How long a hook waits on the daemon before it falls back to the tty. The
+/// agent waits on the hook, so this is time the agent stands still.
+const AGENT_EVENT_REPLY_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Default)]
 enum PaneEndpoint {
@@ -125,6 +129,27 @@ impl PaneClient {
             DaemonMsg::InputAck { .. } => Ok(()),
             DaemonMsg::Error(message) => Err(io::Error::other(message)),
             other => Err(unexpected_reply("SendInput", &other)),
+        }
+    }
+
+    /// Hand the daemon an agent hook's report about `pane_id` (see
+    /// `ClientMsg::AgentEvent`). An error — the pane is not this daemon's,
+    /// `pid` does not run in it, the daemon predates the message — means it
+    /// was not applied.
+    pub fn report_agent_event(&self, pane_id: u64, pid: u32, event: &str) -> io::Result<()> {
+        let mut stream = self.open()?;
+        let _ = stream.set_read_timeout(Some(AGENT_EVENT_REPLY_WAIT));
+        let _ = stream.set_write_timeout(Some(AGENT_EVENT_REPLY_WAIT));
+        ClientMsg::AgentEvent {
+            pane_id,
+            pid,
+            event: event.to_string(),
+        }
+        .encode(&mut stream)?;
+        match DaemonMsg::read(&mut stream)? {
+            DaemonMsg::InputAck { .. } => Ok(()),
+            DaemonMsg::Error(message) => Err(io::Error::other(message)),
+            other => Err(unexpected_reply("AgentEvent", &other)),
         }
     }
 
@@ -292,6 +317,11 @@ impl PaneSession {
         self.input.resize(size)
     }
 
+    /// See [`PaneInput::lease`].
+    pub fn lease(&mut self, request: LeaseRequest) -> io::Result<()> {
+        self.input.lease(request)
+    }
+
     pub fn detach(self) -> io::Result<()> {
         self.input.detach()
     }
@@ -330,6 +360,13 @@ impl PaneInput {
 
     pub fn resize(&mut self, size: WinSize) -> io::Result<()> {
         ClientMsg::Resize(size).encode(&mut self.writer)
+    }
+
+    /// Only to a daemon that advertised
+    /// [`FEATURE_SIZE_LEASE`](crate::daemon::protocol::FEATURE_SIZE_LEASE):
+    /// an older one cannot decode it and drops the connection.
+    pub fn lease(&mut self, request: LeaseRequest) -> io::Result<()> {
+        ClientMsg::Lease(request).encode(&mut self.writer)
     }
 
     pub fn detach(mut self) -> io::Result<()> {

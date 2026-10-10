@@ -1,0 +1,785 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-27T05:03:29+00:00",
+  "title": "Design System: tty7 mobile",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "tty7 Blue",
+        "canonical": "#1f6bf0",
+        "tonalRamp": [
+          "#000828",
+          "#001d5f",
+          "#00369c",
+          "#0053d7",
+          "#2d79ff",
+          "#519eff",
+          "#89c8ff",
+          "#c3f0ff"
+        ]
+      },
+      "accent-dark": {
+        "role": "primary",
+        "displayName": "tty7 Blue (Dark)",
+        "canonical": "#78a8f5",
+        "tonalRamp": [
+          "#030b1c",
+          "#0e2447",
+          "#1e4077",
+          "#3460a7",
+          "#5482cc",
+          "#76a5f2",
+          "#a3cbff",
+          "#d4f0ff"
+        ]
+      },
+      "accent-ink": {
+        "role": "primary",
+        "displayName": "Accent Ink",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "accent-ink-dark": {
+        "role": "primary",
+        "displayName": "Accent Ink (Dark)",
+        "canonical": "#0f1419",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#222529",
+          "#3e4347",
+          "#5c6268",
+          "#7d838a",
+          "#9fa6ad",
+          "#c4cad0",
+          "#ebeff3"
+        ]
+      },
+      "tint": {
+        "role": "primary",
+        "displayName": "Blue Wash",
+        "canonical": "rgb(31 107 240 / 0.1)",
+        "tonalRamp": [
+          "#000828",
+          "#001d5f",
+          "#00369c",
+          "#0053d7",
+          "#2d79ff",
+          "#519eff",
+          "#89c8ff",
+          "#c3f0ff"
+        ],
+        "note": "Alpha colour; ramp is of its opaque base."
+      },
+      "tint-dark": {
+        "role": "primary",
+        "displayName": "Blue Wash (Dark)",
+        "canonical": "rgb(120 168 245 / 0.14)",
+        "tonalRamp": [
+          "#030b1c",
+          "#0e2447",
+          "#1e4077",
+          "#3460a7",
+          "#5482cc",
+          "#76a5f2",
+          "#a3cbff",
+          "#d4f0ff"
+        ],
+        "note": "Alpha colour; ramp is of its opaque base."
+      },
+      "working": {
+        "role": "secondary",
+        "displayName": "Working Blue",
+        "canonical": "#3b82f6",
+        "tonalRamp": [
+          "#000924",
+          "#002058",
+          "#003a92",
+          "#0e59c9",
+          "#367df0",
+          "#59a2ff",
+          "#8fc9ff",
+          "#c7f0ff"
+        ]
+      },
+      "waiting": {
+        "role": "secondary",
+        "displayName": "Waiting Amber",
+        "canonical": "#f59e0b",
+        "tonalRamp": [
+          "#190600",
+          "#401800",
+          "#6d2e00",
+          "#994900",
+          "#bf6b00",
+          "#e58f00",
+          "#ffba64",
+          "#ffe5ad"
+        ]
+      },
+      "done": {
+        "role": "secondary",
+        "displayName": "Done Green",
+        "canonical": "#22c55e",
+        "tonalRamp": [
+          "#001100",
+          "#003200",
+          "#005600",
+          "#007c0f",
+          "#00a03a",
+          "#21c55e",
+          "#7ae492",
+          "#bdffc9"
+        ]
+      },
+      "warn-ink": {
+        "role": "tertiary",
+        "displayName": "Waiting Ink",
+        "canonical": "#8a5a0c",
+        "tonalRamp": [
+          "#140800",
+          "#371f00",
+          "#5e3900",
+          "#855603",
+          "#a97733",
+          "#ce9a57",
+          "#ebc18d",
+          "#ffe9c6"
+        ]
+      },
+      "warn-ink-dark": {
+        "role": "tertiary",
+        "displayName": "Waiting Ink (Dark)",
+        "canonical": "#e3bd5d",
+        "tonalRamp": [
+          "#120a00",
+          "#332200",
+          "#583d00",
+          "#7e5b00",
+          "#a17d06",
+          "#c5a03e",
+          "#e4c67e",
+          "#ffedbc"
+        ]
+      },
+      "ok-ink": {
+        "role": "tertiary",
+        "displayName": "Done Ink",
+        "canonical": "#1f7a47",
+        "tonalRamp": [
+          "#001005",
+          "#002e15",
+          "#015029",
+          "#157441",
+          "#409661",
+          "#65ba83",
+          "#9adbae",
+          "#cffcdc"
+        ]
+      },
+      "ok-ink-dark": {
+        "role": "tertiary",
+        "displayName": "Done Ink (Dark)",
+        "canonical": "#78bd95",
+        "tonalRamp": [
+          "#020f07",
+          "#092d1b",
+          "#164e32",
+          "#2b714d",
+          "#4f936d",
+          "#72b78f",
+          "#a2d8b7",
+          "#d4f9e2"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Alarm Red",
+        "canonical": "#c43c43",
+        "tonalRamp": [
+          "#1d0102",
+          "#4a050d",
+          "#7c0f1c",
+          "#ae2531",
+          "#d64d51",
+          "#ff7273",
+          "#ffa4a1",
+          "#ffd6d2"
+        ]
+      },
+      "danger-dark": {
+        "role": "tertiary",
+        "displayName": "Alarm Red (Dark)",
+        "canonical": "#f07878",
+        "tonalRamp": [
+          "#1b0304",
+          "#460e11",
+          "#751d23",
+          "#a5343a",
+          "#cc585a",
+          "#f47b7b",
+          "#ffaaa7",
+          "#ffdad7"
+        ]
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "canonical": "#f2f3f6",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#252526",
+          "#414244",
+          "#606164",
+          "#818285",
+          "#a4a5a8",
+          "#c8c9cb",
+          "#eeeef0"
+        ]
+      },
+      "canvas-dark": {
+        "role": "neutral",
+        "displayName": "Canvas (Dark)",
+        "canonical": "#0f1013",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242527",
+          "#414245",
+          "#606165",
+          "#818286",
+          "#a3a5a9",
+          "#c8c9cc",
+          "#edeef1"
+        ]
+      },
+      "cell": {
+        "role": "neutral",
+        "displayName": "Cell",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "cell-dark": {
+        "role": "neutral",
+        "displayName": "Cell (Dark)",
+        "canonical": "#191b20",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242528",
+          "#404247",
+          "#5f6167",
+          "#808289",
+          "#a2a5ac",
+          "#c7c9cf",
+          "#edeef2"
+        ]
+      },
+      "cell-press": {
+        "role": "neutral",
+        "displayName": "Cell Pressed",
+        "canonical": "#e6e8ed",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242527",
+          "#414245",
+          "#5f6165",
+          "#808287",
+          "#a3a5aa",
+          "#c7c9cd",
+          "#edeef1"
+        ]
+      },
+      "cell-press-dark": {
+        "role": "neutral",
+        "displayName": "Cell Pressed (Dark)",
+        "canonical": "#24272e",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#232529",
+          "#3f4248",
+          "#5e6169",
+          "#7f828b",
+          "#a1a5ae",
+          "#c6c9d0",
+          "#eceef4"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Raised",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "raised-dark": {
+        "role": "neutral",
+        "displayName": "Raised (Dark)",
+        "canonical": "#22252b",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#232528",
+          "#3f4247",
+          "#5e6168",
+          "#7f828a",
+          "#a1a5ad",
+          "#c6c9cf",
+          "#eceef3"
+        ]
+      },
+      "term": {
+        "role": "neutral",
+        "displayName": "Terminal",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "term-dark": {
+        "role": "neutral",
+        "displayName": "Terminal (Dark)",
+        "canonical": "#191b20",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242528",
+          "#404247",
+          "#5f6167",
+          "#808289",
+          "#a2a5ac",
+          "#c7c9cf",
+          "#edeef2"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#0f1419",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#222529",
+          "#3e4347",
+          "#5c6268",
+          "#7d838a",
+          "#9fa6ad",
+          "#c4cad0",
+          "#ebeff3"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Ink (Dark)",
+        "canonical": "#e2e5eb",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242528",
+          "#404246",
+          "#5f6166",
+          "#808288",
+          "#a2a5ab",
+          "#c7c9ce",
+          "#edeef2"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Ink 2",
+        "canonical": "#59616d",
+        "tonalRamp": [
+          "#090b0e",
+          "#21252b",
+          "#3c424c",
+          "#5a626e",
+          "#7b8390",
+          "#9da6b3",
+          "#c2cad5",
+          "#eaeff7"
+        ]
+      },
+      "ink-2-dark": {
+        "role": "neutral",
+        "displayName": "Ink 2 (Dark)",
+        "canonical": "#9ba2ae",
+        "tonalRamp": [
+          "#0a0b0e",
+          "#22252b",
+          "#3d424b",
+          "#5b626c",
+          "#7c838e",
+          "#9ea5b1",
+          "#c4c9d3",
+          "#ebeff6"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Ink 3",
+        "canonical": "#9aa1ab",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#22252a",
+          "#3d4249",
+          "#5b626b",
+          "#7c838d",
+          "#9fa6b0",
+          "#c4cad2",
+          "#ebeff5"
+        ]
+      },
+      "ink-3-dark": {
+        "role": "neutral",
+        "displayName": "Ink 3 (Dark)",
+        "canonical": "#5f6672",
+        "tonalRamp": [
+          "#0a0b0e",
+          "#22252b",
+          "#3d424b",
+          "#5b626d",
+          "#7b838f",
+          "#9ea5b3",
+          "#c3c9d4",
+          "#eaeff6"
+        ]
+      },
+      "hair": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgb(15 20 25 / 0.1)",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#222529",
+          "#3e4347",
+          "#5c6268",
+          "#7d838a",
+          "#9fa6ad",
+          "#c4cad0",
+          "#ebeff3"
+        ],
+        "note": "Alpha colour; ramp is of its opaque base."
+      },
+      "hair-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (Dark)",
+        "canonical": "rgb(226 229 235 / 0.09)",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242528",
+          "#404246",
+          "#5f6166",
+          "#808288",
+          "#a2a5ab",
+          "#c7c9ce",
+          "#edeef2"
+        ],
+        "note": "Alpha colour; ramp is of its opaque base."
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Large screen titles; folds into the bar title on scroll."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Empty-state titles."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Bar title, buttons, notice titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Field text and menu items."
+      },
+      "body-row": {
+        "displayName": "Row title",
+        "purpose": "The title line of every list row."
+      },
+      "secondary": {
+        "displayName": "Secondary",
+        "purpose": "Row subtitles, notice body, field errors."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Sentence-case group titles above cards."
+      },
+      "mono": {
+        "displayName": "Mono (Hack)",
+        "purpose": "Keycaps, pairing code, inline code, paths; the terminal itself."
+      }
+    },
+    "shadows": [
+      {
+        "name": "float",
+        "value": "0 12px 32px rgb(15 20 25 / 0.16), 0 2px 6px rgb(15 20 25 / 0.08)",
+        "purpose": "The ⋯ menu and terminal banner (light)."
+      },
+      {
+        "name": "float-dark",
+        "value": "0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3)",
+        "purpose": "The ⋯ menu and terminal banner (dark)."
+      },
+      {
+        "name": "keycap",
+        "value": "0 1px 1.5px rgb(0 0 0 / 0.18), inset 0 0 0 0.5px var(--hair)",
+        "purpose": "Extra-keys only."
+      },
+      {
+        "name": "hairline-edge",
+        "value": "0 0.5px 0 var(--hair)",
+        "purpose": "Folded bar and terminal header underline; keybar top edge at -0.5px."
+      },
+      {
+        "name": "push-edge",
+        "value": "-12px 0 32px rgb(0 0 0 / 0.14)",
+        "purpose": "Leading edge of a screen sliding over another."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.32, 0.72, 0, 1)",
+        "purpose": "Screen push/pop, menu and banner entry, button and key press."
+      },
+      {
+        "name": "screen-push",
+        "value": "0.44s; incoming translateX(100%)→0, outgoing →translateX(-28%) brightness(0.9)",
+        "purpose": "View Transition between screens; pop reverses."
+      },
+      {
+        "name": "menu-in",
+        "value": "0.28s (banner 0.3s); opacity 0, scale(0.9) → rest",
+        "purpose": "Floating layers appearing."
+      },
+      {
+        "name": "press",
+        "value": "buttons scale(0.97) + 80% opacity, 0.2s; keys scale(0.94); rows fill cell-press instantly, fade 0.35s",
+        "purpose": "Touch feedback."
+      },
+      {
+        "name": "blink",
+        "value": "1.4s steps(1, end) infinite",
+        "purpose": "The Working status badge."
+      },
+      {
+        "name": "breathe",
+        "value": "1.6s ease-in-out infinite (1.2s for the connecting dot), opacity 0.45 at midpoint",
+        "purpose": "Skeleton bones and the connecting dot."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "all animation and transition: none",
+        "purpose": "prefers-reduced-motion: reduce."
+      }
+    ],
+    "breakpoints": [],
+    "appearance": {
+      "light": "prefers-color-scheme: light (default :root)",
+      "dark": "prefers-color-scheme: dark swaps every token with a -dark counterpart; status dots are fixed"
+    },
+    "terminalAnsi": {
+      "light": [
+        "#24292e",
+        "#d1242f",
+        "#1a7f37",
+        "#9a6700",
+        "#0969da",
+        "#8250df",
+        "#1b7c83",
+        "#6e7781",
+        "#57606a",
+        "#cf222e",
+        "#1f883d",
+        "#bf8700",
+        "#218bff",
+        "#a475f9",
+        "#3192aa",
+        "#8c959f"
+      ],
+      "dark": [
+        "#616161",
+        "#ff8272",
+        "#b4fa72",
+        "#fefdc2",
+        "#a5d5fe",
+        "#ff8ffd",
+        "#d0d1fe",
+        "#f1f1f1",
+        "#8e8e8e",
+        "#ffc4bd",
+        "#d6fcb9",
+        "#fefdd5",
+        "#c1e3fe",
+        "#ffb1fe",
+        "#e5e6fe",
+        "#feffff"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one main action on a screen: Pair, or the empty state's Pair a machine.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Pair a machine</button> <button class=\"ds-btn ds-btn-primary\" disabled>Pair</button>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:50px;padding:0 26px;border:0;border-radius:14px;font:600 17px var(--ui);cursor:pointer;transition:transform .2s var(--ease),opacity .2s}.ds-btn:active{transform:scale(.97);opacity:.8}.ds-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-primary{background:var(--accent);color:var(--accent-ink)}.ds-btn-primary:disabled{background:var(--hair);color:var(--ink-2);transform:none;cursor:default}"
+    },
+    {
+      "name": "Tinted Button (small)",
+      "kind": "button",
+      "refersTo": "button-tinted-small",
+      "description": "Secondary recovery actions in notices and the terminal banner.",
+      "html": "<button class=\"ds-btn ds-btn-tinted\">Try again</button> <button class=\"ds-btn ds-btn-tinted\">Pair again</button>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:50px;padding:0 26px;border:0;border-radius:14px;font:600 17px var(--ui);cursor:pointer;transition:transform .2s var(--ease),opacity .2s}.ds-btn:active{transform:scale(.97);opacity:.8}.ds-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-btn-tinted{background:var(--tint);color:var(--accent);height:34px;padding:0 14px;border-radius:10px;font-size:15px}"
+    },
+    {
+      "name": "Paste Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Pill action beside a group label.",
+      "html": "<button class=\"ds-chip\"><svg viewBox=\"0 0 24 24\" width=\"17\" height=\"17\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"6\" y=\"4.5\" width=\"12\" height=\"16\" rx=\"2\"/><path d=\"M9.5 4.5V3.5h5v1M9.5 10.5h5M9.5 14.5h5\"/></svg>Paste</button>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-chip{display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 11px 0 8px;border:0;border-radius:15px;background:var(--tint);color:var(--accent);font:600 14px var(--ui);cursor:pointer}.ds-chip:active{opacity:.6}.ds-chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "Navigation Bar",
+      "kind": "nav",
+      "refersTo": "",
+      "description": "Back link with the previous screen's name, centred title once folded, accent trailing icon; large title beneath.",
+      "html": "<div class=\"ds-screen\"><header class=\"ds-nav\"><button class=\"ds-back\"><svg viewBox=\"0 0 24 24\" width=\"26\" height=\"26\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M15 5 8 12l7 7\"/></svg><span>Machines</span></button><span class=\"ds-nav-title\">studio</span><button class=\"ds-nav-icon\" aria-label=\"More\"><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"currentColor\"><circle cx=\"5.5\" cy=\"12\" r=\"1.7\"/><circle cx=\"12\" cy=\"12\" r=\"1.7\"/><circle cx=\"18.5\" cy=\"12\" r=\"1.7\"/></svg></button></header><h1 class=\"ds-large\">studio</h1><p class=\"ds-link\"><span class=\"ds-dot\"></span>Direct · 4 ms</p></div>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-screen{background:var(--canvas);color:var(--ink);font:17px/1.35 var(--ui);padding-bottom:16px}.ds-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;height:48px;padding:0 8px;background:color-mix(in srgb,var(--cell) 78%,var(--canvas));box-shadow:0 .5px 0 var(--hair)}.ds-back{display:flex;align-items:center;gap:1px;height:44px;padding:0 8px 0 2px;border:0;background:none;color:var(--accent);font:17px var(--ui);border-radius:10px;cursor:pointer}.ds-back:active,.ds-nav-icon:active{opacity:.45}.ds-nav-title{font-weight:600}.ds-nav-icon{justify-self:end;display:grid;place-items:center;width:44px;height:44px;border:0;border-radius:22px;background:none;color:var(--accent);cursor:pointer}.ds-back:focus-visible,.ds-nav-icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-large{margin:2px 20px 0;font-size:34px;line-height:1.12;font-weight:700;letter-spacing:-.024em}.ds-link{display:flex;align-items:center;gap:7px;margin:6px 20px 0;font-size:15px;color:var(--ink-2);font-variant-numeric:tabular-nums}.ds-dot{width:8px;height:8px;border-radius:50%;background:var(--done)}"
+    },
+    {
+      "name": "Grouped List Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Sentence-case group label over an inset card of rows: machine tile rows and pane avatar rows with status badges.",
+      "html": "<section class=\"ds-group\"><h2 class=\"ds-gt\">tty7</h2><div class=\"ds-card\"><button class=\"ds-row\"><span class=\"ds-av ds-agent\" style=\"--field:#D97757\"><svg viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5.8 8.4 9.7 12l-3.9 3.6\"/><path d=\"M12.9 15.6h5.6\"/></svg><span class=\"ds-badge ds-waiting\"></span></span><span class=\"ds-rt\"><span class=\"ds-t\">Claude Code</span><span class=\"ds-s\"><b class=\"ds-w-waiting\">Needs input</b> · tty7</span></span><span class=\"ds-chev\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9.5 6 6 6-6 6\"/></svg></span></button><button class=\"ds-row\"><span class=\"ds-av ds-agent\" style=\"--field:#000\"><svg viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5.8 8.4 9.7 12l-3.9 3.6\"/><path d=\"M12.9 15.6h5.6\"/></svg><span class=\"ds-badge ds-working\"></span></span><span class=\"ds-rt\"><span class=\"ds-t\">Codex</span><span class=\"ds-s\"><b class=\"ds-w-working\">Working</b></span></span><span class=\"ds-chev\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9.5 6 6 6-6 6\"/></svg></span></button><button class=\"ds-row\"><span class=\"ds-av\"><svg viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5.8 8.4 9.7 12l-3.9 3.6\"/><path d=\"M12.9 15.6h5.6\"/></svg></span><span class=\"ds-rt\"><span class=\"ds-t\">~/repo/tty7</span><span class=\"ds-s\">zsh</span></span><span class=\"ds-chev\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9.5 6 6 6-6 6\"/></svg></span></button><button class=\"ds-row\"><span class=\"ds-tile\"><svg viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"13\" rx=\"2\"/><path d=\"M8 21h8M12 17v4\"/></svg></span><span class=\"ds-rt\"><span class=\"ds-t\">studio</span></span><span class=\"ds-chev\"><svg viewBox=\"0 0 24 24\" width=\"18\" height=\"18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9.5 6 6 6-6 6\"/></svg></span></button></div></section>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-group{background:var(--canvas);padding:16px;font-family:var(--ui);color:var(--ink)}.ds-gt{margin:0;padding:0 4px 8px;font-size:13px;font-weight:600;color:var(--ink-2)}.ds-card{background:var(--cell);border-radius:16px;overflow:hidden}.ds-row{position:relative;display:flex;align-items:center;gap:12px;width:100%;min-height:62px;padding:10px 12px 10px 14px;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .35s}.ds-row+.ds-row::before{content:'';position:absolute;top:0;right:0;left:64px;height:.5px;background:var(--hair)}.ds-row:active{background:var(--cell-press);transition:none}.ds-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.ds-rt{display:flex;flex:1;flex-direction:column;gap:2px;min-width:0}.ds-t{font-size:17px;font-weight:500}.ds-s{font-size:14px;color:var(--ink-2)}.ds-w-waiting{color:var(--warn-ink)}.ds-w-working{color:var(--accent)}.ds-chev{display:flex;color:var(--ink-3)}.ds-av{position:relative;display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:50%;background:color-mix(in srgb,var(--ink) 7%,var(--cell));color:var(--ink-2)}.ds-agent{background:var(--field);color:#fff;box-shadow:inset 0 0 0 .5px var(--hair)}.ds-badge{position:absolute;right:-2px;bottom:-2px;width:14px;height:14px;border-radius:50%;border:2.5px solid var(--cell)}.ds-working{background:var(--working);animation:ds-blink 1.4s steps(1,end) infinite}.ds-waiting{background:radial-gradient(circle,#fff 0 27%,var(--waiting) 31%)}@keyframes ds-blink{50%{background:color-mix(in srgb,var(--working) 40%,var(--cell))}}.ds-tile{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:11px;background:var(--tint);color:var(--accent)}"
+    },
+    {
+      "name": "Field",
+      "kind": "input",
+      "refersTo": "field-input",
+      "description": "A borderless input inside a card; the card takes the focus outline. Code fields are Hack.",
+      "html": "<div class=\"ds-wrap\"><div class=\"ds-field\"><textarea class=\"ds-input ds-code\" rows=\"3\" placeholder=\"tty7pair:…\"></textarea></div><p class=\"ds-err\">That code has expired.</p></div>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-wrap{background:var(--canvas);padding:16px}.ds-field{display:flex;background:var(--cell);border-radius:16px;overflow:hidden}.ds-field:focus-within{outline:2px solid var(--accent)}.ds-input{width:100%;border:0;outline:0;margin:0;padding:14px 16px;background:none;color:var(--ink);font:17px/1.3 var(--ui)}.ds-input::placeholder{color:var(--ink-2)}.ds-code{resize:none;font:14px/1.5 var(--mono);word-break:break-all}.ds-err{margin:0;padding:8px 4px 0;font:14px/1.4 var(--ui);color:var(--danger)}"
+    },
+    {
+      "name": "Notice",
+      "kind": "card",
+      "refersTo": "notice",
+      "description": "Tone-tinted inline warning or error that names the fix and offers recovery actions.",
+      "html": "<div class=\"ds-notice\"><svg viewBox=\"0 0 24 24\" width=\"21\" height=\"21\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ds-ni\"><path d=\"M12 4 2.8 19.5h18.4Z\"/><path d=\"M12 10v4M12 17h.01\"/></svg><div><p class=\"ds-nt\">Still looking for studio</p><p class=\"ds-nb\">Check that <code>tty7-gateway serve</code> is running there.</p><div class=\"ds-na\"><button class=\"ds-nbtn\">Pair again</button></div></div></div>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-notice{display:flex;gap:12px;margin:16px;padding:14px 16px;border-radius:16px;background:color-mix(in srgb,var(--waiting) 13%,var(--cell));font-family:var(--ui);color:var(--ink)}.ds-ni{flex:none;margin-top:1px;color:var(--warn-ink)}.ds-nt{margin:0;font-size:16px;font-weight:600;line-height:1.35}.ds-nb{margin:4px 0 0;font-size:14px;line-height:1.45;color:var(--ink-2)}.ds-nb code{font:.82em var(--mono);padding:.12em .4em;border-radius:6px;background:var(--hair)}.ds-na{margin-top:12px}.ds-nbtn{height:34px;padding:0 14px;border:0;border-radius:10px;background:var(--cell);box-shadow:0 1px 2px rgb(0 0 0/.08);color:var(--accent);font:600 15px var(--ui);cursor:pointer}.ds-nbtn:active{transform:scale(.97);opacity:.8}.ds-nbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}"
+    },
+    {
+      "name": "Keybar",
+      "kind": "custom",
+      "refersTo": "key",
+      "description": "Extra keys above the soft keyboard: Hack keycaps with a keycap shadow, a ctrl latch that fills accent, and the accent keyboard toggle.",
+      "html": "<div class=\"ds-keybar\"><button class=\"ds-key\">esc</button><button class=\"ds-key\">tab</button><button class=\"ds-key ds-on\">ctrl</button><button class=\"ds-key\">^C</button><button class=\"ds-key\">|</button><button class=\"ds-key\">~</button></div>",
+      "css": ":root{--canvas:#f2f3f6;--cell:#fff;--cell-press:#e6e8ed;--raised:#fff;--ink:#0f1419;--ink-2:#59616d;--ink-3:#9aa1ab;--hair:rgb(15 20 25/.1);--accent:#1f6bf0;--accent-ink:#fff;--tint:rgb(31 107 240/.1);--danger:#c43c43;--warn-ink:#8a5a0c;--ok-ink:#1f7a47;--working:#3b82f6;--waiting:#f59e0b;--done:#22c55e;--ease:cubic-bezier(.32,.72,0,1);--ui:-apple-system,BlinkMacSystemFont,'SF Pro Text',Roboto,'Segoe UI',system-ui,sans-serif;--mono:Hack,Menlo,ui-monospace,monospace}.ds-keybar{display:flex;gap:5px;padding:8px;background:color-mix(in srgb,var(--cell) 78%,var(--canvas));box-shadow:0 -.5px 0 var(--hair)}.ds-key{display:grid;place-items:center;min-width:41px;height:40px;padding:0 9px;border:0;border-radius:10px;background:var(--cell);box-shadow:0 1px 1.5px rgb(0 0 0/.18),inset 0 0 0 .5px var(--hair);font:14px var(--mono);color:var(--ink);cursor:pointer;transition:background .25s,transform .15s var(--ease)}.ds-key:active{background:var(--cell-press);transform:scale(.94);transition:none}.ds-key:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.ds-on{background:var(--accent);color:var(--accent-ink)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Second Window",
+    "overview": "**Creative North Star: \"The Second Window\"**\n\nThe phone is another window onto the same live panes the desktop shows, so it wears the desktop's clothes: the tty7 Light and Dark presets, following the system appearance, the same ANSI palettes in the terminal, the same agent avatars and status dots, the same status words. Around that it behaves like an installed phone app, not a web page: pushed screens that slide over one another, a large title that folds into the bar, inset grouped lists on a tinted canvas, and a row of keycaps above the keyboard. One neutral language serves iOS and Android alike; nothing is styled per OS.\n\nDensity is calm and list-shaped. Colour is almost entirely neutral; the one accent blue marks what can be tapped, and the only other colour on screen is information: an agent's brand field, its status dot, a connection dot, a warning. The terminal screen strips everything back to the pane itself, a slim header and the keybar.",
+    "keyCharacteristics": [
+      "Desktop tty7 Light/Dark presets, switched by `prefers-color-scheme`, never a toggle.",
+      "Grouped white (or charcoal) cells on a faintly cool canvas; no borders around cards.",
+      "One accent blue for interaction; status colours reserved for agent and connection state.",
+      "System UI face for chrome, Hack for anything that is code, a path, or a key.",
+      "Motion is the platform's push/pop slide and a few press responses, all off under reduced motion."
+    ],
+    "rules": [
+      {
+        "name": "The Borrowed Palette Rule",
+        "body": "Every surface, ink, accent and ANSI value is the desktop preset's, or a step derived from it. A new colour needs a desktop counterpart first.",
+        "section": "colors"
+      },
+      {
+        "name": "The Status Is Not Decoration Rule",
+        "body": "Working blue, waiting amber and done green appear only to report agent or connection state. Never use them for emphasis, illustration or branding.",
+        "section": "colors"
+      },
+      {
+        "name": "The Shape-Not-Only-Hue Rule",
+        "body": "Waiting is the amber dot with a white hole (white in both themes, as the desktop draws it); Done is solid. Any new status marker must also differ by shape.",
+        "section": "colors"
+      },
+      {
+        "name": "The Code Wears Hack Rule",
+        "body": "Commands, paths, codes and keys are set in Hack; everything a person would say is set in the system face.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sentence Case Rule",
+        "body": "Titles, labels and buttons are sentence case. Status words are the desktop's: \"Working\", \"Needs input\", \"Done\".",
+        "section": "typography"
+      },
+      {
+        "name": "The Inset Group Rule",
+        "body": "Content lives in rounded cards inset from the edges on the canvas; nothing is a full-bleed bordered box.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Cards, rows, tiles and fields never carry a shadow. A shadow means \"this is floating over the screen\" or \"this is a key\".",
+        "section": "elevation"
+      },
+      {
+        "name": "The Square Tile, Round Face Rule",
+        "body": "A machine is a rounded-square tile; a pane is a circle. The shape alone tells a machine row from a pane row.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "**Do** take every surface, ink, accent and ANSI colour from the desktop Light/Dark presets, and follow the system appearance.",
+      "**Do** put content in 16px-cornered cards inset 16px on the canvas, with 0.5px hairlines between rows starting at the text.",
+      "**Do** report agent state with the desktop's avatar, badge and words: Working (blue, blinking), Needs input (amber, hollow), Done (green), Idle (nothing).",
+      "**Do** set commands, paths, codes and keys in Hack; everything else in the system face.",
+      "**Do** keep every tap target at least 44px and pad every edge with the safe-area insets.",
+      "**Do** say in words whether keystrokes will land: the connection line and terminal state word are always present.",
+      "**Do** move between screens with the push/pop slide, and honour reduced motion."
+    ],
+    "donts": [
+      "**Don't** style the app per platform; one language for iOS and Android.",
+      "**Don't** draw bordered boxes or give cards a shadow; depth is tone, and shadows are only for floating layers and keycaps.",
+      "**Don't** use working blue, waiting amber or done green for anything but state, and don't set text in them on a cell; use the status inks.",
+      "**Don't** use ink-3 for text; it is for chevrons and idle dots.",
+      "**Don't** uppercase labels or add eyebrow text above titles; group titles are 13px/600 sentence case.",
+      "**Don't** resize a pane to the phone; it keeps the desktop's size and the phone fits or pans."
+    ]
+  }
+}

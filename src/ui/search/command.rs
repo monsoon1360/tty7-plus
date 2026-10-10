@@ -63,9 +63,11 @@ pub enum CommandKind {
     ShowRightPanel(RightPanelTab),
     ClearTerminal,
     FindInTerminal,
+    ToggleComposer,
     FindNext,
     FindPrevious,
     CopyText,
+    CopyRaw,
     CutText,
     PasteText,
     SelectAllText,
@@ -243,9 +245,11 @@ impl CommandKind {
             ShowRightPanel(RightPanelTab::GitHub) => "right-panel-github",
             ClearTerminal => "clear-scrollback",
             FindInTerminal => "find",
+            ToggleComposer => "composer",
             FindNext => "find-next",
             FindPrevious => "find-previous",
             CopyText => "copy",
+            CopyRaw => "copy-raw",
             CutText => "cut",
             PasteText => "paste",
             SelectAllText => "select-all",
@@ -324,6 +328,7 @@ impl CommandKind {
             |spec: &str| -> Option<String> { cfg!(target_os = "macos").then(|| spec.to_string()) };
         match self {
             CopyText => return inline("secondary-c"),
+            CopyRaw => return inline("secondary-alt-c"),
             CutText => return inline("secondary-x"),
             PasteText => return inline("secondary-v"),
             SelectAllText => return inline("secondary-a"),
@@ -391,6 +396,7 @@ impl CommandKind {
             },
             ClearTerminal => "ClearScrollback",
             FindInTerminal => "FindInTerminal",
+            ToggleComposer => "ToggleComposer",
             FindNext => "FindNext",
             FindPrevious => "FindPrevious",
             ReopenClosedTab => "ReopenClosedTab",
@@ -437,6 +443,7 @@ impl CommandKind {
             ToggleDiffViewMode => "ToggleDiffViewMode",
             QuickOpenFile => "QuickOpenFile",
             CopyText
+            | CopyRaw
             | CutText
             | PasteText
             | SelectAllText
@@ -758,9 +765,11 @@ impl Item {
         let terminal = [
             Item::localized(L10nKey::CmdClearScrollback, ClearTerminal),
             Item::localized(L10nKey::CmdFindInTerminal, FindInTerminal),
+            Item::localized(L10nKey::CmdToggleComposer, ToggleComposer),
             Item::localized(L10nKey::CmdFindNext, FindNext),
             Item::localized(L10nKey::CmdFindPrevious, FindPrevious),
             Item::localized(L10nKey::CmdCopy, CopyText),
+            Item::localized(L10nKey::CmdCopyRaw, CopyRaw),
             Item::localized(L10nKey::CmdCut, CutText),
             Item::localized(L10nKey::CmdPaste, PasteText),
             Item::localized(L10nKey::CmdSelectAll, SelectAllText),
@@ -770,7 +779,8 @@ impl Item {
             Item::localized(L10nKey::CmdSshAddConnection, SearchHosts),
             Item::localized(L10nKey::CmdSshManageProfiles, OpenSshProfiles),
             Item::localized(L10nKey::CmdSshReconnect, RestartSshSession),
-            Item::localized(L10nKey::CmdSshRemoteFiles, ToggleSftp),
+            // The panel is an SFTP browser, and that is the word people search.
+            Item::localized(L10nKey::CmdSshRemoteFiles, ToggleSftp).with_alias("SFTP"),
             Item::localized(L10nKey::CmdSshPortForwarding, ShowSshForwards),
         ];
 
@@ -923,10 +933,12 @@ mod tests {
             CommandKind::SplitRight,
             CommandKind::ClearTerminal,
             CommandKind::CopyText,
+            CommandKind::CopyRaw,
             CommandKind::CutText,
             CommandKind::PasteText,
             CommandKind::SelectAllText,
             CommandKind::FindInTerminal,
+            CommandKind::ToggleComposer,
             CommandKind::FindNext,
             CommandKind::FindPrevious,
             CommandKind::OpenSettings,

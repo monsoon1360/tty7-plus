@@ -27,11 +27,24 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> io::Result<()> {
-    let config = config::Options::parse().validate()
+    let config = config::Options::parse()
+        .validate()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let tls = config.tls.as_ref().map(|(cert, key)| transport::tls_acceptor(cert, key)).transpose()?;
+    let tls = config
+        .tls
+        .as_ref()
+        .map(|(cert, key)| transport::tls_acceptor(cert, key))
+        .transpose()?;
     let listener = TcpListener::bind(config.listen).await?;
-    eprintln!("tty7-relay listening on {} ({})", listener.local_addr()?, if tls.is_some() { "native TLS" } else { "explicit loopback ws" });
+    eprintln!(
+        "tty7-relay listening on {} ({})",
+        listener.local_addr()?,
+        if tls.is_some() {
+            "native TLS"
+        } else {
+            "explicit loopback ws"
+        }
+    );
     let shutdown = CancellationToken::new();
     let registry = Arc::new(registry::Registry::new(shutdown.clone()));
     let server = transport::serve(listener, tls, Arc::clone(&registry));
@@ -51,7 +64,8 @@ async fn run() -> io::Result<()> {
 async fn shutdown_signal() -> io::Result<()> {
     #[cfg(unix)]
     {
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             result = tokio::signal::ctrl_c() => result,
             _ = terminate.recv() => Ok(()),

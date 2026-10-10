@@ -809,7 +809,7 @@ impl Tty7App {
                 .child(text)
         };
 
-        let card = dialog::card(SHEET_W, cx)
+        let card = dialog::card("ssh-prompt-card", title.clone(), SHEET_W, cx)
             .track_focus(&self.ssh_prompt.focus_handle)
             .key_context("SshPrompt")
             // The changed-key sheet is the one card allowed a coloured edge:

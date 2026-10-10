@@ -31,7 +31,7 @@
 shell 和窗格由后台常驻的 server 持有，而不是窗口。下面这些特性几乎都源自这一设计。
 
 - **性能**：吞吐是 Alacritty、Ghostty、Kitty 的两倍左右（[基准测试](#基准测试)）
-- **会话常驻**：退出应用或重启机器后，shell 和已支持的 agent 会话继续运行，不需要 tmux
+- **会话常驻**：退出应用，shell 照常运行；重启机器后，布局、屏幕内容和已支持的 agent 对话都会回来。不需要 tmux
 - **Agent 感知**：Claude Code、Codex 等 agent 的状态、通知和 git 上下文，多个仓库一屏看完
 - **可被 agent 驱动**：一个 agent 能给另一个开 pane、派活、等它跑完、读走结果，GUI 开不开都行
 - **编辑器级输入**：建议、补全、高亮、历史搜索，不用装任何插件
@@ -51,7 +51,7 @@ macOS、Windows、Linux 的原生构建都在 [**Releases**](https://github.com/
 
 | | |
 |---|---|
-| **Agent 感知** | 逐 pane 识别 26 个 CLI agent · 状态点 · 通知 · 分支 + diff · 需要输入时托盘图标提醒 · 重启后续上会话 · 在随处搜索里找回任意历史会话 · 一键启动 · 侧边栏按仓库分组，可置顶 |
+| **Agent 感知** | 逐 pane 识别 28 个 CLI agent · 状态点 · 通知 · 分支 + diff · 需要输入时托盘图标提醒 · 重启后续上会话 · 在随处搜索里找回任意历史会话 · 一键启动 · 侧边栏按仓库分组，可置顶 |
 | **CLI + Skills** | 安装包自带 `tty7` CLI · [agent skill](skills/tty7/SKILL.md) · `run` 转发命令输出并原样返回退出码 · `split` · `send` · `wait --until free` · `capture` |
 | **编辑器级输入** | 基于历史的内联补全建议 · Tab 补全附带说明 · 语法高亮 · 多行编辑 · 点击定位光标 · <kbd>⌃ R</kbd> 模糊搜索历史 |
 | **窗口** | 标签页与分屏 · <kbd>⌘ P</kbd> 随处搜索 · <kbd>⌘ F</kbd> 回滚搜索 · 休眠标签页以释放内存 · 输入法 |
@@ -66,38 +66,41 @@ macOS、Windows、Linux 的原生构建都在 [**Releases**](https://github.com/
 **识别**无需配置：品牌头像、分支与 diff、标签页标题。
 **状态**需要在设置 → 集成 中为该 agent 安装 hook，一次点击，之后才有状态点、通知、托盘提醒、`tty7 wait` 和重启后恢复会话。
 **Fork** 两个条件都要：agent 自己提供 fork 命令，且 hook 已装——tty7 得知道 fork 的是哪个会话。
+**历史会话**从 agent 自己的历史文件读取，列在随处搜索里，<kbd>⏎</kbd> 即可续上。
 
 <details>
-<summary>26 个 agent 的完整支持矩阵</summary>
+<summary>28 个 agent 的完整支持矩阵</summary>
 
-| Agent | 识别 | 状态 · 重启恢复 | Fork |
-|---|:-:|:-:|:-:|
-| **Claude Code** | ✓ | ✓ | ✓ |
-| **Codex** | ✓ | ✓ | ✓ |
-| **TraeCode** | ✓ | ✓ | ✓ |
-| **Grok** | ✓ | ✓ | ✓ |
-| **OpenCode** | ✓ | ✓ | ✓ |
-| **Oh My Pi** | ✓ | ✓ | ✓ |
-| **Prime Agent** | ✓ | ✓ | ✓ |
-| **Droid** | ✓ | ✓ | ✓ |
-| **Qwen Code** | ✓ | ✓ | ✓ |
-| **Goose** | ✓ | ✓ | ✓ |
-| **Qoder CLI** | ✓ | ✓ | ✓ |
-| **Qoder CN CLI** | ✓ | ✓ | ✓ |
-| **CodeBuddy** | ✓ | ✓ | ✓ |
-| **Gemini** | ✓ | ✓ | |
-| **Copilot** | ✓ | ✓ | |
-| **Kimi Code** | ✓ | ✓ | |
-| **Pi** | ✓ | ✓ | |
-| **Crush** | ✓ | ✓ | |
-| **Antigravity** | ✓ | ✓ | |
-| **Cursor** | ✓ | ✓ | |
-| Aider | ✓ | | |
-| Amp | ✓ | | |
-| Auggie | ✓ | | |
-| Hermes | ✓ | | |
-| Vibe | ✓ | | |
-| Empryo | ✓ | | |
+| Agent | 识别 | 状态 · 重启恢复 | Fork | 历史会话 |
+|---|:-:|:-:|:-:|:-:|
+| **Claude Code** | ✓ | ✓ | ✓ | ✓ |
+| **Codex** | ✓ | ✓ | ✓ | ✓ |
+| **TraeCode** | ✓ | ✓ | ✓ |  |
+| **Grok** | ✓ | ✓ | ✓ |  |
+| **OpenCode** | ✓ | ✓ | ✓ | ✓ |
+| **Oh My Pi** | ✓ | ✓ | ✓ | ✓ |
+| **Prime Agent** | ✓ | ✓ | ✓ |  |
+| **Droid** | ✓ | ✓ | ✓ | ✓ |
+| **Qwen Code** | ✓ | ✓ | ✓ | ✓ |
+| **Goose** | ✓ | ✓ | ✓ |  |
+| **Qoder CLI** | ✓ | ✓ | ✓ | ✓ |
+| **Qoder CN CLI** | ✓ | ✓ | ✓ | ✓ |
+| **CodeBuddy** | ✓ | ✓ | ✓ | ✓ |
+| **Gemini** | ✓ | ✓ | | ✓ |
+| **Copilot** | ✓ | ✓ | | ✓ |
+| **Kimi Code** | ✓ | ✓ | | ✓ |
+| **Pi** | ✓ | ✓ | | ✓ |
+| **Crush** | ✓ | ✓ | |  |
+| **Antigravity** | ✓ | ✓ | |  |
+| **Cursor** | ✓ | ✓ | | ✓ |
+| **Empryo** | ✓ | ✓ | |  |
+| **Muse Code** | ✓ | ✓ | |  |
+| **jcode** | ✓ | ✓ | |  |
+| Aider | ✓ | | |  |
+| Amp | ✓ | | |  |
+| Auggie | ✓ | | |  |
+| Hermes | ✓ | | |  |
+| Vibe | ✓ | | |  |
 
 </details>
 

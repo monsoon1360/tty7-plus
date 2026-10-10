@@ -1,23 +1,29 @@
 //! Local-only control RPC. Call off the GUI thread.
 
-use std::io;
+use super::{AdminReply, AdminRequest};
+pub use super::{Device, Pairing, Pending, Status};
 use crate::client::ControlClient;
 use crate::daemon::control::{ControlHello, ControlRequest, ReplyOk, feature};
-use super::{AdminReply, AdminRequest};
-pub use super::{Status, Device, Pending, Pairing};
+use std::io;
 
 fn call(request: AdminRequest) -> io::Result<AdminReply> {
     crate::daemon::spawn::ensure_running().map_err(io::Error::other)?;
     let client = ControlClient::connect(&ControlHello::host_rpc(
-        uuid::Uuid::new_v4().to_string(), "mobile-admin",
+        uuid::Uuid::new_v4().to_string(),
+        "mobile-admin",
     ))?;
     if !client.hello().has_feature(feature::MOBILE_ADMIN) {
-        return Err(io::Error::new(io::ErrorKind::Unsupported,
-            "the session daemon needs updating to support mobile pairing"));
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the session daemon needs updating to support mobile pairing",
+        ));
     }
     let result = match client.request(ControlRequest::MobileAdmin { request })? {
         ReplyOk::MobileAdmin(reply) => Ok(reply),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid mobile admin reply")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid mobile admin reply",
+        )),
     };
     client.close();
     result
@@ -30,8 +36,16 @@ pub fn status() -> io::Result<Status> {
     }
 }
 
-pub fn configure(relay_url: String, tls_fingerprint: Option<String>, enabled: bool) -> io::Result<Status> {
-    match call(AdminRequest::Configure { relay_url, tls_fingerprint, enabled })? {
+pub fn configure(
+    relay_url: String,
+    tls_fingerprint: Option<String>,
+    enabled: bool,
+) -> io::Result<Status> {
+    match call(AdminRequest::Configure {
+        relay_url,
+        tls_fingerprint,
+        enabled,
+    })? {
         AdminReply::Status(status) => Ok(status),
         _ => Err(io::Error::other("invalid mobile configure reply")),
     }
@@ -51,7 +65,15 @@ fn unit(request: AdminRequest) -> io::Result<()> {
     }
 }
 
-pub fn cancel_pairing() -> io::Result<()> { unit(AdminRequest::CancelPairing) }
-pub fn approve(request_id: String) -> io::Result<()> { unit(AdminRequest::Approve { request_id }) }
-pub fn reject(request_id: String) -> io::Result<()> { unit(AdminRequest::Reject { request_id }) }
-pub fn revoke(credential_id: String) -> io::Result<()> { unit(AdminRequest::Revoke { credential_id }) }
+pub fn cancel_pairing() -> io::Result<()> {
+    unit(AdminRequest::CancelPairing)
+}
+pub fn approve(request_id: String) -> io::Result<()> {
+    unit(AdminRequest::Approve { request_id })
+}
+pub fn reject(request_id: String) -> io::Result<()> {
+    unit(AdminRequest::Reject { request_id })
+}
+pub fn revoke(credential_id: String) -> io::Result<()> {
+    unit(AdminRequest::Revoke { credential_id })
+}

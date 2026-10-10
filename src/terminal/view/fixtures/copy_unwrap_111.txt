@@ -1,0 +1,119 @@
+⏺ #84 is now based on the new patch-stack main-niu, and GitHub reports it can merge cleanly. Its code is the
+  same as what passed review: the only change is that its notes moved into the hotkey-window feature page. Its
+  tests pass locally.
+
+  Once CI passes, it merges on its own and tty7 reloads on the new main-niu. That reload will be the first run
+  of the restructured branch, so I'll check that your sessions survive it.
+
+✻ Crunched for 28m 10s · done 4:13 PM
+
+※ recap: The goal is for tty7 to show the hotkey window on launch, instead of creating a new workspace, when
+  it's your only workspace. That's PR #84, which passed review and is waiting on CI. Next, it merges and tty7
+  reloads on its own, and I'll check your sessions survive. (disable recaps in /config)
+
+⏺ Background command "Merge #84 once CI passes (network-error tolerant), then reload tty7" completed (exit code
+0)
+
+⏺ Bash(tail -8 /private/tmp/claude-501/-Users-adam-src-clawmux/f14681bd-4bf7-4808-b727-0cb6ed1a8c5b/tasks/befky
+      62qi.output; tty7 status 2>&1 | head -5; tty7 agents 2>&…)
+  ⎿  build & test (aarch64-apple-darwin)        fail    6m8s    https://github.com/NorthIsUp/tty
+     7/actions/runs/36939473036
+     /job/110627383842
+     host boundary      pass    5s      https://github.com/NorthIsUp/tty7/actions/runs/369394730
+     36/job/110627346251
+     … +13 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+
+⏺ Bash(gh api --allow-escape-sequences repos/NorthIsUp/tty7/actions/jobs/110627383842/logs 2>&1 | sed
+      's/\x1b\[[0-9;]*m//g' | grep -E 'FAILED|panicked at|error\[|^.{29…)
+  ⎿  test host::server::pool_tests::closing_the_pool_drops_queued_work ... FAILED
+     thread 'host::server::pool_tests::closing_the_pool_drops_queued_work' (43435) panicked at crates/tty7
+     -core/src/host/server.rs:2419:9:
+     … +6 lines (ctrl+o to expand)
+
+⏺ The CI failure is in an unrelated thread-pool test that #84 doesn't touch and main's own CI passes, so it
+  looks flaky. I'm re-running the failed job.
+
+⏺ Bash(cd ~/src/tty7 && git diff ed406c19 24f7c1eb --stat | tail -2; gh run rerun 36939473036 -R NorthIsUp/tty7
+      --failed && echo rerun-started)
+  ⎿   src/ui/windows.rs                   |  46 ++++++++-
+      6 files changed, 255 insertions(+), 23 deletions(-)
+     rerun-started
+  ⎿  Allowed by auto mode classifier
+
+⏺ Bash(cd ~/src/tty7 && sleep 60; while :; do out=$(gh pr checks 84 -R NorthIsUp/tty7 --required 2>&1); rc=$?;
+      if echo "$out" | grep -qiE 'pending|no checks|queued|err…)
+  ⎿  Running in the background (↓ to manage)
+  ⎿  Allowed by auto mode classifier
+
+⏺ #84 isn't merged yet. Its CI failed in a tty7-core test (closing_the_pool_drops_queued_work) that #84 doesn't
+  touch: the PR only changes 6 files in the hotkey window and window code. main-niu's own CI passes, so this
+  looks like a flaky test. I've re-run the failed job. If it passes, #84 merges and tty7 reloads, and I'll
+  check your 24 panes are still there afterwards.
+
+  If it fails again, I'll treat that test as a real problem and investigate it instead of re-running.
+
+✻ Crunched for 2m 42s · done 4:22 PM
+
+※ recap: I'm finishing the fix that opens the hotkey window instead of a blank workspace when it's your only
+  workspace. Its CI hit an unrelated flaky test, so I re-ran it; once it passes, it merges and tty7 reloads on
+  its own. (disable recaps in /config)
+
+⏺ Background command "Wait for #84's rerun, merge on green, reload and confirm panes survived" completed (exit
+code 0)
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ ✅ #84 is merged, and tty7 has reloaded on the restructured main-niu. All 24 of your panes came through the
+  reload. The re-run passed, so the earlier CI failure was a flaky test.
+
+  Here's how to try it:
+  1. Close every workspace except the hotkey one.
+  2. Quit tty7 and open it again.
+
+  It should open straight into the hotkey window without making a new workspace. Clicking the Dock icon should
+  do the same.
+
+✻ Sautéed for 27s · done 4:45 PM
+
+※ recap: The goal was making tty7 restore your agents reliably. That's all merged and live now (#72–#84),
+  including the hotkey window opening on its own when it's your only workspace. Next: quit and reopen tty7 to
+  confirm the spinners and that it opens straight into the hotkey window.
+
+❯ [Image #47] when coppying this i'd like it to not have a hard newline on the wrap
+
+  what coppies:
+
+  If the Theme field won't change or the popup comes back after they pick it, send me a screenshot. That would
+    be a bug.
+
+  what should copy:
+
+  If the Theme field won't change or the popup comes back after they pick it, send me a screenshot. That would
+  be a bug.
+  ⎿  [Image #47]
+
+⏺ Agent(Unwrap app-wrapped lines on copy)
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+⏺ The newline comes from Claude Code itself. It wraps long lines by writing a real line break plus an indent,
+  so to tty7 they look like two separate lines. Your terminal's own soft-wrap tracking never sees it.
+
+  I've started a subagent on the fix. On copy, tty7 will rejoin lines Claude wrapped:
+
+  ┌──────────────────────────────
+  │  📦 copy joins Claude's wrapped lines
+  ├──────────────────────────────
+  │  joins when ... the line runs to the right edge (the next word wouldn't
+  │                 have fit) and the next line continues at the same indent
+  │  never joins .. code, tables, box drawing, prompts, list items
+  │  setting ...... "Join wrapped lines when copying", on for you
+  │                 (off by default upstream)
+  │  raw copy ..... a Copy Raw command in ⌘P, for the exact text
+  │  🧪 tuned on captures from your Claude tabs: prose, bullets, code, tables
+  └──────────────────────────────
+
+  The subagent only reads your tabs to build test cases and doesn't type into them or take focus. Once the PR
+  is up, I'll review it, merge it after CI passes, turn the setting on in your config, and reload tty7. Expect
+  about an hour.
+

@@ -161,6 +161,13 @@ pub mod feature {
     /// the name first and tells the user the server needs updating instead.
     pub const CONTENT_SEARCH: &str = "content-search";
     pub const MOBILE_ADMIN: &str = "mobile-admin";
+    /// The peer keeps each workspace's recently closed tabs in its tree and
+    /// answers [`ControlRequest::TabCloseRemembered`] and
+    /// [`ControlRequest::TabReopen`] (#1021). Like [`TAB_HIBERNATE`] it needs
+    /// a tree and panes both — the entry and the screens it restores from.
+    /// Without it a client closes and reopens tabs the way it always did, from
+    /// a list of its own that ends with the window.
+    pub const CLOSED_TABS: &str = "closed-tabs";
 }
 
 pub use crate::host::{
@@ -169,7 +176,9 @@ pub use crate::host::{
 
 pub use crate::core::shells::{DetectedShell, ShellInventory};
 
-pub use crate::core::machine::{Axis, LayoutDelta, Machine, PaneSeed, Side, Tab, TabId};
+pub use crate::core::machine::{
+    Axis, LayoutDelta, Machine, PaneSeed, ReopenedTab, Side, Tab, TabId,
+};
 pub use crate::core::session::WorkspaceId;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -311,6 +320,27 @@ pub enum ControlRequest {
         workspace: WorkspaceId,
         tab: TabId,
     },
+    /// Close a tab into the workspace's recently-closed list rather than for
+    /// good: the peer stops its panes keeping their screens, so a later
+    /// [`Self::TabReopen`] — from any client, after any restart — can put it
+    /// back. `panes` is every pane the client held in the tab; any the tree
+    /// never recorded there are ended outright. Answers the panes stopped.
+    /// Gated on [`feature::CLOSED_TABS`].
+    TabCloseRemembered {
+        workspace: WorkspaceId,
+        tab: TabId,
+        #[serde(default)]
+        panes: Vec<u64>,
+    },
+    /// Take the named closed tab, or the most recently closed one, off the
+    /// workspace's list and answer it with its panes' records, for the client
+    /// to rebuild. Answers [`ReplyOk::ReopenedTab`]. Gated on
+    /// [`feature::CLOSED_TABS`].
+    TabReopen {
+        workspace: WorkspaceId,
+        #[serde(default)]
+        tab: Option<TabId>,
+    },
     TabRename {
         workspace: WorkspaceId,
         tab: TabId,
@@ -404,6 +434,52 @@ pub struct RouteInfo {
     pub connected: bool,
 }
 
+impl RouteInfo {
+    /// The host a link reaches: `build-box` in `me@build-box:22`. `None` for a
+    /// key of another shape.
+    pub fn host(&self) -> Option<&str> {
+        let first = self.key.split('|').next()?;
+        let after_user = first.split('@').nth(1)?;
+        after_user.split(':').next()
+    }
+
+    /// Rebuilds the target to route to this link over the local server, from
+    /// its key.
+    ///
+    /// Routing over a link the server already holds only needs the key's
+    /// `user@host:port` — the link is found by it and its credentials are
+    /// never used again — so an `auto` auth mode stands in for the profile's.
+    /// A jump/proxy chain would need the whole chain rebuilt, which the key
+    /// alone cannot do yet.
+    pub fn target(&self) -> Result<crate::daemon::router::RouteTarget, String> {
+        let unrecognized = || format!("unrecognized machine key '{}'", self.key);
+        if self.kind != "ssh" {
+            return Err(format!(
+                "machine '{}' is a {} link — tty7 can only route over ssh links yet",
+                self.key, self.kind
+            ));
+        }
+        if self.key.contains('|') {
+            return Err(format!(
+                "machine '{}' is reached through a jump/proxy chain, which cannot be rebuilt \
+                 from the link key yet — use the GUI for this machine",
+                self.key
+            ));
+        }
+        let (user, rest) = self.key.split_once('@').ok_or_else(unrecognized)?;
+        let (host, port) = rest.rsplit_once(':').ok_or_else(unrecognized)?;
+        let port: u16 = port.parse().map_err(|_| unrecognized())?;
+        let spec = serde_json::from_value(serde_json::json!({
+            "user": user,
+            "host": host,
+            "port": port,
+            "auth_mode": "auto",
+        }))
+        .map_err(|e| e.to_string())?;
+        Ok(crate::daemon::router::RouteTarget::Ssh(Box::new(spec)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStatus {
     pub pid: u32,
@@ -454,6 +530,8 @@ impl ControlRequest {
             | WorkspaceSetActiveTab { .. }
             | TabCreate { .. }
             | TabClose { .. }
+            | TabCloseRemembered { .. }
+            | TabReopen { .. }
             | TabRename { .. }
             | TabMove { .. }
             | TabSetGroup { .. }
@@ -505,17 +583,24 @@ pub enum ReplyOk {
     Bool(bool),
     Path(String),
     OptPath(Option<String>),
-    FileMeta { meta: Meta },
+    FileMeta {
+        meta: Meta,
+    },
     Hits(Vec<SearchHit>),
     ContentHits(ContentResults),
     Output(Output),
     WatchId(u64),
     Shells(ShellInventory),
     AgentSessions(Vec<crate::core::agent_history::PastSession>),
-    Attached { took_over_from: Option<String> },
+    Attached {
+        took_over_from: Option<String>,
+    },
     MachineTree(Box<Machine>),
     WorkspaceTree(Box<crate::core::machine::Workspace>),
     TabTree(Box<Tab>),
+    /// The answer to [`ControlRequest::TabReopen`]; `None` when the workspace
+    /// has nothing left to reopen.
+    ReopenedTab(Option<Box<ReopenedTab>>),
     Panes(Vec<u64>),
     AgentStates(Vec<PaneAgentState>),
     PaneProcs(crate::daemon::protocol::PaneProcs),
@@ -1665,7 +1750,9 @@ mod tests {
             ControlRequest::PaneProcs { pane_id: 7 },
             ControlRequest::Routes,
             ControlRequest::Status,
-            ControlRequest::MobileAdmin { request: crate::mobile::AdminRequest::Status },
+            ControlRequest::MobileAdmin {
+                request: crate::mobile::AdminRequest::Status,
+            },
         ]
     }
 
@@ -1736,6 +1823,7 @@ mod tests {
                     activity: 3,
                     turns: 1,
                     inferred: false,
+                    readout: Default::default(),
                 },
             }])),
             ControlReply::Ok(ReplyOk::AgentStates(Vec::new())),
@@ -2143,12 +2231,15 @@ mod tests {
 
     #[test]
     fn mobile_admin_is_recognized_on_both_stdio_request_kinds() {
-        let request = ControlRequest::MobileAdmin { request: crate::mobile::AdminRequest::BeginPairing };
+        let request = ControlRequest::MobileAdmin {
+            request: crate::mobile::AdminRequest::BeginPairing,
+        };
         let head = serde_json::to_vec(&request).unwrap();
         let payload = encode_body(1, &head, b"ignored blob").unwrap();
         assert!(mobile_admin_frame(kind::REQUEST, &payload).unwrap());
         assert!(mobile_admin_frame(kind::REQUEST_BLOB, &payload).unwrap());
-        let normal = encode_body(1, &serde_json::to_vec(&ControlRequest::Ping).unwrap(), &[]).unwrap();
+        let normal =
+            encode_body(1, &serde_json::to_vec(&ControlRequest::Ping).unwrap(), &[]).unwrap();
         assert!(!mobile_admin_frame(kind::REQUEST, &normal).unwrap());
     }
 
@@ -2430,7 +2521,12 @@ mod tests {
             (R::PaneProcs { pane_id: 7 }, s(5)),
             (R::Routes, s(5)),
             (R::Status, s(5)),
-            (R::MobileAdmin { request: crate::mobile::AdminRequest::Status }, s(15)),
+            (
+                R::MobileAdmin {
+                    request: crate::mobile::AdminRequest::Status,
+                },
+                s(15),
+            ),
         ];
         assert_eq!(
             cases.len(),

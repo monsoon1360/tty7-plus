@@ -77,10 +77,11 @@ sessions.
 | `window_blur` | bool | — | Blur behind a translucent window (macOS). Unset means "follow the theme". |
 | `window_backdrop` | enum | `"auto"` | Windows only: `auto`, `blur`, `mica`, `mica-alt`, `acrylic`, `off`. |
 | `dim_inactive_panes` | bool | `true` | Dim panes that are not focused. |
+| `auto_hide_titlebar_buttons` | bool | `false` | Show the title bar's new tab and sidebar buttons only while the pointer is over the bar they sit in. |
 | `startup_mode` | enum | `"normal"` | `normal`, `maximized`, `fullscreen`. |
 | `remember_window_size` | bool | `true` | Reopen at the last size and position. |
 | `restore_session` | bool | `true` | Reopen the last window's tabs, splits, and directories. |
-| `gui_language` | enum | `"en"` | `en`, `zh-CN`, `ja-JP`. Anything else falls back to `en`. |
+| `gui_language` | enum | `"en"` | `en`, `zh-CN`, `ja-JP`, `ru-RU`. Anything else falls back to `en`. |
 
 Built-in theme ids: `light`, `one_light`, `catppuccin_latte`, `rose_pine_dawn`,
 `dark`, `dracula`, `harbor`, `one_dark_pro`, `rose_pine`. Your own themes take
@@ -92,6 +93,7 @@ their id from the file name. [More about themes →](/customization/themes)
 |---|---|---|---|
 | `tab_bar_position` | enum | `"left"` | `left` (sidebar) or `top` (strip). |
 | `new_tab_position` | enum | `"after-current"` | Or `end`. |
+| `confirm_close` | enum | `"when-busy"` | When closing a tab or pane asks first: `never`, `when-busy` (a program or agent is still running), `always` (even an idle shell). `ssh_warn_on_close` is honoured either way. |
 | `sidebar_auto_grouping` | bool | `true` | Groups unpinned tabs by repository (SSH tabs by host). Off: a flat list below the pinned groups, which show either way. Pinned groups and folds are stored with the workspace, not here. |
 | `sidebar_width` | number | `220` | Pixels (100–2000). |
 | `sidebar_collapsed` | bool | `false` | |
@@ -143,6 +145,7 @@ their id from the file name. [More about themes →](/customization/themes)
 | `word_separators` | string | see below | Characters that end a word. Used when smart selection is off. |
 | `copy_on_select` | bool | `false` | |
 | `clipboard_trim_trailing_spaces` | bool | `false` | |
+| `copy_join_wrapped` | bool | `false` | In a Claude Code pane, copy rejoins the lines Claude wrapped at the pane's edge, so a paragraph pastes as one line; other panes copy as shown. ⌘⌥C and Copy Raw copy the rows as shown. |
 | `macos_option_as_alt` | bool | `false` | <kbd>⌥</kbd>+key sends the escape chord instead of typing a special character. |
 | `keybindings` | object | `{}` | `{"SplitRight": "cmd-d"}`. [Syntax →](/customization/keybindings) |
 | `keybinding_preset` | string | `"default"` | Or `"tmux"`. |

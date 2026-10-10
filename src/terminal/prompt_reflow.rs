@@ -48,17 +48,9 @@ pub(super) fn resize<T: EventListener>(term: &mut Term<T>, size: TermSize, shell
     }
 
     let cursor = term.grid().cursor.point;
-    let last = Column(term.columns() - 1);
     // Stops at the top of the screen: the shell's cursor-up stops there too,
     // so rows already in scrollback are not part of what it will move over.
-    let mut start = cursor.line;
-    while start > Line(0)
-        && term.grid()[Line(start.0 - 1)][last]
-            .flags
-            .contains(Flags::WRAPLINE)
-    {
-        start -= 1;
-    }
+    let start = wrapped_line_start(term, cursor.line);
     let rows_up = (cursor.line.0 - start.0) as usize;
 
     term.grid_mut().cursor.point = Point::new(start, Column(0));
@@ -73,6 +65,114 @@ pub(super) fn resize<T: EventListener>(term: &mut Term<T>, size: TermSize, shell
     }
     let last = Column(term.columns() - 1);
     term.grid_mut().cursor.point.column = cursor.column.min(last);
+}
+
+/// The two prompt marks the shell brackets its prompt with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptMark {
+    /// OSC 133;A — a fresh prompt is about to be drawn.
+    Opened,
+    /// OSC 133;B — the prompt is drawn and input begins here.
+    Ready,
+}
+
+impl PromptMark {
+    /// Reads an OSC payload (`133;A`, `133;B`, …).
+    pub fn parse(payload: &[u8]) -> Option<Self> {
+        let mark = payload.strip_prefix(b"133;")?;
+        let (&kind, rest) = mark.split_first()?;
+        if !(rest.is_empty() || rest.first() == Some(&b';')) {
+            return None;
+        }
+        match kind {
+            b'A' => Some(Self::Opened),
+            b'B' => Some(Self::Ready),
+            _ => None,
+        }
+    }
+}
+
+/// Puts the line break back between output that did not end in a newline and
+/// the prompt after it.
+///
+/// zsh's `PROMPT_SP` moves such a prompt onto a line of its own by writing
+/// the `%` end-of-line mark and then padding it with spaces until the cursor
+/// *wraps*. To the grid that is one wrapped line: `printf xyz` and the prompt
+/// under it read as a single line of text, so the reflow above took the
+/// output for the prompt's own first row and erased it on the next resize,
+/// and widening the pane joined the two onto one row.
+///
+/// The marks say where that happened. `A` comes from precmd, before
+/// `PROMPT_SP`: a cursor off column 0 there is output left dangling. By `B`
+/// the prompt is drawn, and if the row that output ended on is now padding
+/// all the way to its last column and wraps into the rows below, that wrap is
+/// the padding's, not the text's — so it becomes a hard break. A prompt that
+/// simply carried on from the output (bash has no `PROMPT_SP`) leaves its own
+/// text on that row rather than blanks, and is left alone.
+#[derive(Default)]
+pub struct PromptBreak {
+    /// Where `A` found a dangling line: how many rows into its wrapped line
+    /// the cursor was, the column, and the character it had just written —
+    /// the last to recognize the row by again at `B`, which the prompt may
+    /// have scrolled.
+    dangling: Option<(usize, Column, char)>,
+}
+
+impl PromptBreak {
+    pub fn apply<T: EventListener>(&mut self, term: &mut Term<T>, mark: PromptMark) {
+        match mark {
+            PromptMark::Opened => {
+                let cursor = term.grid().cursor.point;
+                // A full row leaves the cursor parked on its last cell: the
+                // text ends there, one column short of where it stands.
+                let end = match term.grid().cursor.input_needs_wrap {
+                    true => cursor.column + 1,
+                    false => cursor.column,
+                };
+                self.dangling = (end.0 > 0).then(|| {
+                    let into = (cursor.line.0 - wrapped_line_start(term, cursor.line).0) as usize;
+                    let last = term.grid()[cursor.line][end - 1].c;
+                    (into, end, last)
+                });
+            }
+            PromptMark::Ready => {
+                let Some((into, end, last)) = self.dangling.take() else {
+                    return;
+                };
+                let cursor = term.grid().cursor.point.line;
+                let row = wrapped_line_start(term, cursor) + into;
+                if row >= cursor {
+                    return;
+                }
+                let cols = term.columns();
+                let grid = term.grid();
+                let padded = end.0 < cols
+                    && grid[row][end - 1].c == last
+                    && (end.0 + 1..cols).all(|col| grid[row][Column(col)].c == ' ')
+                    && grid[row][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+                if padded {
+                    term.grid_mut()[row][Column(cols - 1)]
+                        .flags
+                        .remove(Flags::WRAPLINE);
+                }
+            }
+        }
+    }
+}
+
+/// The first row of the wrapped line `line` is part of, stopping at the top of
+/// the screen as the shell's own cursor-up does.
+fn wrapped_line_start<T>(term: &Term<T>, line: Line) -> Line {
+    let last = Column(term.columns() - 1);
+    let mut start = line;
+    while start > Line(0)
+        && term.grid()[Line(start.0 - 1)][last]
+            .flags
+            .contains(Flags::WRAPLINE)
+    {
+        start -= 1;
+    }
+    start
 }
 
 #[cfg(test)]
@@ -286,5 +386,87 @@ mod tests {
         parser.advance(&mut term, b"\x1b[?1049h\x1b[Hstatus bar");
         resize(&mut term, TermSize::new(98, 12), true);
         assert_eq!(text(&term), ["status bar"]);
+    }
+
+    /// What zsh 5.9 writes between precmd's `A` and the prompt when the last
+    /// output did not end in a newline, as captured off a real pty: the
+    /// standout `%` end-of-line mark, `cols - 1` spaces to force a wrap, then
+    /// back to column 0 and clear below.
+    fn prompt_sp(cols: usize) -> Vec<u8> {
+        let mut out = b"\x1b[1m\x1b[7m%\x1b[27m\x1b[1m\x1b[0m".to_vec();
+        out.extend(std::iter::repeat_n(b' ', cols - 1));
+        out.extend_from_slice(b"\r \r\r\x1b[0m\x1b[27m\x1b[24m\x1b[J");
+        out
+    }
+
+    /// `printf xyz` at a zsh prompt, through a stream the reader has cut at
+    /// the prompt marks, then drawn out at `cols`.
+    fn dangling_output(cols: usize, guarded: bool) -> (Term<VoidListener>, Processor) {
+        let (mut term, mut parser) = pane(cols);
+        let mut marks = PromptBreak::default();
+        parser.advance(&mut term, b"xyz");
+        if guarded {
+            marks.apply(&mut term, PromptMark::Opened);
+        }
+        parser.advance(&mut term, &prompt_sp(cols));
+        parser.advance(&mut term, &zsh_redraw(cols, 0, ""));
+        if guarded {
+            marks.apply(&mut term, PromptMark::Ready);
+        }
+        (term, parser)
+    }
+
+    /// `PROMPT_SP` wraps the dangling output's row into the prompt's. Taken
+    /// for the prompt's own first row, that output was cleared by the next
+    /// resize at the prompt — `printf xyz` simply vanished when a panel
+    /// opened. Measured against the stream without the marks' fix, so the
+    /// test also proves the scenario loses the output there.
+    #[test]
+    fn output_without_a_newline_survives_a_resize_at_the_prompt() {
+        let narrow = |guarded: bool| {
+            let (mut term, mut parser) = dangling_output(98, guarded);
+            resize(&mut term, TermSize::new(60, 12), true);
+            parser.advance(&mut term, &zsh_redraw(60, 0, ""));
+            text(&term)
+        };
+        assert!(
+            !narrow(false).iter().any(|row| row.starts_with("xyz")),
+            "the scenario no longer loses the output without the fix"
+        );
+        assert_eq!(narrow(true), ["echo hi", "hi", "xyz%", &prompt_row(60)]);
+    }
+
+    /// Widening joins wrapped rows back together, and the padding's wrap
+    /// joined the output and the prompt onto one row.
+    #[test]
+    fn widening_keeps_dangling_output_off_the_prompt_row() {
+        let (mut term, mut parser) = dangling_output(60, true);
+        resize(&mut term, TermSize::new(98, 12), true);
+        parser.advance(&mut term, &zsh_redraw(98, 0, ""));
+        assert_eq!(text(&term), ["echo hi", "hi", "xyz%", &prompt_row(98)]);
+    }
+
+    /// A prompt that carries straight on from the output — bash has no
+    /// `PROMPT_SP` — wraps on its own text, not on padding, and that wrap is
+    /// the shell's to count.
+    #[test]
+    fn a_prompt_continuing_the_output_row_keeps_its_wrap() {
+        let (mut term, mut parser) = pane(20);
+        let mut marks = PromptBreak::default();
+        parser.advance(&mut term, b"xyz");
+        marks.apply(&mut term, PromptMark::Opened);
+        parser.advance(&mut term, b"user@host:~/some/long/path$ ");
+        marks.apply(&mut term, PromptMark::Ready);
+        let row: Line = term.grid().cursor.point.line - 1;
+        assert!(term.grid()[row][Column(19)].flags.contains(Flags::WRAPLINE));
+    }
+
+    #[test]
+    fn prompt_marks_parse() {
+        assert_eq!(PromptMark::parse(b"133;A"), Some(PromptMark::Opened));
+        assert_eq!(PromptMark::parse(b"133;B"), Some(PromptMark::Ready));
+        assert_eq!(PromptMark::parse(b"133;A;k=s"), Some(PromptMark::Opened));
+        assert_eq!(PromptMark::parse(b"133;C"), None);
+        assert_eq!(PromptMark::parse(b"133;AB"), None);
     }
 }

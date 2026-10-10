@@ -2,12 +2,18 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Extension, Router,
-    extract::{State, WebSocketUpgrade, ws::{CloseFrame, Message, WebSocket, close_code}},
+    extract::{
+        State, WebSocketUpgrade,
+        ws::{CloseFrame, Message, WebSocket, close_code},
+    },
     http::header,
     response::Response,
     routing::get,
 };
-use tokio::{sync::OwnedSemaphorePermit, time::{Instant, MissedTickBehavior, interval, timeout}};
+use tokio::{
+    sync::OwnedSemaphorePermit,
+    time::{Instant, MissedTickBehavior, interval, timeout},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -29,9 +35,15 @@ pub(crate) struct ConnectionLease {
 
 pub(crate) fn router(registry: Arc<Registry>) -> Router {
     Router::new()
-        .route("/healthz", get(|| async {
-            ([(header::CONTENT_TYPE, "application/json")], r#"{"status":"ok","protocol":1}"#)
-        }))
+        .route(
+            "/healthz",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"status":"ok","protocol":1}"#,
+                )
+            }),
+        )
         .route("/v1/ws", get(upgrade))
         .with_state(registry)
 }
@@ -49,17 +61,24 @@ async fn upgrade(
 }
 
 async fn send(socket: &mut WebSocket, message: Message) -> Result<(), ()> {
-    timeout(SEND_TIMEOUT, socket.send(message)).await.map_err(|_| ())?.map_err(|_| ())
+    timeout(SEND_TIMEOUT, socket.send(message))
+        .await
+        .map_err(|_| ())?
+        .map_err(|_| ())
 }
 
 async fn reject(socket: &mut WebSocket, message: &'static str) {
     if let Ok(error) = protocol::encode(&Frame::Error { message }) {
         let _ = send(socket, Message::Text(error.into())).await;
     }
-    let _ = send(socket, Message::Close(Some(CloseFrame {
-        code: close_code::POLICY,
-        reason: "relay policy".into(),
-    }))).await;
+    let _ = send(
+        socket,
+        Message::Close(Some(CloseFrame {
+            code: close_code::POLICY,
+            reason: "relay policy".into(),
+        })),
+    )
+    .await;
 }
 
 async fn session(mut socket: WebSocket, registry: Arc<Registry>, lease: Arc<ConnectionLease>) {
@@ -78,12 +97,18 @@ async fn session(mut socket: WebSocket, registry: Arc<Registry>, lease: Arc<Conn
     };
     let registration = match registration {
         Ok(registration) => registration,
-        Err(error) => { reject(&mut socket, error).await; return; }
+        Err(error) => {
+            reject(&mut socket, error).await;
+            return;
+        }
     };
     let (peer, mut outbound) = registry.peer();
     let owner = match registry.register(registration, peer.clone()) {
         Ok(owner) => owner,
-        Err(error) => { reject(&mut socket, error).await; return; }
+        Err(error) => {
+            reject(&mut socket, error).await;
+            return;
+        }
     };
     let registration = RegistrationGuard::new(owner, Arc::clone(&registry));
     let mut heartbeat = interval(Duration::from_secs(5));
@@ -180,9 +205,13 @@ async fn session(mut socket: WebSocket, registry: Arc<Registry>, lease: Arc<Conn
     // Revoke ownership before waiting on an unresponsive socket's close write.
     drop(registration);
     if !peer.is_closing() {
-        let _ = send(&mut socket, Message::Close(Some(CloseFrame {
-            code: close_code::NORMAL,
-            reason: "disconnected".into(),
-        }))).await;
+        let _ = send(
+            &mut socket,
+            Message::Close(Some(CloseFrame {
+                code: close_code::NORMAL,
+                reason: "disconnected".into(),
+            })),
+        )
+        .await;
     }
 }

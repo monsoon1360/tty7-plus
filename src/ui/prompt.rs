@@ -212,7 +212,7 @@ impl Render for TextPrompt {
             0..=2 => ALERT_W,
             _ => ALERT_W_WIDE,
         };
-        let card = dialog::card(width, cx)
+        let card = dialog::card("prompt-card", self.message.clone(), width, cx)
             .max_w(gpui::relative(0.9))
             .gap(px(16.))
             .pt(px(20.))

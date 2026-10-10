@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use serde_json::json;
 use tty7_core::client::{ControlClient, PaneClient, PaneSession};
 use tty7_core::core::agent_hooks::{HookAgent, HookTarget, HooksState, hooks_state};
 use tty7_core::core::session::WorkspaceId;
@@ -27,6 +26,13 @@ const REPLAY_SETTLE: Duration = Duration::from_millis(300);
 /// A backstop on reading the replay: it ends on the first live output or a
 /// quiet spell, and this only bounds a daemon that keeps sending status.
 const EXEC_REPLAY_MAX: Duration = Duration::from_secs(10);
+/// How long a prompt that came back before the command started is given to
+/// turn out to be the one the shell was still drawing. The daemon reports a
+/// pane at its prompt from the `D` precmd writes first, before the user's own
+/// precmd hooks have run and the prompt is on screen, so a line sent in that
+/// window is followed by that prompt's `A` and only then read and run. A line
+/// the shell really refused leaves the prompt standing.
+const REPROMPT_SETTLE: Duration = Duration::from_millis(750);
 
 const NOT_RUNNING: &str =
     "could not reach the tty7 server on this machine — `tty7 server start` brings one up";
@@ -335,7 +341,27 @@ impl Backend for RealBackend {
 
         self.send_input(pane, line)?;
         let mut transcript = Transcript::new();
+        // When a prompt came back with no command started before it: the
+        // line is only taken as refused once that has held for
+        // `REPROMPT_SETTLE`.
+        let mut reprompted: Option<std::time::Instant> = None;
         let end = loop {
+            if transcript.started() {
+                reprompted = None;
+            }
+            let settle = match reprompted {
+                Some(at) => {
+                    let left = REPROMPT_SETTLE.saturating_sub(at.elapsed());
+                    if left.is_zero() {
+                        break ExecEnd::Finished {
+                            exit: None,
+                            ran: false,
+                        };
+                    }
+                    Some(left)
+                }
+                None => None,
+            };
             let wait = match deadline {
                 Some(d) => {
                     let left = d.saturating_duration_since(std::time::Instant::now());
@@ -348,6 +374,10 @@ impl Backend for RealBackend {
                 }
                 None => None,
             };
+            let wait = match (wait, settle) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             let _ = session.set_recv_timeout(wait);
             match session.recv() {
                 Ok(DaemonMsg::Output(bytes)) => {
@@ -359,14 +389,18 @@ impl Backend for RealBackend {
                     at_prompt,
                     last_exit,
                     ..
-                }) => {
-                    if let Some(done) = transcript.prompt(at_prompt, last_exit) {
+                }) => match transcript.prompt(at_prompt, last_exit) {
+                    Some(done) if done.ran => {
                         break ExecEnd::Finished {
                             exit: done.exit,
-                            ran: done.ran,
+                            ran: true,
                         };
                     }
-                }
+                    Some(_) => {
+                        reprompted.get_or_insert_with(std::time::Instant::now);
+                    }
+                    None => {}
+                },
                 Ok(DaemonMsg::Exited { code }) => break ExecEnd::PaneExited(code),
                 Ok(_) => {}
                 Err(e) if timed_out(&e) => continue,
@@ -430,8 +464,22 @@ fn what_was_asked_for(segments: Vec<CaptureSegment>, scrollback: bool) -> Vec<Ca
         .filter(|segment| !segment.bytes.is_empty())
         .collect();
     if !scrollback {
-        // Only the newest segment, which is the one holding the screen.
-        segments.drain(..segments.len().saturating_sub(1));
+        // Only the newest segment, which is the one holding the screen — but
+        // in the modes the segments before it left on. A resize while `vim`
+        // is open starts the newest segment inside the alternate screen, and
+        // replayed from the ground state its redraws landed on the main
+        // screen, so `vim`'s `~` column still read as the pane's text after it
+        // had exited.
+        let dropped = segments.len().saturating_sub(1);
+        let mut modes = tty7_core::core::term_modes::TerminalModes::new();
+        for segment in segments.drain(..dropped) {
+            modes.feed(&segment.bytes);
+        }
+        if let (Some(restore), Some(newest)) = (modes.restore_bytes(), segments.first_mut()) {
+            let mut bytes = restore;
+            bytes.extend_from_slice(&newest.bytes);
+            newest.bytes = bytes;
+        }
     }
     segments
 }
@@ -483,47 +531,11 @@ fn keys<'a>(routes: impl Iterator<Item = &'a RouteInfo>) -> String {
 }
 
 fn route_matches(name: &str, route: &RouteInfo) -> bool {
-    route.key == name || host_of(&route.key) == Some(name)
-}
-
-fn host_of(key: &str) -> Option<&str> {
-    let first = key.split('|').next()?;
-    let after_user = first.split('@').nth(1)?;
-    after_user.split(':').next()
+    route.key == name || route.host() == Some(name)
 }
 
 fn target_for(route: &RouteInfo) -> Result<RouteTarget> {
-    if route.kind != "ssh" {
-        bail!(
-            "machine '{}' is a {} link — the CLI can only route over ssh links yet",
-            route.key,
-            route.kind
-        );
-    }
-    if route.key.contains('|') {
-        bail!(
-            "machine '{}' is reached through a jump/proxy chain, which the CLI cannot \
-             rebuild from the link key yet — use the GUI for this machine",
-            route.key
-        );
-    }
-    let (user, rest) = route
-        .key
-        .split_once('@')
-        .ok_or_else(|| anyhow!("unrecognized machine key '{}'", route.key))?;
-    let (host, port) = rest
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow!("unrecognized machine key '{}'", route.key))?;
-    let port: u16 = port
-        .parse()
-        .map_err(|_| anyhow!("unrecognized machine key '{}'", route.key))?;
-    let spec = serde_json::from_value(json!({
-        "user": user,
-        "host": host,
-        "port": port,
-        "auth_mode": "auto",
-    }))?;
-    Ok(RouteTarget::Ssh(Box::new(spec)))
+    route.target().map_err(|e| anyhow!(e))
 }
 
 #[cfg(test)]
@@ -577,6 +589,24 @@ mod tests {
             "the fix must not reach past a segment that does hold the screen"
         );
         assert_eq!(what_was_asked_for(replay.clone(), true), replay);
+    }
+
+    #[test]
+    fn a_resize_inside_a_full_screen_program_keeps_its_screen_off_the_capture() {
+        // `vim` opened, the pane was resized, `vim` redrew and exited: the
+        // newest segment starts inside the alternate screen.
+        let replay = vec![
+            seg(100, b"$ vim\r\n\x1b[?1049h~\r\n~\r\n"),
+            seg(80, b"\x1b[H~\r\n~\r\n\x1b[?1049l$ "),
+        ];
+        let newest = what_was_asked_for(replay, false);
+        assert_eq!(newest.len(), 1);
+        let text = crate::screen::render(&newest);
+        assert!(
+            !text.contains('~'),
+            "vim's screen leaked into the capture: {text:?}"
+        );
+        assert!(text.contains('$'));
     }
 
     #[test]

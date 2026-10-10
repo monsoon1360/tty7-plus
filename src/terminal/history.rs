@@ -295,6 +295,10 @@ fn normalize(raw: Vec<Raw>) -> History {
 }
 
 fn load_shell_history() -> Vec<Raw> {
+    // A developer's real history would push a test's entries past MAX_ENTRIES.
+    if cfg!(test) {
+        return Vec::new();
+    }
     let mut files: Vec<PathBuf> = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |p: PathBuf| {

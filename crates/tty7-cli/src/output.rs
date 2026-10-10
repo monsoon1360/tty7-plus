@@ -289,10 +289,14 @@ pub fn procs_tables(procs: &PaneProcs) -> String {
                 p.pid.to_string(),
                 format!("{}{}", "  ".repeat(p.depth as usize), p.name),
                 if p.foreground { "*" } else { "" }.to_string(),
+                p.rss.map_or_else(
+                    || "-".to_string(),
+                    tty7_core::daemon::procstat::compact_bytes,
+                ),
             ]
         })
         .collect();
-    let mut out = table(&["PID", "NAME", "FG"], &rows);
+    let mut out = table(&["PID", "NAME", "FG", "RSS"], &rows);
     if !procs.ports.is_empty() {
         out.push('\n');
         let rows: Vec<Vec<String>> = procs
@@ -586,12 +590,15 @@ mod tests {
                     name: "pwsh".into(),
                     depth: 0,
                     foreground: false,
+                    ..Default::default()
                 },
                 ProcEntry {
                     pid: 200,
                     name: "cargo".into(),
                     depth: 1,
                     foreground: true,
+                    rss: Some(38 * 1024 * 1024),
+                    ..Default::default()
                 },
             ],
             ports: vec![PortEntry {
@@ -613,6 +620,11 @@ mod tests {
             "the foreground process is marked: {rendered}"
         );
         assert!(rendered.contains("3000"), "{rendered}");
+        assert!(rendered.contains("RSS"), "{rendered}");
+        assert!(
+            rendered.contains("38 MB"),
+            "rss is appended per row: {rendered}"
+        );
         assert!(
             !rendered.contains("note:"),
             "a probe that worked says nothing: {rendered}"
@@ -630,6 +642,7 @@ mod tests {
                 name: "zsh".into(),
                 depth: 0,
                 foreground: true,
+                ..Default::default()
             }],
             ports: Vec::new(),
             probe: PortProbe::Unavailable("lsof: program not found".into()),

@@ -39,6 +39,29 @@ pub const FEATURE_HANDOFF: &str = "handoff";
 /// and drops the route unanswered, so the client checks first and says why.
 pub const FEATURE_UPDATE_SERVER: &str = "update-server";
 
+/// The daemon understands [`ClientMsg::Lease`]: an observer can show a pane at
+/// its own size until it lets go or the controller takes it back. A client
+/// must see this before sending one; an older daemon cannot decode the frame
+/// and drops the connection.
+pub const FEATURE_SIZE_LEASE: &str = "size-lease";
+
+/// What a [`ClientMsg::Lease`] asks. The first two are an observer's, the last
+/// two the controller's; each side's are ignored from the other.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseRequest {
+    /// Put the pty at `size` while this observer is connected. `by` names
+    /// it to the controller ("Thomas's iPhone"). Sent again to change size.
+    Take { size: WinSize, by: String },
+    /// Put the pane back at the size the controller asked for.
+    Release,
+    /// The controller can hear [`DaemonMsg::Lease`]; tell it now and on
+    /// every change.
+    Watch,
+    /// The controller ends the lease, whoever holds it.
+    TakeBack,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DaemonVersion {
     pub protocol: u32,
@@ -57,6 +80,7 @@ impl DaemonVersion {
             FEATURE_RESIZE_ECHO.to_string(),
             FEATURE_RESTORE_SCROLLBACK.to_string(),
             FEATURE_UPDATE_SERVER.to_string(),
+            FEATURE_SIZE_LEASE.to_string(),
         ];
         if cfg!(unix) {
             features.push(FEATURE_HANDOFF.to_string());
@@ -440,13 +464,23 @@ pub struct ManagedForward {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcEntry {
     pub pid: u32,
     pub name: String,
     pub depth: u8,
     #[serde(default)]
     pub foreground: bool,
+    /// Resident memory in bytes, total CPU time (user + system) in ns, and an
+    /// opaque start stamp that tells a reused pid from the process it replaced.
+    /// `None` from a daemon that predates them or could not read them; not a
+    /// `PROTOCOL_VERSION` bump, since either side skips what it does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_ns: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -862,6 +896,18 @@ pub enum ClientMsg {
         pane_id: u64,
         bytes: Vec<u8>,
     },
+    /// An agent hook's report about the pane it runs in — the JSON body of
+    /// the `tty7://cli-agent` OSC 777 sequence — handed straight to the
+    /// daemon rather than written to the pane's tty, where the agent's own
+    /// output can cut into it. `pid` is the hook's process, which has to be
+    /// running under the pane for the report to count. Answered with
+    /// `InputAck` when applied and `Error` when not, so the hook knows to
+    /// fall back to the tty.
+    AgentEvent {
+        pane_id: u64,
+        pid: u32,
+        event: String,
+    },
     Resize(WinSize),
     Detach,
     Kill {
@@ -881,6 +927,15 @@ pub enum ClientMsg {
     },
     EnsureLoopbackForward(LoopbackForwardRequest),
     SpawnNativeSsh {
+        /// The directory *on the remote host* for the shell to start in —
+        /// where a pane being dialled again (restore, Reconnect, a split, ⌘T)
+        /// last reported it was. Never a path on this machine: it is not
+        /// checked or canonicalized here, only handed to the far shell, and a
+        /// fresh connection from a saved host sends `None`.
+        ///
+        /// Honoured only when the session gets a shell-integration bootstrap
+        /// to carry it; a relative path is ignored, and one that no longer
+        /// exists leaves the shell in the login directory.
         cwd: Option<PathBuf>,
         size: WinSize,
         spec: Box<NativeSshSpec>,
@@ -932,6 +987,8 @@ pub enum ClientMsg {
     },
     OnWorkspace(Box<WorkspaceRequest>),
     Version,
+    /// Only after the daemon advertised [`FEATURE_SIZE_LEASE`].
+    Lease(LeaseRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -992,6 +1049,11 @@ pub enum DaemonMsg {
     ForwardList(Vec<ManagedForward>),
     Procs(PaneProcs),
     Version(DaemonVersion),
+    /// Who holds the pane at their own size, or `None` once nobody does. Sent
+    /// to the holding observer and to a controller that asked with
+    /// [`LeaseRequest::Watch`], never to anyone else: older clients cannot
+    /// decode it.
+    Lease(Option<String>),
     Error(String),
 }
 
@@ -1027,6 +1089,8 @@ mod kind {
     pub const OBSERVE: u8 = 54;
     pub const SEND_INPUT: u8 = 55;
     pub const HANDOFF: u8 = 56;
+    pub const LEASE: u8 = 57;
+    pub const AGENT_EVENT: u8 = 58;
 
     pub const SPAWNED: u8 = 1;
     pub const SNAPSHOT: u8 = 2;
@@ -1061,6 +1125,7 @@ mod kind {
     /// (issue #213). Compact binary selector, like `IMAGE`.
     pub const DELETE_IMAGE: u8 = 61;
     pub const CLIPBOARD_WRITE: u8 = 62;
+    pub const LEASE_HOLDER: u8 = 63;
 }
 
 pub fn write_frame<W: Write>(w: &mut W, kind: u8, payload: &[u8]) -> io::Result<()> {
@@ -1250,12 +1315,18 @@ impl ClientMsg {
             ClientMsg::SendInput { pane_id, bytes } => {
                 write_frame(w, kind::SEND_INPUT, &to_json(&(pane_id, bytes))?)
             }
+            ClientMsg::AgentEvent {
+                pane_id,
+                pid,
+                event,
+            } => write_frame(w, kind::AGENT_EVENT, &to_json(&(pane_id, pid, event))?),
             ClientMsg::Resize(size) => write_frame(w, kind::RESIZE, &to_json(size)?),
             ClientMsg::Detach => write_frame(w, kind::DETACH, &[]),
             ClientMsg::Kill { pane_id } => write_frame(w, kind::KILL, &to_json(pane_id)?),
             ClientMsg::List => write_frame(w, kind::LIST, &[]),
             ClientMsg::Shutdown => write_frame(w, kind::SHUTDOWN, &[]),
             ClientMsg::Handoff { exe } => write_frame(w, kind::HANDOFF, &to_json(exe)?),
+            ClientMsg::Lease(request) => write_frame(w, kind::LEASE, &to_json(request)?),
             ClientMsg::EnsureLoopbackForward(req) => {
                 write_frame(w, kind::ENSURE_LOOPBACK_FORWARD, &to_json(req)?)
             }
@@ -1376,6 +1447,14 @@ impl ClientMsg {
                 let (pane_id, bytes) = from_json(&payload)?;
                 ClientMsg::SendInput { pane_id, bytes }
             }
+            kind::AGENT_EVENT => {
+                let (pane_id, pid, event) = from_json(&payload)?;
+                ClientMsg::AgentEvent {
+                    pane_id,
+                    pid,
+                    event,
+                }
+            }
             kind::RESIZE => ClientMsg::Resize(from_json(&payload)?),
             kind::DETACH => ClientMsg::Detach,
             kind::KILL => ClientMsg::Kill {
@@ -1383,6 +1462,7 @@ impl ClientMsg {
             },
             kind::LIST => ClientMsg::List,
             kind::SHUTDOWN => ClientMsg::Shutdown,
+            kind::LEASE => ClientMsg::Lease(from_json(&payload)?),
             kind::HANDOFF => ClientMsg::Handoff {
                 exe: from_json(&payload)?,
             },
@@ -1470,6 +1550,7 @@ impl DaemonMsg {
             DaemonMsg::Image(frame) => write_frame(w, kind::IMAGE, frame),
             DaemonMsg::DeleteImage(sel) => write_frame(w, kind::DELETE_IMAGE, sel),
             DaemonMsg::ClipboardWrite(frame) => write_frame(w, kind::CLIPBOARD_WRITE, frame),
+            DaemonMsg::Lease(by) => write_frame(w, kind::LEASE_HOLDER, &to_json(by)?),
             DaemonMsg::Cwd(path) => write_frame(w, kind::CWD, &to_json(path)?),
             DaemonMsg::Prompt {
                 active,
@@ -1527,6 +1608,7 @@ impl DaemonMsg {
             kind::IMAGE => DaemonMsg::Image(payload),
             kind::DELETE_IMAGE => DaemonMsg::DeleteImage(payload),
             kind::CLIPBOARD_WRITE => DaemonMsg::ClipboardWrite(payload),
+            kind::LEASE_HOLDER => DaemonMsg::Lease(from_json(&payload)?),
             kind::CWD => DaemonMsg::Cwd(from_json(&payload)?),
             kind::PROMPT => {
                 let (active, at_prompt, last_exit) = from_json(&payload)?;
@@ -1659,6 +1741,13 @@ mod tests {
     #[test]
     fn client_roundtrip() {
         let msgs = vec![
+            ClientMsg::Lease(LeaseRequest::Take {
+                size: SIZE,
+                by: "phone".into(),
+            }),
+            ClientMsg::Lease(LeaseRequest::Release),
+            ClientMsg::Lease(LeaseRequest::Watch),
+            ClientMsg::Lease(LeaseRequest::TakeBack),
             ClientMsg::Spawn {
                 cwd: Some(PathBuf::from("/tmp/x")),
                 size: SIZE,
@@ -1725,6 +1814,11 @@ mod tests {
             ClientMsg::SendInput {
                 pane_id: 7,
                 bytes: Vec::new(),
+            },
+            ClientMsg::AgentEvent {
+                pane_id: 7,
+                pid: 4242,
+                event: r#"{"v":1,"agent":"claude","event":"stop"}"#.into(),
             },
             ClientMsg::Resize(SIZE),
             ClientMsg::Detach,
@@ -1849,6 +1943,8 @@ mod tests {
     fn daemon_roundtrip() {
         let msgs = vec![
             DaemonMsg::Spawned { pane_id: 1 },
+            DaemonMsg::Lease(Some("Thomas's iPhone".into())),
+            DaemonMsg::Lease(None),
             DaemonMsg::Size(SIZE),
             DaemonMsg::Snapshot(vec![1, 2, 3, 0, 255]),
             DaemonMsg::Output((0u8..=255).collect()),
@@ -1906,6 +2002,7 @@ mod tests {
                 activity: 12,
                 turns: 4,
                 inferred: false,
+                readout: Default::default(),
             })),
             DaemonMsg::AgentStatus(None),
             DaemonMsg::LoopbackForward(LoopbackForward { local_port: 49152 }),

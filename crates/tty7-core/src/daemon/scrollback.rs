@@ -37,7 +37,7 @@
 //!   not worth keeping for a month, or for an hour.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::daemon::protocol::WinSize;
 
@@ -244,7 +244,11 @@ pub fn sweep(keep: &HashSet<u64>) {
     let Some(dir) = dir() else {
         return;
     };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    sweep_in(&dir, keep);
+}
+
+fn sweep_in(dir: &Path, keep: &HashSet<u64>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
@@ -379,22 +383,28 @@ mod tests {
         forget(pane);
     }
 
+    /// In a directory of its own: a sweep of the shared one deletes every
+    /// other test's snapshot mid-test, which is how `saving_twice_…` flaked.
     #[test]
     fn the_sweep_keeps_only_panes_something_can_still_ask_for() {
-        pin_config_dir();
+        let dir = std::env::temp_dir().join(format!("tty7-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let (kept, dropped) = (90_003, 90_004);
-        save(kept, &[seg(80, b"in a workspace")], None);
-        save(dropped, &[seg(80, b"in no workspace")], None);
-        sweep(&HashSet::from([kept]));
+        for id in [kept, dropped] {
+            std::fs::write(
+                dir.join(format!("{id}.bin")),
+                encode(&[seg(80, b"x")], None),
+            )
+            .unwrap();
+        }
+        sweep_in(&dir, &HashSet::from([kept]));
+        let left = |id: u64| dir.join(format!("{id}.bin")).exists();
+        assert!(left(kept), "a pane a tree still names is restorable");
         assert!(
-            load(kept).is_some(),
-            "a pane a tree still names is restorable"
-        );
-        assert!(
-            load(dropped).is_none(),
+            !left(dropped),
             "nobody can ask to restore a pane no tree refers to, so its output must not sit on disk"
         );
-        forget(kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

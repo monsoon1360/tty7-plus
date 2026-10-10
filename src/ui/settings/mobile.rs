@@ -1,405 +1,557 @@
-use std::io;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+//! Settings → Mobile: switching phone access on, pairing a phone, and the
+//! phones already paired.
+//!
+//! The gateway itself is run by the local daemon (`tty7_core::daemon::mobile`),
+//! which reads `mobile_access` from the config. Everything this page shows or changes about
+//! it goes through the gateway's state directory — the files are the interface
+//! between this process and that one, as they are for `tty7-gateway` on the
+//! command line.
 
-use tty7_core::mobile::admin::{self, Status};
+use std::io::Cursor;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tty7_gateway::state::{State, Status};
 
 use super::kit::{self, BtnKind, Tk, fs};
 use super::*;
 
-pub(crate) struct PairDevicesState {
-    id: Uuid,
-    status: Option<Status>,
-    relay_url: Entity<InputState>,
-    tls_pin: Entity<InputState>,
-    dirty: bool,
-    busy: bool,
-    revision: u64,
-    polling: Cell<bool>,
-    poll_error: Option<String>,
-    action_error: Option<String>,
-    qr_error: Option<String>,
-    qr_uri: Option<Arc<str>>,
-    qr: Option<(Arc<gpui::Image>, u32)>,
+/// How long a pairing code on screen stays good.
+const PAIR_TTL: Duration = Duration::from_secs(600);
+/// How often an open pairing looks for the phone that used it.
+const PAIR_POLL: Duration = Duration::from_secs(1);
+const QR_SIZE: f32 = 208.;
+/// How long switching phone access on may take before it counts as failed:
+/// the daemon notices within a couple of seconds, and a gateway binds in one.
+const START_TIMEOUT: Duration = Duration::from_secs(15);
+const START_POLL: Duration = Duration::from_millis(500);
+
+/// A pairing code on screen.
+pub(crate) struct Pairing {
+    code: String,
+    /// The offer's secret, to ask the gateway's state whether it is still open.
+    secret: String,
+    qr: Option<Arc<gpui::Image>>,
+    /// The phones paired before this code was made, to tell the new one by.
+    before: Vec<String>,
+    until: Instant,
+    /// The code no longer pairs. It stays on screen, marked so, until it is
+    /// replaced or dismissed: a code that vanishes by itself leaves whoever
+    /// was about to scan it wondering where it went.
+    spent: Option<Spent>,
 }
 
-impl PairDevicesState {
-    pub(crate) fn new(
-        window: &mut Window,
-        cx: &mut Context<Tty7App>,
-        subs: &mut Vec<Subscription>,
-    ) -> Self {
-        let relay_url = cx.new(|cx| InputState::new(window, cx));
-        let tls_pin = cx.new(|cx| InputState::new(window, cx));
-        for input in [&relay_url, &tls_pin] {
-            subs.push(cx.subscribe_in(input, window, |this, _, event, _, cx| {
-                if !matches!(event, InputEvent::Change) {
-                    return;
-                }
-                if let Some(s) = this.active_settings_mut() {
-                    let m = &mut s.mobile;
-                    m.dirty = m.status.as_ref().is_none_or(|status| {
-                        m.relay_url.read(cx).value().trim() != status.relay_url
-                            || m.tls_pin.read(cx).value().trim()
-                                != status.tls_fingerprint.as_deref().unwrap_or("")
-                    });
-                }
-                cx.notify();
-            }));
-        }
-        Self {
-            id: Uuid::new_v4(),
-            status: None,
-            relay_url,
-            tls_pin,
-            dirty: false,
-            busy: false,
-            revision: 0,
-            polling: Cell::new(false),
-            poll_error: None,
-            action_error: None,
-            qr_error: None,
-            qr_uri: None,
-            qr: None,
-        }
+#[derive(Clone, Copy)]
+enum Spent {
+    Expired,
+    /// A phone tried it and it did not pair — mistyped, or the connection
+    /// dropped. Any attempt closes an offer.
+    Tried,
+    /// Something else opened a newer offer, which replaces this one.
+    Replaced,
+}
+
+/// Minutes and seconds, for the time a code has left.
+fn countdown(left: Duration) -> String {
+    let secs = left.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// What the switch shows: whether phones can actually reach this machine,
+/// not merely whether they were asked to be allowed.
+enum Access {
+    Off,
+    Starting,
+    On,
+    /// Asked for, and the daemon could not start it: shown off, with why.
+    Failed(String),
+}
+
+/// The gateway's state directory, when there is one to look at. Opening it
+/// creates it, which is only worth doing once phone access is on.
+fn gateway_state(on: bool) -> Option<State> {
+    let dir = crate::core::config::config_dir_path()?.join("mobile");
+    (on || dir.is_dir()).then(State::open_default)?.ok()
+}
+
+fn access(on: bool, starting: bool, state: Option<&State>) -> Access {
+    let serving = state.is_some_and(State::serving);
+    match (on, serving, starting) {
+        (false, _, _) => Access::Off,
+        (true, true, _) => Access::On,
+        (true, false, true) => Access::Starting,
+        (true, false, false) => match state.and_then(State::status) {
+            Some(Status::Failed { error }) => Access::Failed(error),
+            // The daemon has not got to it yet, or is between retries.
+            _ => Access::Starting,
+        },
     }
 }
 
-enum MobileAction {
-    Configure { relay_url: String, tls_pin: Option<String>, enabled: bool },
-    Begin,
-    Cancel,
-    Approve(String),
-    Reject(String),
-    Revoke(String),
-    Refresh,
-}
-
-impl MobileAction {
-    fn perform(self) -> io::Result<Status> {
-        match self {
-            Self::Configure { relay_url, tls_pin, enabled } =>
-                return admin::configure(relay_url, tls_pin, enabled),
-            Self::Begin => { admin::begin_pairing()?; }
-            Self::Cancel => admin::cancel_pairing()?,
-            Self::Approve(request) => admin::approve(request)?,
-            Self::Reject(request) => admin::reject(request)?,
-            Self::Revoke(device) => admin::revoke(device)?,
-            Self::Refresh => {}
+/// The code as a QR image: dark modules on white with a quiet zone, whatever
+/// the theme, since that is what a phone's camera reads.
+fn qr_image(code: &str) -> Option<Arc<gpui::Image>> {
+    let qr =
+        qrcode::QrCode::with_error_correction_level(code.as_bytes(), qrcode::EcLevel::L).ok()?;
+    let width = qr.width();
+    let (quiet, scale) = (2, 8);
+    let side = ((width + 2 * quiet) * scale) as u32;
+    let mut img = image::GrayImage::from_pixel(side, side, image::Luma([255]));
+    for (i, color) in qr.to_colors().iter().enumerate() {
+        if *color != qrcode::Color::Dark {
+            continue;
         }
-        admin::status()
-    }
-}
-
-struct MobileSnapshot {
-    status: Status,
-    qr: io::Result<Option<(Arc<gpui::Image>, u32)>>,
-}
-
-fn now_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
-fn qr_image(uri: &str) -> io::Result<(Arc<gpui::Image>, u32)> {
-    let code = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
-        .map_err(io::Error::other)?;
-    let modules = code.width();
-    let scale = 4;
-    let side = ((modules + 8) * scale) as u32;
-    let mut image = image::GrayImage::from_pixel(side, side, image::Luma([255]));
-    for y in 0..modules {
-        for x in 0..modules {
-            if code[(x, y)] == qrcode::types::Color::Dark {
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        image.put_pixel(((x + 4) * scale + dx) as u32,
-                            ((y + 4) * scale + dy) as u32, image::Luma([0]));
-                    }
-                }
+        let (x0, y0) = ((i % width + quiet) * scale, (i / width + quiet) * scale);
+        for y in y0..y0 + scale {
+            for x in x0..x0 + scale {
+                img.put_pixel(x as u32, y as u32, image::Luma([0]));
             }
         }
     }
-    let mut bytes = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageLuma8(image).write_to(&mut bytes, image::ImageFormat::Png)
-        .map_err(io::Error::other)?;
-    Ok((Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes.into_inner())), side))
-}
-
-fn snapshot(status: Status, cached_uri: Option<Arc<str>>) -> MobileSnapshot {
-    let qr = match status.pairing.as_ref() {
-        Some(pairing) if pairing.expires_at > now_seconds()
-            && cached_uri.as_deref() != Some(pairing.uri.as_str()) => qr_image(&pairing.uri).map(Some),
-        _ => Ok(None),
-    };
-    MobileSnapshot { status, qr }
+    let mut png = Vec::new();
+    image::DynamicImage::ImageLuma8(img)
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png,
+    )))
 }
 
 impl Tty7App {
-    fn adopt_mobile_snapshot(
+    /// Switching phone access on is a request to the daemon, so the switch
+    /// holds at "starting" until a gateway is actually serving. If none comes
+    /// up, the switch goes back off and says why, rather than stay on over
+    /// a gateway that is not there.
+    pub(crate) fn set_mobile_access(
         &mut self,
-        snapshot: MobileSnapshot,
-        configured: bool,
+        on: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(s) = self.active_settings_mut() else { return; };
-        let m = &mut s.mobile;
-        // A configuration request may finish after the user has edited again.
-        // Keep that newer draft rather than overwriting it with the response.
-        let sync_inputs = m.status.is_none() || !m.dirty || (configured
-            && m.relay_url.read(cx).value().trim() == snapshot.status.relay_url
-            && m.tls_pin.read(cx).value().trim()
-                == snapshot.status.tls_fingerprint.as_deref().unwrap_or(""));
-        let relay_url = snapshot.status.relay_url.clone();
-        let tls_pin = snapshot.status.tls_fingerprint.clone().unwrap_or_default();
-        let pairing = snapshot.status.pairing.as_ref()
-            .filter(|p| p.expires_at > now_seconds());
-        if pairing.is_none() {
-            m.qr = None;
-            m.qr_uri = None;
+        if !on {
+            self.update_config(cx, |cfg| cfg.mobile_access = false);
+            self.close_mobile_pairing(cx);
+            if let Some(s) = self.active_settings_mut() {
+                s.mobile_starting = false;
+            }
+            cx.notify();
+            return;
         }
-        match snapshot.qr {
-            Ok(Some(image)) => {
-                m.qr = Some(image);
-                m.qr_uri = pairing.map(|p| Arc::from(p.uri.as_str()));
-                m.qr_error = None;
-            }
-            Ok(None) => {
-                if pairing.is_none() { m.qr_error = None; }
-            }
-            Err(error) => {
-                m.qr = None;
-                m.qr_uri = None;
-                m.qr_error = Some(error.to_string());
-            }
+        // A failure from an earlier attempt must not be mistaken for this
+        // one's. Nothing is serving, so the file is nobody's to keep.
+        if let Some(state) = gateway_state(true)
+            && !state.serving()
+        {
+            let _ = state.set_status(&Status::Stopped);
         }
-        m.status = Some(snapshot.status);
-        m.poll_error = None;
-        if sync_inputs {
-            m.dirty = false;
-            if m.relay_url.read(cx).value().as_ref() != relay_url.as_str() {
-                m.relay_url.update(cx, |input, cx| input.set_value(relay_url, window, cx));
-            }
-            if m.tls_pin.read(cx).value().as_ref() != tls_pin.as_str() {
-                m.tls_pin.update(cx, |input, cx| input.set_value(tls_pin, window, cx));
-            }
+        self.update_config(cx, |cfg| cfg.mobile_access = true);
+        if let Some(s) = self.active_settings_mut() {
+            s.mobile_starting = true;
         }
-    }
+        cx.notify();
 
-    fn start_mobile_polling(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(s) = self.active_settings() else { return; };
-        if s.mobile.polling.replace(true) { return; }
-        let id = s.mobile.id;
+        let deadline = Instant::now() + START_TIMEOUT;
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                let state = this.update(cx, |this, _| {
-                    let s = this.active_settings()?;
-                    if s.mobile.id != id || s.section != SettingsSection::PairDevices || s.search_active {
-                        return None;
-                    }
-                    Some((!s.mobile.busy).then(|| (s.mobile.revision, s.mobile.qr_uri.clone())))
-                });
-                match state {
-                    Ok(Some(Some((revision, cached_uri)))) => {
-                        let result = cx.background_spawn(async move {
-                            admin::status().map(|status| snapshot(status, cached_uri))
-                        }).await;
-                        let _ = this.update_in(cx, |this, window, cx| {
-                            if !this.active_settings().is_some_and(|s| s.mobile.id == id
-                                && s.mobile.revision == revision && s.section == SettingsSection::PairDevices
-                                && !s.search_active) { return; }
-                            match result {
-                                Ok(status) => this.adopt_mobile_snapshot(status, false, window, cx),
-                                Err(error) => {
-                                    if let Some(s) = this.active_settings_mut() {
-                                        s.mobile.poll_error = Some(error.to_string());
-                                    }
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }
-                    Ok(Some(None)) => {}
-                    _ => break,
-                }
-                cx.background_executor().timer(Duration::from_secs(1)).await;
-            }
-            let _ = this.update(cx, |this, cx| {
-                if let Some(s) = this.active_settings_mut().filter(|s| s.mobile.id == id) {
-                    s.mobile.polling.set(false);
-                    cx.notify();
-                }
-            });
-        }).detach();
-    }
-
-    fn mobile_action(&mut self, action: MobileAction, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(s) = self.active_settings_mut() else { return; };
-        if s.mobile.busy { return; }
-        let m = &mut s.mobile;
-        m.busy = true;
-        m.revision += 1;
-        m.action_error = None;
-        let id = m.id;
-        let cached_uri = m.qr_uri.clone();
-        let configured = matches!(&action, MobileAction::Configure { .. });
-        cx.notify();
-        cx.spawn_in(window, async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                action.perform().map(|status| snapshot(status, cached_uri))
-            }).await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                let Some(s) = this.active_settings_mut().filter(|s| s.mobile.id == id) else { return; };
-                s.mobile.busy = false;
-                match result {
-                    Ok(status) => this.adopt_mobile_snapshot(status, configured, window, cx),
-                    Err(error) => {
-                        if let Some(s) = this.active_settings_mut() {
-                            s.mobile.action_error = Some(error.to_string());
+                smol::Timer::after(START_POLL).await;
+                let state = gateway_state(true);
+                let failure = match state.as_ref() {
+                    Some(state) if state.serving() => None,
+                    Some(state) => match state.status() {
+                        Some(Status::Failed { error }) => Some(error),
+                        _ if Instant::now() >= deadline => {
+                            Some(t(L10nKey::SettingsMobileNoAnswer).to_string())
                         }
+                        _ => continue,
+                    },
+                    None => Some(t(L10nKey::SettingsMobileNoAnswer).to_string()),
+                };
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if let Some(s) = this.active_settings_mut() {
+                        s.mobile_starting = false;
                     }
-                }
-                cx.notify();
+                    if let Some(error) = failure {
+                        this.update_config(cx, |cfg| cfg.mobile_access = false);
+                        window.push_notification(
+                            t_fmt(L10nKey::SettingsMobileStartFailed, &[("error", &error)]),
+                            cx,
+                        );
+                    }
+                    cx.notify();
+                });
+                return;
+            }
+        })
+        .detach();
+    }
+
+    /// Shows a fresh code, replacing any on screen — which the new offer
+    /// closes, since the gateway keeps only one open at a time.
+    fn start_mobile_pairing(&mut self, cx: &mut Context<Self>) {
+        let Some(state) = gateway_state(true) else {
+            return;
+        };
+        let offer = match tty7_gateway::service::pair_code(&state, PAIR_TTL) {
+            Ok(offer) => offer,
+            Err(e) => {
+                log::warn!("could not make a pairing code: {e:#}");
+                return;
+            }
+        };
+        let before = state
+            .devices()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        if let Some(s) = self.active_settings_mut() {
+            s.mobile_pairing = Some(Pairing {
+                qr: qr_image(&offer.code),
+                code: offer.code,
+                secret: offer.secret.clone(),
+                before,
+                until: Instant::now() + PAIR_TTL,
+                spent: None,
             });
-        }).detach();
-    }
-
-    fn configure_mobile(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(s) = self.active_settings() else { return; };
-        let relay_url = s.mobile.relay_url.read(cx).value().trim().to_string();
-        let pin = s.mobile.tls_pin.read(cx).value().trim().to_string();
-        self.mobile_action(MobileAction::Configure {
-            relay_url, tls_pin: (!pin.is_empty()).then_some(pin), enabled,
-        }, window, cx);
-    }
-
-    fn set_mobile_enabled(&mut self, enabled: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if enabled {
-            self.configure_mobile(true, window, cx);
-            return;
+            s.mobile_paired = None;
+            s.mobile_copied = false;
         }
-        // Turning access off must still work with an unfinished/invalid draft.
-        let Some(status) = self.active_settings().and_then(|s| s.mobile.status.as_ref()) else {
-            return;
-        };
-        self.mobile_action(MobileAction::Configure {
-            relay_url: status.relay_url.clone(),
-            tls_pin: status.tls_fingerprint.clone(),
-            enabled: false,
-        }, window, cx);
-    }
+        cx.notify();
 
-    pub(crate) fn render_settings_mobile_config(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(s) = self.active_settings() else { return div().into_any_element(); };
-        let m = &s.mobile;
-        let enabled = m.status.as_ref().is_some_and(|s| s.enabled);
-        let disabled = m.busy || m.status.is_none();
-        let switch = kit::switch("mobile-enabled")
-            .checked(enabled)
-            .disabled(disabled)
-            .on_click(cx.listener(|this, enabled: &bool, window, cx| {
-                this.set_mobile_enabled(*enabled, window, cx);
-            }))
-            .into_any_element();
-        let url = self.settings_text_input(&m.relay_url, FORM_FIELD_W, false, cx).into_any_element();
-        let pin = self.settings_text_input(&m.tls_pin, FORM_FIELD_W, false, cx).into_any_element();
-        let apply = kit::button("mobile-apply", t(L10nKey::SettingsMobileApply), BtnKind::Secondary)
-            .disabled(disabled || !m.dirty)
-            .on_click(cx.listener(move |this, _, window, cx| this.configure_mobile(enabled, window, cx)));
-        let has_pairing = m.status.as_ref().is_some_and(|s| s.pairing.is_some());
-        let begin = kit::button("mobile-begin", t(if has_pairing {
-            L10nKey::SettingsMobileRegenerateQr
-        } else { L10nKey::SettingsMobileGenerateQr }), BtnKind::Primary)
-            .disabled(disabled || !enabled || m.dirty)
-            .on_click(cx.listener(|this, _, window, cx| this.mobile_action(MobileAction::Begin, window, cx)));
-        self.settings_group(None, None, [
-            self.settings_row(t(L10nKey::SettingsMobileEnabled), t(L10nKey::SettingsMobileEnabledDesc), switch, cx).into_any_element(),
-            self.settings_row(t(L10nKey::SettingsMobileRelayUrl), t(L10nKey::SettingsMobileRelayUrlDesc), url, cx).into_any_element(),
-            self.settings_row(t(L10nKey::SettingsMobileTlsPin), t(L10nKey::SettingsMobileTlsPinDesc), pin, cx).into_any_element(),
-            h_flex().py(px(12.)).justify_end().child(apply).into_any_element(),
-            self.settings_row(t(L10nKey::SettingsNavPairDevices), t(L10nKey::SettingsMobilePairDesc), begin.into_any_element(), cx).into_any_element(),
-        ], cx)
-    }
-
-    pub(crate) fn render_settings_mobile(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        self.start_mobile_polling(window, cx);
-        let tk = Tk::of(cx);
-        let Some(s) = self.active_settings() else { return div().into_any_element(); };
-        let m = &s.mobile;
-        let mut notices = v_flex().gap(px(8.)).text_size(fs(12.));
-        let connection = match &m.status {
-            None => L10nKey::SettingsMobileLoading,
-            Some(status) if !status.enabled => L10nKey::SettingsMobileDisabled,
-            Some(status) if status.connected => L10nKey::SettingsMobileConnected,
-            Some(_) => L10nKey::SettingsMobileDisconnected,
-        };
-        notices = notices.child(h_flex().gap(px(12.)).justify_between()
-            .child(div().text_color(tk.k6).child(t(connection)))
-            .child(kit::button("mobile-refresh", t(L10nKey::SettingsMobileRefresh), BtnKind::Link)
-                .disabled(m.busy)
-                .on_click(cx.listener(|this, _, window, cx| this.mobile_action(MobileAction::Refresh, window, cx)))));
-        for error in [m.action_error.as_ref(), m.poll_error.as_ref(), m.qr_error.as_ref(),
-            m.status.as_ref().and_then(|s| s.error.as_ref())].into_iter().flatten() {
-            notices = notices.child(div().text_color(tk.danger).child(error.clone()));
-        }
-        if m.busy { notices = notices.child(div().text_color(tk.k5).child(t(L10nKey::SettingsWorking))); }
-        let mut groups = vec![notices.into_any_element(), self.render_settings_mobile_config(cx)];
-        if let Some(pairing) = m.status.as_ref().and_then(|s| s.pairing.as_ref()) {
-            let remaining = pairing.expires_at.saturating_sub(now_seconds());
-            let mut qr = v_flex().gap(px(12.)).items_start();
-            if remaining > 0 {
-                qr = qr.child(div().text_size(fs(12.)).text_color(tk.k6).child(t(L10nKey::SettingsMobileScanQr)));
-                if let Some((image, side)) = &m.qr {
-                    qr = qr.child(gpui::img(image.clone()).size(px(*side as f32)).max_w_full()
-                        .object_fit(gpui::ObjectFit::Contain));
+        // Watch for the phone that uses it, closing the code then, and mark
+        // it spent once it can no longer pair. A code replaced or dismissed
+        // on screen ends its own watch.
+        let secret = offer.secret;
+        cx.spawn(async move |this, cx| {
+            loop {
+                smol::Timer::after(PAIR_POLL).await;
+                let alive = this.update(cx, |this, cx| {
+                    let Some(s) = this.active_settings_mut() else {
+                        return false;
+                    };
+                    let Some(pairing) = s.mobile_pairing.as_mut().filter(|p| p.secret == secret)
+                    else {
+                        return false;
+                    };
+                    let new = state
+                        .devices()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|d| !pairing.before.contains(&d.id));
+                    if let Some(device) = new {
+                        s.mobile_paired = Some(device.name);
+                        s.mobile_pairing = None;
+                        cx.notify();
+                        return false;
+                    }
+                    let expired = Instant::now() >= pairing.until;
+                    if pairing.spent.is_none() {
+                        pairing.spent = if expired {
+                            Some(Spent::Expired)
+                        } else if state.pairing_is_open(&secret) {
+                            None
+                        } else if state.has_open_pairing() {
+                            Some(Spent::Replaced)
+                        } else {
+                            Some(Spent::Tried)
+                        };
+                    }
+                    // Ticks the countdown. Past expiry there is nothing left
+                    // to watch for: a spent offer pairs no phone.
+                    cx.notify();
+                    !expired
+                });
+                if !matches!(alive, Ok(true)) {
+                    return;
                 }
-                qr = qr.child(div().text_size(fs(12.)).text_color(tk.k5)
-                    .child(t_fmt(L10nKey::SettingsMobileExpires, &[("seconds", &remaining.to_string())])));
-            } else {
-                qr = qr.child(div().text_size(fs(12.)).text_color(tk.warn_text).child(t(L10nKey::SettingsMobileExpired)));
             }
-            qr = qr.child(kit::button("mobile-cancel", t(L10nKey::Cancel), BtnKind::Link).disabled(m.busy)
-                .on_click(cx.listener(|this, _, window, cx| this.mobile_action(MobileAction::Cancel, window, cx))));
-            groups.push(qr.into_any_element());
+        })
+        .detach();
+    }
+
+    /// Takes the code off screen and withdraws its offer, so a code dismissed
+    /// here cannot still be used from a photo of it.
+    fn close_mobile_pairing(&mut self, cx: &mut Context<Self>) {
+        let Some(pairing) = self
+            .active_settings_mut()
+            .and_then(|s| s.mobile_pairing.take())
+        else {
+            return;
+        };
+        if let Some(state) = gateway_state(false) {
+            state.close_pairing(&pairing.secret);
         }
-        if let Some(status) = &m.status {
-            if !status.pending.is_empty() {
-                let rows = status.pending.iter().map(|pending| {
-                    let approve_id = pending.request_id.clone();
-                    let reject_id = pending.request_id.clone();
-                    v_flex().gap(px(8.)).py(px(12.))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(pending.device_name.clone()))
-                        .child(div().text_size(fs(20.)).child(pending.code.clone()))
-                        .child(div().text_size(fs(12.)).text_color(tk.k6)
-                            .child(t_fmt(L10nKey::SettingsMobileVerifyCode, &[("code", &pending.code)])))
-                        .child(h_flex().gap(px(16.))
-                            .child(kit::button(SharedString::from(format!("mobile-approve-{approve_id}")),
-                                t(L10nKey::SettingsMobileApprove), BtnKind::Primary).disabled(m.busy)
-                                .on_click(cx.listener(move |this, _, window, cx| this.mobile_action(MobileAction::Approve(approve_id.clone()), window, cx))))
-                            .child(kit::button(SharedString::from(format!("mobile-reject-{reject_id}")),
-                                t(L10nKey::SettingsMobileReject), BtnKind::Danger).disabled(m.busy)
-                                .on_click(cx.listener(move |this, _, window, cx| this.mobile_action(MobileAction::Reject(reject_id.clone()), window, cx)))))
-                        .into_any_element()
-                }).collect::<Vec<_>>();
-                groups.push(self.settings_group(Some(t(L10nKey::SettingsMobilePending)), None, rows, cx));
+        cx.notify();
+    }
+
+    fn unpair_mobile_device(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Some(state) = gateway_state(true)
+            && let Err(e) = state.revoke(&id)
+        {
+            log::warn!("could not unpair {id}: {e:#}");
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn render_settings_mobile(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tk = Tk::of(cx);
+        let on = cx.global::<Config>().mobile_access;
+        let state = gateway_state(on);
+        let starting = self.active_settings().is_some_and(|s| s.mobile_starting);
+        let access = access(on, starting, state.as_ref());
+        let serving = state.as_ref().is_some_and(State::serving);
+
+        let switch = kit::switch("mobile-access")
+            .checked(matches!(access, Access::On | Access::Starting))
+            .disabled(matches!(access, Access::Starting))
+            .on_click(
+                cx.listener(|this, on: &bool, window, cx| this.set_mobile_access(*on, window, cx)),
+            )
+            .into_any_element();
+        let access_desc = match &access {
+            Access::Off | Access::On => t(L10nKey::SettingsMobileAccessDesc).to_string(),
+            Access::Starting => t(L10nKey::SettingsMobileStatusStarting).to_string(),
+            Access::Failed(error) => {
+                t_fmt(L10nKey::SettingsMobileStatusFailed, &[("error", error)])
             }
-            let mut rows = status.devices.iter().map(|device| {
-                let id = device.credential_id.clone();
-                h_flex().gap(px(16.)).py(px(12.)).items_center().justify_between()
-                    .child(v_flex().gap(px(4.)).min_w_0()
-                        .child(div().child(device.name.clone()))
-                        .child(div().text_size(fs(12.)).text_color(if device.connected { tk.ok } else { tk.k5 })
-                            .child(t(if device.connected { L10nKey::SettingsMobileConnected } else { L10nKey::SettingsMobileDisconnected }))))
-                    .child(kit::button(SharedString::from(format!("mobile-revoke-{id}")),
-                        t(L10nKey::SettingsMobileRevoke), BtnKind::Danger).disabled(m.busy)
-                        .on_click(cx.listener(move |this, _, window, cx| this.mobile_action(MobileAction::Revoke(id.clone()), window, cx))))
+        };
+
+        let pairing = self
+            .active_settings()
+            .and_then(|s| s.mobile_pairing.as_ref());
+        // Only while that phone is still on the list: unpairing it left
+        // "Paired with probe." above an empty "No phones paired yet."
+        let paired = self
+            .active_settings()
+            .and_then(|s| s.mobile_paired.clone())
+            .filter(|name| {
+                state
+                    .as_ref()
+                    .and_then(|state| state.devices().ok())
+                    .is_some_and(|devices| devices.iter().any(|d| &d.name == name))
+            });
+        // A spent code carries its own "New code" beside the reason it is
+        // spent; a second one up here would be the same button twice.
+        let pair_button = if pairing.is_some_and(|p| p.spent.is_some()) {
+            div().into_any_element()
+        } else {
+            self.settings_button(
+                "mobile-pair",
+                if pairing.is_some() {
+                    t(L10nKey::SettingsMobileNewCode)
+                } else {
+                    t(L10nKey::SettingsMobileShowCode)
+                },
+                cx,
+                |this, _, cx| this.start_mobile_pairing(cx),
+            )
+            .disabled(!serving)
+            .into_any_element()
+        };
+        let pair_desc = match (serving, &paired) {
+            (_, Some(name)) => t_fmt(L10nKey::SettingsMobilePaired, &[("name", name)]),
+            (true, None) => t(L10nKey::SettingsMobilePairDesc).to_string(),
+            (false, None) => t(L10nKey::SettingsMobilePairNeedsAccess).to_string(),
+        };
+
+        let access_group = self.settings_group(
+            None,
+            None,
+            [self
+                .settings_row(t(L10nKey::SettingsMobileAccess), access_desc, switch, cx)
+                .into_any_element()],
+            cx,
+        );
+
+        let mut pair_rows = vec![
+            self.settings_row(t(L10nKey::SettingsMobilePair), pair_desc, pair_button, cx)
+                .into_any_element(),
+        ];
+        if let Some(pairing) = pairing {
+            pair_rows.push(self.render_mobile_pairing(pairing, &tk, cx));
+        }
+        let pair_group = self.settings_group(None, None, pair_rows, cx);
+
+        let devices = state
+            .as_ref()
+            .and_then(|s| s.devices().ok())
+            .unwrap_or_default();
+        let phone_rows: Vec<AnyElement> = if devices.is_empty() {
+            vec![
+                div()
+                    .py(px(10.))
+                    .text_size(fs(13.))
+                    .text_color(tk.k5)
+                    .child(t(L10nKey::SettingsMobileNoPhones))
+                    .into_any_element(),
+            ]
+        } else {
+            devices
+                .into_iter()
+                .map(|device| {
+                    let id = device.id.clone();
+                    let unpair =
+                        kit::button(
+                            SharedString::from(format!("mobile-unpair-{}", device.id)),
+                            t(L10nKey::SettingsMobileUnpair),
+                            BtnKind::Danger,
+                        )
+                        .on_click(cx.listener(move |this, _, _w, cx| {
+                            this.unpair_mobile_device(id.clone(), cx)
+                        }))
+                        .into_any_element();
+                    self.settings_row(
+                        device.name,
+                        device.id[..device.id.len().min(12)].to_string(),
+                        unpair,
+                        cx,
+                    )
                     .into_any_element()
-            }).collect::<Vec<_>>();
-            if rows.is_empty() {
-                rows.push(div().text_size(fs(12.)).text_color(tk.k5).child(t(L10nKey::SettingsMobileNoDevices)).into_any_element());
+                })
+                .collect()
+        };
+        let phones_group =
+            self.settings_group(Some(t(L10nKey::SettingsMobilePhones)), None, phone_rows, cx);
+
+        Self::settings_page([access_group, pair_group, phones_group])
+    }
+
+    fn render_mobile_pairing(
+        &self,
+        pairing: &Pairing,
+        tk: &Tk,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let copied = self.active_settings().is_some_and(|s| s.mobile_copied);
+        let code = pairing.code.clone();
+        let close = kit::button(
+            "mobile-pair-cancel",
+            t(if pairing.spent.is_some() {
+                L10nKey::Close
+            } else {
+                L10nKey::Cancel
+            }),
+            BtnKind::Link,
+        )
+        .on_click(cx.listener(|this, _, _w, cx| this.close_mobile_pairing(cx)))
+        .into_any_element();
+
+        let qr = match &pairing.qr {
+            Some(image) => gpui::img(image.clone())
+                .size(px(QR_SIZE))
+                .into_any_element(),
+            None => div().size(px(QR_SIZE)).into_any_element(),
+        };
+        let side = v_flex().flex_1().min_w_0().gap(px(12.));
+        let side = match pairing.spent {
+            // What happened, and the one way on from it.
+            Some(spent) => {
+                let renew = kit::button(
+                    "mobile-pair-renew",
+                    t(L10nKey::SettingsMobileNewCode),
+                    BtnKind::Primary,
+                )
+                .on_click(cx.listener(|this, _, _w, cx| this.start_mobile_pairing(cx)))
+                .into_any_element();
+                side.child(
+                    div()
+                        .text_size(fs(13.))
+                        .text_color(tk.fg)
+                        .child(t(match spent {
+                            Spent::Expired => L10nKey::SettingsMobilePairExpired,
+                            Spent::Tried => L10nKey::SettingsMobilePairTried,
+                            Spent::Replaced => L10nKey::SettingsMobilePairReplaced,
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .gap(px(12.))
+                        .items_center()
+                        .child(renew)
+                        .child(close),
+                )
             }
-            groups.push(self.settings_group(Some(t(L10nKey::SettingsMobileDevices)), None, rows, cx));
-        }
-        Self::settings_page(groups)
+            None => {
+                let copy = kit::button(
+                    "mobile-copy-code",
+                    if copied {
+                        t(L10nKey::SettingsCopied)
+                    } else {
+                        t(L10nKey::SettingsMobileCopyCode)
+                    },
+                    BtnKind::Secondary,
+                )
+                .on_click(cx.listener(move |this, _, _w, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()));
+                    if let Some(s) = this.active_settings_mut() {
+                        s.mobile_copied = true;
+                    }
+                    cx.notify();
+                    cx.spawn(async move |this, cx| {
+                        smol::Timer::after(Duration::from_millis(1500)).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let Some(s) = this.active_settings_mut() {
+                                s.mobile_copied = false;
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                }))
+                .into_any_element();
+                let left = pairing.until.saturating_duration_since(Instant::now());
+                side.child(
+                    div()
+                        .text_size(fs(13.))
+                        .text_color(tk.fg)
+                        .child(t(L10nKey::SettingsMobilePairScan)),
+                )
+                .child(
+                    div()
+                        .p(px(8.))
+                        .rounded(px(6.))
+                        .bg(tk.k04)
+                        .text_size(fs(11.))
+                        .font_family(Tk::mono(cx))
+                        .text_color(tk.k6)
+                        .line_clamp(3)
+                        .text_ellipsis()
+                        .child(pairing.code.clone()),
+                )
+                .child(
+                    h_flex()
+                        .gap(px(12.))
+                        .items_center()
+                        .child(copy)
+                        .child(close),
+                )
+                .child(div().text_size(fs(12.)).text_color(tk.k5).child(t_fmt(
+                    L10nKey::SettingsMobilePairValid,
+                    &[("time", &countdown(left))],
+                )))
+            }
+        };
+
+        h_flex()
+            .id("mobile-pairing")
+            .mt(px(12.))
+            .gap(px(24.))
+            .items_start()
+            // White whatever the theme: a camera reads dark on light. Faded
+            // once spent, so nobody scans a code that will be refused.
+            .child(
+                div()
+                    .flex_none()
+                    .p(px(8.))
+                    .rounded(px(12.))
+                    .bg(gpui::white())
+                    .border_1()
+                    .border_color(tk.k08)
+                    .when(pairing.spent.is_some(), |d| d.opacity(0.15))
+                    .child(qr),
+            )
+            .child(side)
+            .into_any_element()
     }
 }

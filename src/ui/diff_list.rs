@@ -155,7 +155,17 @@ pub(crate) fn preview_rows(file: &FileDiff, mode: DiffViewMode) -> Vec<DiffRow> 
     file_rows(usize::MAX, file, true, mode)
 }
 
+/// The view `file` draws in: a new or deleted file has one side only, so
+/// split would be half empty.
+pub(crate) fn file_mode(file: &FileDiff, mode: DiffViewMode) -> DiffViewMode {
+    match file.status {
+        FileStatus::Added | FileStatus::Deleted => DiffViewMode::Unified,
+        _ => mode,
+    }
+}
+
 fn file_rows(index: usize, file: &FileDiff, expanded: bool, mode: DiffViewMode) -> Vec<DiffRow> {
+    let mode = file_mode(file, mode);
     let expandable =
         !file.binary && (!file.hunks.is_empty() || file.truncated == Some(Truncation::Budget));
     let shown_path = match &file.old_path {
@@ -380,6 +390,34 @@ mod tests {
             ["file", "hunk", "split", "split", "split"],
             "the split view pairs the removal with the addition that replaced it"
         );
+    }
+
+    /// A new or deleted file has nothing to set beside it, so split draws it
+    /// unified; a modified file in the same list still splits.
+    #[test]
+    fn split_draws_a_new_or_deleted_file_unified() {
+        let added = FileDiff {
+            status: FileStatus::Added,
+            ..file("new.rs", 1)
+        };
+        let deleted = FileDiff {
+            status: FileStatus::Deleted,
+            ..file("gone.rs", 1)
+        };
+        for one_sided in [added, deleted] {
+            let snap = snapshot(vec![one_sided, file("a.rs", 1)]);
+            let rows = build_rows(&snap, &open(["new.rs"]), None, DiffViewMode::Split, false);
+            let kinds: Vec<_> = shape(&rows)
+                .into_iter()
+                .filter(|k| matches!(*k, "split" | "unified"))
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    "unified", "unified", "unified", "unified", "split", "split", "split"
+                ]
+            );
+        }
     }
 
     #[test]

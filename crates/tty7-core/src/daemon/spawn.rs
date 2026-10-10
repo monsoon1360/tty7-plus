@@ -1333,6 +1333,13 @@ fn strip_deleted_marker(path: String) -> String {
     }
 }
 
+/// Starts a child of the daemon the way the daemon itself was started: in no
+/// console and with no window, which on Windows is the difference between a
+/// background helper and a console flashing up. The mobile gateway is one.
+pub(crate) fn detach_child(cmd: &mut Command) {
+    detach(cmd);
+}
+
 #[cfg(unix)]
 fn detach(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -1767,7 +1774,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn reap_guard_rejects_a_live_process_of_another_executable() {
-        let mut child = std::process::Command::new("sleep")
+        // By path: a PATH with GNU coreutils first resolves `sleep` to `gsleep`.
+        let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn()
             .expect("spawn sleep");
@@ -1800,7 +1808,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn signal_and_await_exit_observes_the_death_it_caused() {
-        let mut child = std::process::Command::new("sleep")
+        // By path: a PATH with GNU coreutils first resolves `sleep` to `gsleep`.
+        let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn()
             .expect("spawn sleep");
@@ -1820,7 +1829,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn process_alive_is_false_once_the_process_is_gone() {
-        let mut child = std::process::Command::new("sleep")
+        // By path: a PATH with GNU coreutils first resolves `sleep` to `gsleep`.
+        let mut child = std::process::Command::new("/bin/sleep")
             .arg("30")
             .spawn()
             .expect("spawn sleep");

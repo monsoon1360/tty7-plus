@@ -75,7 +75,13 @@ impl Tk {
         let fg = theme.foreground;
         let page = theme.background;
         let a = |light: f32, dark_a: f32| fg.opacity(if dark { dark_a } else { light });
-        let white = gpui::white();
+        // Light controls sit a step above the page in the theme's own hue, so
+        // a cream theme gets cream fields and a white one stays white. Opaque:
+        // the page carries the window's opacity, a control should not.
+        let raised = Hsla {
+            a: 1.,
+            ..lift(page, 0.035)
+        };
         Self {
             dark,
             fg,
@@ -94,10 +100,10 @@ impl Tk {
             k6: a(0.6, 0.65),
             heading: a(0.9, 0.9),
             nav: a(0.82, 0.8),
-            btn: if dark { fg.opacity(0.1) } else { white },
-            menu: if dark { lift(page, 0.06) } else { white },
-            knob: if dark { fg } else { white },
-            chip: if dark { fg.opacity(0.16) } else { white },
+            btn: if dark { fg.opacity(0.1) } else { raised },
+            menu: if dark { lift(page, 0.06) } else { raised },
+            knob: if dark { fg } else { raised },
+            chip: if dark { fg.opacity(0.16) } else { raised },
             warn: gpui::rgb(0xe0a100).into(),
             warn_text: gpui::rgb(0xb07d00).into(),
             danger: gpui::rgb(0xd93025).into(),
@@ -179,6 +185,9 @@ pub(crate) struct Switch {
     disabled: bool,
     small: bool,
     handler: Option<ToggleHandler>,
+    /// The name a screen reader gives the switch, where no settings row
+    /// around it already says what it is.
+    label: Option<SharedString>,
 }
 
 pub(crate) fn switch(id: impl Into<ElementId>) -> Switch {
@@ -188,6 +197,7 @@ pub(crate) fn switch(id: impl Into<ElementId>) -> Switch {
         disabled: false,
         small: false,
         handler: None,
+        label: None,
     }
 }
 
@@ -198,6 +208,10 @@ impl Switch {
     }
     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+    pub(crate) fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
         self
     }
     pub(crate) fn small(mut self) -> Self {
@@ -222,6 +236,13 @@ impl RenderOnce for Switch {
         let left = if on { w - knob - 2. } else { 2. };
         div()
             .id(self.id)
+            .role(gpui::Role::Switch)
+            .when_some(self.label, |d, label| d.aria_label(label))
+            .aria_toggled(if on {
+                gpui::Toggled::True
+            } else {
+                gpui::Toggled::False
+            })
             .flex_shrink_0()
             .relative()
             .w(px(w))
@@ -474,6 +495,27 @@ pub(crate) fn text_field(
     tk: &Tk,
     cx: &App,
 ) -> Div {
+    field_box(input, focused, invalid, false, tk, cx)
+}
+
+/// A [`text_field`] for a masked input, with the eye that reveals it.
+pub(crate) fn secret_field(
+    input: &gpui::Entity<InputState>,
+    focused: bool,
+    tk: &Tk,
+    cx: &App,
+) -> Div {
+    field_box(input, focused, false, true, tk, cx)
+}
+
+fn field_box(
+    input: &gpui::Entity<InputState>,
+    focused: bool,
+    invalid: bool,
+    reveal: bool,
+    tk: &Tk,
+    cx: &App,
+) -> Div {
     let ring_color = if invalid {
         tk.danger
     } else if focused {
@@ -504,7 +546,8 @@ pub(crate) fn text_field(
                     // The input's own `text_sm` beat the 12px set on this
                     // box, so the value stood a size above every dropdown
                     // label in the same column.
-                    .text_size(fs(12.)),
+                    .text_size(fs(12.))
+                    .when(reveal, |i| i.mask_toggle()),
             ),
         )
 }

@@ -2,8 +2,8 @@
 
 pub mod admin;
 mod crypto;
-mod store;
 mod service;
+mod store;
 
 use serde::{Deserialize, Serialize};
 
@@ -55,12 +55,22 @@ impl std::fmt::Debug for Pairing {
 #[serde(rename_all = "snake_case")]
 pub enum AdminRequest {
     Status,
-    Configure { relay_url: String, tls_fingerprint: Option<String>, enabled: bool },
+    Configure {
+        relay_url: String,
+        tls_fingerprint: Option<String>,
+        enabled: bool,
+    },
     BeginPairing,
     CancelPairing,
-    Approve { request_id: String },
-    Reject { request_id: String },
-    Revoke { credential_id: String },
+    Approve {
+        request_id: String,
+    },
+    Reject {
+        request_id: String,
+    },
+    Revoke {
+        credential_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,4 +81,4 @@ pub enum AdminReply {
     Unit,
 }
 
-pub(crate) use service::{Backend, Observation, start, dispatch};
+pub(crate) use service::{Backend, Observation, dispatch, start};

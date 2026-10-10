@@ -1544,6 +1544,9 @@ impl Tty7App {
         });
         h_flex()
             .id(id)
+            .role(gpui::Role::TreeItem)
+            .aria_label(SharedString::from(label.clone()))
+            .aria_expanded(!collapsed)
             .debug_selector(move || selector.to_string())
             .items_center()
             .gap(px(8.))
@@ -1625,6 +1628,12 @@ impl Tty7App {
         let actions = self.scm_group_actions(&id, repo, group, entries, sf.hover, cx);
         h_flex()
             .id(id.clone())
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(format!(
+                "{} {count}",
+                t(group_label(group))
+            )))
+            .aria_expanded(!collapsed)
             .group(id)
             .relative()
             .items_center()
@@ -1712,6 +1721,14 @@ impl Tty7App {
         let selector = id.clone();
         h_flex()
             .id(id.clone())
+            // The whole path and which list it is on: the letter drawn beside
+            // it is a glyph, and the directory may be elided or not drawn.
+            .role(gpui::Role::TreeItem)
+            .aria_label(SharedString::from(format!(
+                "{path}, {}",
+                t(group_label(group))
+            )))
+            .aria_selected(selected)
             .debug_selector(move || selector.to_string())
             .group(id)
             .relative()

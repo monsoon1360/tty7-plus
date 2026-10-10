@@ -3,6 +3,8 @@
 //!
 //! Blocking — every call runs on a worker, never on the UI thread.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::api::{ApiError, Reply, Transport, classify, link_has_next};
@@ -19,9 +21,40 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// the panel asks for; GitHub itself caps a patch well under this.
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
+/// Past this many remembered answers the cache starts over.
+const ETAG_CAP: usize = 512;
+
 pub struct HttpTransport {
     agent: ureq::Agent,
     token: Option<Token>,
+    etags: Etags,
+}
+
+/// The last answer to each plain GET, by ETag. Re-asking with `If-None-Match`
+/// costs nothing when it comes back 304: a signed-in 304 is not counted
+/// against the rate limit, which is what keeps the panel's revalidations and
+/// polls from eating the hourly allowance it shares with `gh`.
+#[derive(Default)]
+struct Etags(Mutex<HashMap<String, Arc<(String, Reply)>>>);
+
+impl Etags {
+    /// The stored tag and the answer it stands for, read together: a 304
+    /// replays the answer that went with the tag that was sent, even if the
+    /// entry has since been replaced or the cache has started over.
+    fn get(&self, path: &str) -> Option<Arc<(String, Reply)>> {
+        let map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(path).cloned()
+    }
+
+    fn store(&self, path: &str, tag: String, reply: &Reply) {
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // A wholesale clear rather than an LRU: the panel's working set sits
+        // far below the cap.
+        if map.len() >= ETAG_CAP && !map.contains_key(path) {
+            map.clear();
+        }
+        map.insert(path.to_string(), Arc::new((tag, reply.clone())));
+    }
 }
 
 impl HttpTransport {
@@ -41,6 +74,7 @@ impl HttpTransport {
         HttpTransport {
             agent: builder.build().into(),
             token,
+            etags: Etags::default(),
         }
     }
 }
@@ -69,6 +103,13 @@ impl HttpTransport {
         if let Some(token) = &self.token {
             request = request.header("Authorization", format!("Bearer {}", token.expose()));
         }
+        // Only a plain GET is revalidated: `get_full` carries signed
+        // attachment URLs that expire, so its old body must not be replayed.
+        let cacheable = accept == "application/vnd.github+json";
+        let known = cacheable.then(|| self.etags.get(path)).flatten();
+        if let Some(known) = &known {
+            request = request.header("If-None-Match", &known.0);
+        }
         // ureq's error text names the URL and the transport failure, never
         // the request headers, so it is safe to show.
         let mut response = request
@@ -82,6 +123,11 @@ impl HttpTransport {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string)
         };
+        if status == 304
+            && let Some(known) = known
+        {
+            return Ok(known.1.clone());
+        }
         let body = response
             .body_mut()
             .with_config()
@@ -89,9 +135,59 @@ impl HttpTransport {
             .read_to_vec()
             .map_err(|e| ApiError::Network(e.to_string()))?;
         classify(status, &header, &body)?;
-        Ok(Reply {
+        let reply = Reply {
             has_next: header("link").is_some_and(|l| link_has_next(&l)),
             body,
-        })
+        };
+        if cacheable && let Some(tag) = header("etag") {
+            self.etags.store(path, tag, &reply);
+        }
+        Ok(reply)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reply(body: &str) -> Reply {
+        Reply {
+            body: body.as_bytes().to_vec(),
+            has_next: true,
+        }
+    }
+
+    #[test]
+    fn a_stored_answer_is_replayed_by_its_tag() {
+        let etags = Etags::default();
+        assert!(etags.get("/a").is_none());
+        etags.store("/a", "W/\"1\"".into(), &reply("one"));
+        let first = etags.get("/a").unwrap();
+        etags.store("/a", "W/\"2\"".into(), &reply("two"));
+        let (tag, back) = &*etags.get("/a").unwrap();
+        assert_eq!(tag, "W/\"2\"");
+        assert_eq!((back.body.as_slice(), back.has_next), (&b"two"[..], true));
+        // What was read before the replacement still pairs its own tag and
+        // answer.
+        assert_eq!(
+            (first.0.as_str(), first.1.body.as_slice()),
+            ("W/\"1\"", &b"one"[..])
+        );
+    }
+
+    #[test]
+    fn the_cache_starts_over_past_its_cap() {
+        let etags = Etags::default();
+        for i in 0..ETAG_CAP {
+            etags.store(&format!("/{i}"), "t".into(), &reply(""));
+        }
+        etags.store("/0", "t2".into(), &reply(""));
+        assert!(etags.get("/1").is_some());
+        let held = etags.get("/1").unwrap();
+        etags.store("/new", "t".into(), &reply(""));
+        assert!(etags.get("/1").is_none());
+        assert_eq!(etags.get("/new").map(|e| e.0.clone()).as_deref(), Some("t"));
+        // An answer read before the clear can still be replayed for its 304.
+        assert_eq!(held.0, "t");
     }
 }

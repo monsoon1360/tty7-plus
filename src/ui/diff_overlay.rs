@@ -1046,16 +1046,6 @@ impl Tty7App {
         let active = self.active;
         let overlay = self.tabs.get_mut(active)?.diff_overlay.as_mut()?;
 
-        // Forget a range the rows under it no longer answer to. The two views
-        // pair the same lines differently, so a row range drawn in one of them
-        // points at other code in the other. Here rather than beside the
-        // switch that flips the mode: this is the one place that knows which
-        // rows are about to be drawn.
-        if overlay.selection.as_ref().is_some_and(|s| s.mode != mode) {
-            overlay.selection = None;
-            overlay.selecting = false;
-        }
-
         let snap = match &overlay.load {
             DiffLoad::Loading => return Some(DiffBody::Message(t(L10nKey::DiffReading))),
             DiffLoad::NotARepo => return Some(DiffBody::Message(t(L10nKey::DiffNotARepo))),
@@ -1080,6 +1070,27 @@ impl Tty7App {
             },
             None => None,
         };
+
+        // Forget a range the rows under it no longer answer to. The two views
+        // pair the same lines differently, so a row range drawn in one of them
+        // points at other code in the other. Here rather than beside the
+        // switch that flips the mode: this is the one place that knows which
+        // rows are about to be drawn.
+        let drawn = |path: &str| {
+            preview
+                .as_deref()
+                .filter(|f| f.path == path)
+                .or_else(|| snap.files.iter().find(|f| f.path == path))
+                .map_or(mode, |f| crate::ui::diff_list::file_mode(f, mode))
+        };
+        if overlay
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.mode != drawn(&s.path))
+        {
+            overlay.selection = None;
+            overlay.selecting = false;
+        }
 
         let focused = focused_file(&snap, overlay);
         let from = RowsFrom {
@@ -1135,7 +1146,6 @@ impl Tty7App {
         let drag = Drag {
             sel: overlay.selection.clone().map(Rc::new),
             selecting: overlay.selecting,
-            mode: view_mode(cx),
         };
         let body = gpui::list(list.clone(), move |ix, _window, cx| {
             #[cfg(test)]
@@ -1197,9 +1207,6 @@ struct Drag {
     /// while one is: a diff runs to thousands of rows, and a listener each is
     /// worth paying for during a drag and not otherwise.
     selecting: bool,
-    /// The view the rows on screen are drawn in, which is the view a press
-    /// starts its selection in.
-    mode: DiffViewMode,
 }
 
 impl Drag {
@@ -1535,7 +1542,12 @@ fn diff_row_drag<E: InteractiveElement + Styled>(
     drag: &Drag,
     app: &gpui::WeakEntity<Tty7App>,
 ) -> E {
-    let mode = drag.mode;
+    // From the row, not the overlay's view: a new or deleted file draws
+    // unified whatever the view (`diff_list::file_mode`).
+    let mode = match side {
+        Some(_) => DiffViewMode::Split,
+        None => DiffViewMode::Unified,
+    };
     // The I-beam is the only standing sign that this text can be taken;
     // nothing else about a row says so until one is dragged.
     let el = el.cursor_text().on_mouse_down(MouseButton::Left, {

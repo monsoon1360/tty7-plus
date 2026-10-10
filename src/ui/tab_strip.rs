@@ -8,7 +8,9 @@ use gpui_component::input::Input;
 use gpui_component::kbd::Kbd;
 use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, h_flex};
+use gpui_component::{
+    ActiveTheme as _, Icon, IconName, Selectable as _, Side, Sizable as _, h_flex,
+};
 use unicode_segmentation::UnicodeSegmentation as _;
 
 use crate::core::actions::{
@@ -471,6 +473,38 @@ pub(crate) fn elide_label(
     }
 }
 
+/// Keeps the longest head of `text` that fits before a trailing ellipsis —
+/// the plain cut a reader expects, for a string read left to right like a
+/// branch name.
+pub(crate) fn elide_end_clusters(
+    text_system: &gpui::WindowTextSystem,
+    font: &gpui::Font,
+    size: f32,
+    text: &str,
+    max_width: f32,
+) -> SharedString {
+    if measure_text(text_system, font, size, text) <= max_width {
+        return SharedString::from(text.to_string());
+    }
+    let budget = max_width - measure_text(text_system, font, size, "…");
+    if budget <= 0. {
+        return SharedString::from("…");
+    }
+    let cells = clusters(text);
+    let (mut lo, mut hi) = (0usize, cells.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if measure_text(text_system, font, size, &cells[..mid].concat()) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let mut out = cells[..lo].concat();
+    out.push('…');
+    SharedString::from(out)
+}
+
 /// Keeps the longest tail of `text` that fits after a bare ellipsis. Shared
 /// by the path and token elisions as their last resort.
 pub(crate) fn elide_tail_clusters(
@@ -574,8 +608,9 @@ pub(crate) fn chrome_tile_variant_for(selected: bool, cx: &gpui::App) -> ButtonC
 
 pub(crate) const BUTTON_ICON_SCALE: f32 = 0.75;
 
-/// The rail header's icon tiles: 26px boxes with a 6px corner, the glyph a
-/// notch under the toolbar's so the pair sits quieter than the rows below.
+/// Compact tiles for document headers and overlays: 26px boxes with a 6px
+/// corner and a glyph a notch under the toolbar's. Sidebar navigation uses
+/// the full title-bar size so opening a panel does not resize its controls.
 pub(crate) const RAIL_TILE: f32 = 26.;
 
 /// A sidebar row's trailing status dot, and the box it is centred in (wide
@@ -666,15 +701,15 @@ pub(crate) const TAB_OUTER_PAD: f32 = 2.;
 /// A label's hover target reaches this far past its word.
 const TAB_INNER_PAD: f32 = 4.;
 
-/// How wide the two chrome tiles at the trailing end of the title bar are, with
-/// the padding around them.
+/// The panel toggle and its trailing inset. The open panel uses this same
+/// reservation so the title bar never budgets for a second, absent control.
 pub(crate) fn trailing_chrome_tiles_w() -> f32 {
     let trailing_pad = if cfg!(target_os = "macos") {
         tile_trailing_inset()
     } else {
         4.
     };
-    trailing_pad + crate::ui::app::TILE_SIZE + 2. + crate::ui::app::TILE_SIZE
+    trailing_pad + crate::ui::app::TILE_SIZE
 }
 
 /// The whole trailing cluster: those tiles and the OS window buttons beyond
@@ -731,6 +766,91 @@ const MENU_AGENTS: usize = 3;
 /// a field that reads as one, and the 28px of the rail's own search.
 const TITLEBAR_SEARCH_W: f32 = 360.;
 const TITLEBAR_SEARCH_H: f32 = 28.;
+
+/// Air between the search box and the nearest chrome tile when the bar is too
+/// narrow for the box to sit at its full width.
+const TITLEBAR_SEARCH_CLEAR_GAP: f32 = 8.;
+
+/// Where the title-bar search box is centred, as offsets from the tab strip it
+/// is drawn inside.
+///
+/// The strip does not start at the terminal column's left edge. The title bar
+/// leaves a lead before it — 80pt on macOS for the traffic lights, whether or
+/// not the rail is standing in front of them, plus the bar's own inset in
+/// fullscreen; 12 elsewhere — and a box centred on the strip was centred that
+/// much too far right by half: 40pt on macOS, which is plainly visible with
+/// the rail collapsed and the box standing alone in an empty bar (#1033).
+/// So the band reaches back over the lead, and its left edge is the column's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SearchBand {
+    /// `left` for the band, against the strip's left edge: the lead, negated.
+    pub(crate) left: f32,
+    /// `right` for the band, against the strip's right edge.
+    pub(crate) right: f32,
+    /// How much of *each* end of the band the box keeps clear of, so that in
+    /// a narrow bar it shrinks rather than slides under the chrome tiles. The
+    /// same at both ends, because a box clear of only one is no longer
+    /// centred.
+    pub(crate) clear: f32,
+}
+
+/// [`SearchBand`] for a strip that starts `lead` in from the terminal column's
+/// left edge.
+///
+/// `docked_right` is what is docked to the right of the terminal — the detail
+/// panel and a document column. Off macOS the bar spans those too, so the band
+/// stops at the terminal column: the strip already stops short of the window
+/// controls, so they come off the columns' share. On macOS the bar is inside
+/// the terminal column already and the strip runs to its end.
+///
+/// `leading_w` is the collapsed rail's group at the strip's left end, measured
+/// from the strip's left edge; `trailing_w` the chrome tiles at the band's
+/// right end, when they are there rather than off over a docked column.
+pub(crate) fn search_band(
+    macos: bool,
+    lead: f32,
+    docked_right: f32,
+    controls_w: f32,
+    leading_w: Option<f32>,
+    trailing_w: Option<f32>,
+) -> SearchBand {
+    let right = match !macos && docked_right > 0. {
+        true => (docked_right - controls_w).max(0.),
+        false => 0.,
+    };
+    let leading = leading_w.map_or(0., |w| lead + w + TITLEBAR_SEARCH_CLEAR_GAP);
+    let trailing = trailing_w.map_or(0., |w| w + TITLEBAR_SEARCH_CLEAR_GAP);
+    SearchBand {
+        left: -lead,
+        right,
+        clear: leading.max(trailing),
+    }
+}
+
+/// How far the title bar's lead reaches before the tab strip starts: the room
+/// `TitleBar` leaves for the traffic lights on macOS, and the bar's own inset
+/// that gpui-component adds to it in fullscreen, where the lights are gone but
+/// the room is not; `TITLE_BAR_LEAD` elsewhere, in both of the rows the strip
+/// can sit in.
+fn title_bar_strip_lead(fullscreen: bool, rem: f32) -> f32 {
+    match cfg!(target_os = "macos") && fullscreen {
+        // `pl_3` on the bar inside `TitleBar`.
+        true => crate::ui::app::TITLE_BAR_LEAD + 0.75 * rem,
+        false => crate::ui::app::TITLE_BAR_LEAD,
+    }
+}
+
+/// How wide the collapsed rail's group at the start of the strip is: the
+/// window mark where there is one, then New Tab and Show Sidebar. Mirrors the
+/// `left_group` built in `tab_strip`, `ml` included.
+fn collapsed_rail_group_w() -> f32 {
+    use crate::ui::app::{CONTENT_INSET, TILE_SIZE, WINDOW_MARK_SIZE, tile_trailing_inset};
+    let mark = match cfg!(target_os = "macos") {
+        true => 0.,
+        false => (CONTENT_INSET - tile_trailing_inset()) + WINDOW_MARK_SIZE + 4. + 2.,
+    };
+    crate::ui::app::title_bar_hug_offset() + mark + TILE_SIZE + 2. + TILE_SIZE
+}
 
 /// How wide the New Tab menu is allowed to get.
 const MENU_W: Pixels = px(360.);
@@ -1317,6 +1437,11 @@ impl Tty7App {
                     .w_full()
                     .h(px(28.))
                     .rounded(px(7.))
+                    // Button pins the arrow for every non-link variant; the
+                    // switcher's own rows point, so the tile that opens them
+                    // does too.
+                    .cursor_pointer()
+                    .accessible_label(t(L10nKey::HomeSwitchWorkspace))
                     .tooltip_element(chord_tooltip(
                         t(L10nKey::HomeSwitchWorkspace),
                         "ToggleSwitcher",
@@ -1335,37 +1460,32 @@ impl Tty7App {
             true => tile_trailing_inset(),
             false => 4.,
         };
-        self.window_chrome_sized(TILE_SIZE, 2., trailing, cx)
-    }
-
-    /// [`Self::window_chrome`] at another size: `tile` px squares, `gap` apart,
-    /// `trailing` px short of the far edge. The right panel's own tab row is
-    /// the one caller that wants other numbers — see
-    /// `right_panel::PANEL_CHROME_TILE`.
-    pub(crate) fn window_chrome_sized(
-        &self,
-        tile: f32,
-        gap: f32,
-        trailing: f32,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+        // Opening the panel moves this control to the panel's header on
+        // macOS. Reuse the same tile and inset there: a different hit target
+        // moves the centred glyph even when the icon itself keeps its size.
         let panel_open = self.right_panel_open(cx);
         h_flex()
             .flex_shrink_0()
             .items_center()
-            .gap(px(gap))
             .pr(px(trailing))
             .child(
                 div().occlude().flex_shrink_0().child(
-                    chrome_tile_sized(
+                    chrome_tile(
                         Button::new("titlebar-right-panel")
-                            .icon(Icon::empty().path("icons/panel-right.svg")),
-                        tile,
-                        TILE_GLYPH,
+                            // Keep the outline fixed; only the panel region's
+                            // fill changes to show whether the panel is visible.
+                            .icon(Icon::empty().path(match panel_open {
+                                true => "icons/panel-right.svg",
+                                false => "icons/panel-right-collapsed.svg",
+                            })),
                         false,
                         cx,
                     )
                     .rounded_lg()
+                    .accessible_label(match panel_open {
+                        true => t(L10nKey::TabTooltipHideDetailPanel),
+                        false => t(L10nKey::TabTooltipShowDetailPanel),
+                    })
                     .tooltip_element(chord_tooltip(
                         match panel_open {
                             true => t(L10nKey::TabTooltipHideDetailPanel),
@@ -1379,7 +1499,7 @@ impl Tty7App {
                     // destroys the element holding the focus — and a keymap
                     // scoped to a focused thing goes quiet with it, leaving the
                     // ⌘J that would undo this doing nothing. Hand the terminal
-                    // back what it lost, the same way the tab tiles below do.
+                    // back what it lost.
                     .on_click(cx.listener(|this, _, window, cx| {
                         let closing = this.right_panel_open(cx);
                         this.toggle_right_panel(cx);
@@ -1392,9 +1512,8 @@ impl Tty7App {
     }
 
     /// The right panel's tabs: words, the current one in body ink and medium
-    /// weight — v5's inspector row. Four names fit the panel's resting width
-    /// once Search folded into Files; this is secondary navigation, not an
-    /// action, so it gets neither a pill nor a bar.
+    /// weight on a pill (ink and weight alone read as no selection at all).
+    /// Four names fit the panel's resting width once Search folded into Files.
     pub(crate) fn right_panel_tabs(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let active_tab = self.right_panel_tab;
         let body_ink = cx.theme().foreground;
@@ -1409,6 +1528,9 @@ impl Tty7App {
                 };
                 div()
                     .id(("right-panel-tab", tab as usize))
+                    .role(gpui::Role::Tab)
+                    .aria_label(t(label_key))
+                    .aria_selected(current)
                     // The press must not start a window drag from the title bar
                     // the tabs sit in.
                     .occlude()
@@ -1422,6 +1544,9 @@ impl Tty7App {
                         div()
                             .flex_shrink_0()
                             .px(px(TAB_INNER_PAD))
+                            .py_0p5()
+                            .rounded_md()
+                            .when(current, |s| s.bg(cx.theme().secondary))
                             .text_size(gpui::rems(crate::ui::right_panel::TAB_TEXT))
                             .font_weight(match current {
                                 true => FontWeight::MEDIUM,
@@ -1431,24 +1556,11 @@ impl Tty7App {
                             .hover(move |s| s.text_color(body_ink))
                             .child(t(label_key)),
                     )
-                    // Another tab switches to it; the current one puts the panel
-                    // away, the way an activity bar behaves everywhere else.
-                    // (These only exist while the panel is open, so
-                    // `ToggleRightPanel` and the chrome tile beside them are still
-                    // what brings it back.)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        match this.right_panel_open(cx) && this.right_panel_tab == tab {
-                            true => {
-                                this.toggle_right_panel(cx);
-                                // These tabs live inside the panel, so closing
-                                // from one destroys the element that holds the
-                                // focus and leaves it nowhere — and a keymap whose
-                                // bindings are scoped to a focused thing goes
-                                // quiet with it. Hand the terminal back what it
-                                // lost.
-                                this.focus_active(window, cx);
-                            }
-                            false => this.set_right_panel_tab(tab, cx),
+                    // The current one does nothing: only ⌘J and the title-bar
+                    // panel tile put the panel away.
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.right_panel_tab != tab {
+                            this.set_right_panel_tab(tab, cx);
                         }
                     }))
                     .into_any_element()
@@ -1769,7 +1881,7 @@ impl Tty7App {
     }
 
     /// [`new_tab_button`](Self::new_tab_button) at another tile size — the
-    /// rail's header draws its two tiles at `RAIL_TILE`.
+    /// document header can use a smaller tile without changing the title bar.
     pub(crate) fn new_tab_button_sized(
         &self,
         id: &'static str,
@@ -1794,6 +1906,7 @@ impl Tty7App {
         // come through here were the ones left silent. The chord is worth
         // more here than anywhere else in the row: it is the way back to
         // opening a tab without reading a menu first.
+        .accessible_label(t(L10nKey::AppMenuNewTab))
         .tooltip_element(chord_tooltip(t(L10nKey::AppMenuNewTab), "NewTab", cx))
         // Built when the menu opens, not when the strip draws: this
         // closure runs once per press, and again after each dismissal.
@@ -1863,13 +1976,25 @@ impl Tty7App {
         index: usize,
         below_wording: bool,
         app: &gpui::WeakEntity<Self>,
-        window: &Window,
-        cx: &App,
+        window: &mut Window,
+        cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         let Some(entity) = app.upgrade() else {
             return menu;
         };
         let this = entity.read(cx);
+        // Taken before `this` is let go for the Move to Group submenu below.
+        let sidebar =
+            cx.global::<Config>().tab_bar_position == crate::core::config::TabBarPosition::Left;
+        let move_targets = sidebar.then(|| {
+            let keys = this.sidebar_group_keys(cx);
+            crate::ui::tab_sidebar::move_targets(&keys, &this.sidebar_groups, index)
+        });
+        let in_kept_group = this
+            .tabs
+            .get(index)
+            .and_then(|t| t.group.get())
+            .is_some_and(|g| this.sidebar_groups.contains(g));
         let tab_count = this.tabs.len();
         let cwd = this.tab_cwd_text(index, window, cx);
         let has_cwd = cwd.is_some();
@@ -1937,48 +2062,75 @@ impl Tty7App {
             );
         }
 
-        // Where this tab sits, and where it could be put instead.
+        // Where this tab sits, and where it could be put instead: every group
+        // the sidebar draws, auto ones included, behind a submenu — a sidebar
+        // grouping by repo can hold dozens, far too many to lay out flat.
         //
-        // Laid out flat rather than behind a "Move to Group ▸" submenu: there
-        // are never many pinned groups — they are kept by hand — so a submenu
-        // would cost a second click to show two or three items, and
-        // `PopupMenu::submenu` wants a `&mut Context` this function does not
-        // have. The label above them says what the block is.
+        // An auto group's membership is its tabs' cwds, so a tab can only be
+        // put in one by keeping the group: picking it pins the group (as its
+        // header's pin does) and the tab with it. Remove from Group, offered
+        // only for a tab kept in a group, hands it back to auto grouping.
         //
-        // No way back to auto grouping here: that is a drag below the divider,
-        // the one place in the sidebar where "not kept by hand" is drawn.
-        // Offered only with the tabs in the sidebar for the same reason — a
-        // group is something the sidebar draws, and "move to group" from the
-        // top tab bar would name something the user cannot see.
-        if cx.global::<Config>().tab_bar_position == crate::core::config::TabBarPosition::Left {
-            let here = this
-                .tabs
-                .get(index)
-                .and_then(|t| t.group.get())
-                .filter(|g| this.sidebar_groups.contains(*g));
-            menu = menu
-                .separator()
-                .item(PopupMenuItem::label(t(L10nKey::SidebarMoveToGroup)));
-            for (id, name) in this.pinned_group_names() {
-                menu = menu.item(
-                    PopupMenuItem::new(name)
-                        .checked(here == Some(id))
-                        .on_click({
+        // Offered only with the tabs in the sidebar — a group is something the
+        // sidebar draws, and "move to group" from the top tab bar would name
+        // something the user cannot see.
+        if let Some(targets) = move_targets {
+            let app = app.clone();
+            menu = menu.separator().submenu(
+                t(L10nKey::SidebarMoveToGroup),
+                window,
+                cx,
+                move |sub, _window, _cx| {
+                    // A left check makes every row of the menu reserve a
+                    // check column, so the whole submenu sat one icon's
+                    // width right of the tab menu beside it. On the right,
+                    // its labels line up with the parent's.
+                    let mut sub = sub.check_side(Side::Right);
+                    for (i, target) in targets.iter().enumerate() {
+                        // Pinned groups, then the auto ones, as the divider
+                        // splits them in the sidebar.
+                        if i > 0 && targets[i - 1].key.is_pinned() && !target.key.is_pinned() {
+                            sub = sub.separator();
+                        }
+                        let mut item =
+                            PopupMenuItem::new(target.name.clone()).checked(target.checked);
+                        if !target.checked {
                             let app = app.clone();
-                            move |_, _window, cx| {
-                                let _ = app
-                                    .update(cx, |this, cx| this.set_tab_group(index, Some(id), cx));
-                            }
-                        }),
-                );
-            }
-            menu = menu.item(PopupMenuItem::new(t(L10nKey::SidebarNewGroup)).on_click({
-                let app = app.clone();
-                move |_, window, cx| {
-                    let _ = app.update(cx, |this, cx| this.new_tab_group(index, window, cx));
-                }
-            }));
+                            let key = target.key.clone();
+                            item = item.on_click(move |_, _window, cx| {
+                                let _ = app.update(cx, |this, cx| {
+                                    this.move_tab_to(index, key.clone(), cx)
+                                });
+                            });
+                        }
+                        sub = sub.item(item);
+                    }
+                    if !targets.is_empty() {
+                        sub = sub.separator();
+                    }
+                    let remove = app.clone();
+                    let new = app.clone();
+                    sub.item(
+                        PopupMenuItem::new(t(L10nKey::SidebarRemoveFromGroup))
+                            .disabled(!in_kept_group)
+                            .on_click(move |_, _window, cx| {
+                                let _ = remove
+                                    .update(cx, |this, cx| this.set_tab_group(index, None, cx));
+                            }),
+                    )
+                    .item(
+                        PopupMenuItem::new(t(L10nKey::SidebarNewGroup)).on_click(
+                            move |_, window, cx| {
+                                let _ = new
+                                    .update(cx, |this, cx| this.new_tab_group(index, window, cx));
+                            },
+                        ),
+                    )
+                },
+            );
         }
+        // Read again: the submenu above needed `cx` mutably.
+        let this = entity.read(cx);
 
         let in_repo = this.tab_is_in_repo(index, window, cx);
         if in_repo {
@@ -2479,6 +2631,13 @@ impl Tty7App {
             .flex_shrink_0()
             .child(self.new_tab_button("tab-add", cx));
 
+        // Same bargain the rail's own tiles keep when the Appearance switch is
+        // on: present in the layout, painted only while the pointer is on the
+        // bar. The New Tab button that trails the chips is left alone — it is
+        // part of the row of tabs, not of the window's chrome.
+        let auto_hide_chrome = cx.global::<Config>().auto_hide_titlebar_buttons;
+        let strip_chrome_shown =
+            crate::ui::app::titlebar_chrome_shown(auto_hide_chrome, self.strip_chrome_hover.get());
         let rail_collapsed = !show_chips && !self.left_panel_open(cx);
         let left_group = rail_collapsed.then(|| {
             h_flex()
@@ -2500,20 +2659,26 @@ impl Tty7App {
                 // control, and a window that loses its identity when nobody is
                 // pointing at it reads as a different window.
                 .child(
-                    div()
-                        .occlude()
-                        .flex_shrink_0()
-                        .child(self.new_tab_button("titlebar-add-collapsed", cx)),
+                    crate::ui::app::resting_chrome(
+                        div().occlude().flex_shrink_0(),
+                        strip_chrome_shown,
+                    )
+                    .child(self.new_tab_button("titlebar-add-collapsed", cx)),
                 )
                 .child(
-                    div().occlude().flex_shrink_0().child(
+                    crate::ui::app::resting_chrome(
+                        div().occlude().flex_shrink_0(),
+                        strip_chrome_shown,
+                    )
+                    .child(
                         chrome_tile(
                             Button::new("titlebar-expand-sidebar")
-                                .icon(Icon::empty().path("icons/panel-left.svg")),
+                                .icon(Icon::empty().path("icons/panel-left-collapsed.svg")),
                             false,
                             cx,
                         )
                         .rounded_lg()
+                        .accessible_label(t(L10nKey::TabTooltipShowSidebar))
                         .tooltip_element(chord_tooltip(
                             t(L10nKey::TabTooltipShowSidebar),
                             "ToggleLeftPanel",
@@ -2526,7 +2691,16 @@ impl Tty7App {
 
         // macOS places these controls in the open panel's own title bar, and
         // drops them while a docked document holds the right edge.
-        let right_chrome = strip_chrome.then(|| self.window_chrome(cx));
+        //
+        // Elsewhere, with the panel open, they stand in the band above it,
+        // beside the panel's own tab row — which is painted whenever the panel
+        // is, so a band that grew a button on hover read as a glitch next to
+        // it. Once the panel is open they belong to its chrome, and stay.
+        let right_chrome_shown = strip_chrome_shown || self.right_panel_open(cx);
+        let right_chrome = strip_chrome.then(|| {
+            crate::ui::app::resting_chrome(div().flex_shrink_0(), right_chrome_shown)
+                .child(self.window_chrome(cx))
+        });
 
         // With the tabs in the rail, the middle of the bar over the terminal
         // is the way into Search Everywhere: a field-shaped button, centred,
@@ -2534,44 +2708,46 @@ impl Tty7App {
         // names every tab, so the bar has no title of its own to repeat. The
         // box alone takes the pointer; the rest of the bar still drags.
         //
-        // Centred over the terminal column, not the bar. Off macOS the bar
-        // spans the workspace while a document or the detail panel is docked,
-        // and centred on all of it the box landed under the document's
-        // hoisted header, which has no fill to hide it. The strip already
-        // stops short of the window controls, so they come off the columns'
-        // share.
-        let search_right = match cfg!(target_os = "macos") {
-            true => 0.,
-            false => {
-                let panel = match self.right_panel_open(cx) {
-                    true => self.right_panel_px(window, cx),
-                    false => 0.,
-                };
-                match panel + document_w > 0. {
-                    true => (panel + document_w - controls_w).max(0.),
-                    false => 0.,
-                }
-            }
-        };
+        // Centred over the terminal column, not the bar: see `search_band`.
+        // Off macOS the bar spans the workspace while a document or the detail
+        // panel is docked, and centred on all of it the box landed under the
+        // document's hoisted header, which has no fill to hide it.
+        let docked_right = document_w
+            + match self.right_panel_open(cx) {
+                true => self.right_panel_px(window, cx),
+                false => 0.,
+            };
+        let band = search_band(
+            cfg!(target_os = "macos"),
+            title_bar_strip_lead(window.is_fullscreen(), window.rem_size().as_f32()),
+            docked_right,
+            controls_w,
+            rail_collapsed.then(collapsed_rail_group_w),
+            (strip_chrome && docked_right <= 0.).then(trailing_chrome_tiles_w),
+        );
         let centre_search = (!show_chips).then(|| {
             // The chord as text, not caps: a cap's fill is this box's own
             // grey, so on it a cap is only a gap between two letters.
             let chord = crate::ui::keymap::effective_key("TogglePalette", cx)
                 .map(|spec| crate::ui::keymap::key_tokens(&spec).join(""));
+            // Two equal springs either side keep the box centred; each stops
+            // at the band's `clear`, and past that it is the box that gives.
+            let spring = || div().flex_1().min_w(px(band.clear));
             div()
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left_0()
-                .right(px(search_right))
+                .left(px(band.left))
+                .right(px(band.right))
                 .flex()
                 .items_center()
-                .justify_center()
+                .child(spring())
                 .child(
                     h_flex()
                         .id("titlebar-search")
                         .occlude()
                         .w(px(TITLEBAR_SEARCH_W))
+                        .min_w_0()
                         // Enough of the bar that the label and its chord still
                         // fit with a document docked beside the terminal; at a
                         // half it read `Search Everywhe…` in exactly the
@@ -2612,6 +2788,7 @@ impl Tty7App {
                             }),
                         ),
                 )
+                .child(spring())
         });
 
         h_flex()
@@ -2638,6 +2815,12 @@ impl Tty7App {
                         .child(chrome),
                 ),
                 None => this.child(chrome),
+            })
+            .when(auto_hide_chrome, |this| {
+                this.child(crate::ui::app::hover_sheet(
+                    "strip-chrome-hover",
+                    &self.strip_chrome_hover,
+                ))
             })
     }
 }
@@ -2934,6 +3117,75 @@ mod tests {
     use std::path::Path;
     use unicode_segmentation::UnicodeSegmentation;
 
+    /// Where a band lands in the terminal column, for a strip that starts
+    /// `lead` in and ends `strip_end` from the column's left edge.
+    fn band_in_column(band: SearchBand, lead: f32, strip_end: f32) -> (f32, f32) {
+        (lead + band.left, strip_end - band.right)
+    }
+
+    /// #1033, with the reporter's window: 1946pt wide, the rail collapsed.
+    /// The strip starts 80pt in, after the traffic lights, and centred on it
+    /// the box sat at 1013 — 40pt right of the window's middle at 973.
+    #[test]
+    fn with_the_rail_collapsed_on_macos_the_search_box_centres_on_the_window() {
+        let (w, lead) = (1946., 80.);
+        let band = search_band(true, lead, 0., 0., Some(58.), Some(49.));
+        let (l, r) = band_in_column(band, lead, w);
+        assert_eq!((l, r), (0., w));
+        assert_eq!((l + r) / 2., 973.);
+        // Clear of the traffic lights and the two tiles after them, at both
+        // ends so that clearing them does not pull the box off centre.
+        assert_eq!(band.clear, lead + 58. + TITLEBAR_SEARCH_CLEAR_GAP);
+    }
+
+    /// With the rail open, the title bar sits in the terminal column but
+    /// still leaves the traffic lights' 80pt before the strip, over nothing
+    /// — the lights are over the rail. The band reaches back over that too,
+    /// and centres on the column.
+    #[test]
+    fn with_the_rail_open_on_macos_the_search_box_centres_on_the_terminal_column() {
+        let (column, lead) = (1200., 80.);
+        let band = search_band(true, lead, 0., 0., None, Some(49.));
+        assert_eq!(band_in_column(band, lead, column), (0., column));
+        assert_eq!(band.clear, 49. + TITLEBAR_SEARCH_CLEAR_GAP);
+
+        // A docked panel on macOS is beside the column, not under its bar:
+        // nothing to subtract from the strip's end.
+        let docked = search_band(true, lead, 360., 0., None, None);
+        assert_eq!(band_in_column(docked, lead, column), (0., column));
+        assert_eq!(docked.clear, 0.);
+    }
+
+    /// Fullscreen keeps `TitleBar`'s 80pt and adds the bar's own inset.
+    #[test]
+    fn fullscreen_on_macos_reaches_back_over_the_bars_extra_inset_as_well() {
+        let lead = 80. + 12.;
+        let band = search_band(true, lead, 0., 0., Some(58.), Some(49.));
+        assert_eq!(band_in_column(band, lead, 1440.), (0., 1440.));
+    }
+
+    /// Off macOS the bar spans the docked columns and stops short of the
+    /// window buttons; the band ends where the terminal column does, as it
+    /// always has, and now starts where it does too.
+    #[test]
+    fn off_macos_the_band_is_the_terminal_column_beside_a_docked_panel() {
+        let (w, lead, controls, panel) = (1600., 12., 102., 360.);
+        let strip_end = w - controls;
+        let band = search_band(false, lead, panel, controls, None, None);
+        assert_eq!(band.right, panel - controls);
+        assert_eq!(band_in_column(band, lead, strip_end), (0., w - panel));
+
+        // Nothing docked: the band runs to the end of the strip, short of
+        // the window buttons, and keeps clear of the tiles standing there.
+        let bare = search_band(false, lead, 0., controls, None, Some(38.));
+        assert_eq!(band_in_column(bare, lead, strip_end), (0., strip_end));
+        assert_eq!(bare.clear, 38. + TITLEBAR_SEARCH_CLEAR_GAP);
+
+        // A panel narrower than the buttons leaves no room to take off.
+        let thin = search_band(false, lead, 80., controls, None, None);
+        assert_eq!(thin.right, 0.);
+    }
+
     /// Most of these tests are about where a title is *cut*, not about what
     /// `~` means: the paths they pass either already start with `~` or are
     /// nowhere near anybody's home. Naming no home keeps the assertions off
@@ -3221,6 +3473,19 @@ mod tests {
         assert!(out.contains('…'));
         assert!(measure_text(&ts, &font, size, &out) <= max);
         assert!(out.chars().count() < branch.chars().count());
+    }
+
+    #[gpui::test]
+    fn elide_end_keeps_the_head_of_a_branch(cx: &mut TestAppContext) {
+        let (ts, font, size) = elide_setup(cx);
+        let branch = "fix/rpc-proxy-and-error-classification";
+        let max = 140.;
+        let out = elide_end_clusters(&ts, &font, size, branch, max);
+        assert!(out.starts_with("fix/rpc-"), "head survives: {out}");
+        assert!(out.ends_with('…') && out.matches('…').count() == 1, "{out}");
+        assert!(measure_text(&ts, &font, size, &out) <= max);
+        let fits = measure_text(&ts, &font, size, branch);
+        assert_eq!(elide_end_clusters(&ts, &font, size, branch, fits), branch);
     }
 
     #[gpui::test]

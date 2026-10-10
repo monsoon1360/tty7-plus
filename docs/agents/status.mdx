@@ -14,8 +14,8 @@ the agent say which one it is.
 
 | Agent | |
 |---|---|
-| Claude Code · Codex · TraeCode · Copilot CLI · OpenCode · Pi · Grok Build · Oh My Pi · Gemini · Droid · Qwen Code · Goose · Kimi Code · Qoder CLI · Qoder CN CLI · Crush · CodeBuddy · Cursor CLI · Prime Agent · Antigravity | Hooks available |
-| Aider · Amp · Auggie · Hermes · Vibe · Empryo | Detected and labelled, but no status channel yet |
+| Claude Code · Codex · TraeCode · Copilot CLI · OpenCode · Pi · Grok Build · Oh My Pi · Gemini · Droid · Qwen Code · Goose · Kimi Code · Qoder CLI · Qoder CN CLI · Crush · CodeBuddy · Cursor CLI · Prime Agent · Antigravity · Empryo · Muse Code · jcode | Hooks available |
+| Aider · Amp · Auggie · Hermes · Vibe | Detected and labelled, but no status channel yet |
 
 Installing writes into that agent's own configuration directory. Once installed
 the row grows a second **Uninstall** button beside the first, which itself
@@ -80,6 +80,14 @@ Two, both following your **Settings → General → Notifications** policy:
 
 Which means that by default — *When unfocused* — you are told the instant you
 are the bottleneck, and left alone while you are watching.
+
+A program can also post its own notification with OSC 9, OSC 777
+(`notify;title;body`) or kitty's OSC 99. tty7 shows it under the same policy,
+held back only while you are looking at that pane, and a click reveals the
+pane. Claude Code writes one when its **Notifications** setting (`/config`) is
+`ghostty`, `kitty` or `iterm2`. Its default, `auto`, sends nothing in tty7. A
+pane whose agent already reports through tty7's hooks skips the copy that would
+repeat the notice above.
 
 ## The tray icon
 

@@ -269,6 +269,21 @@ mod tests {
     }
 
     #[test]
+    fn a_line_sent_while_the_prompt_was_still_being_drawn_still_ran() {
+        // The daemon calls the pane back at its prompt from precmd's `D`, and
+        // the line went in before the user's hooks drew the prompt: the tty
+        // echoes it, that prompt's `A`/`B` follow, and only then does the
+        // shell read and run it.
+        let mut t = Transcript::new();
+        t.output(b"true\r\n\x1b]133;A\x07% \x1b]133;B\x07");
+        let early = t.prompt(true, None).expect("looks like a refusal, for now");
+        assert!(!early.ran);
+        t.output(b"true\x1b]133;C;true\x07\x1b]133;D;0\x07\x1b]133;A\x07% ");
+        let done = t.prompt(true, Some(0)).expect("the command ran after all");
+        assert_eq!((done.exit, done.ran), (Some(0), true));
+    }
+
+    #[test]
     fn the_exit_code_falls_back_to_the_mark_itself() {
         let mut t = Transcript::new();
         t.output(b"\x1b]133;C\x07\x1b]133;D;5\x1b\\");

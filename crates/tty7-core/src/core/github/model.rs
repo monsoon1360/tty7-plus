@@ -742,6 +742,10 @@ pub(crate) fn reviewers(
 }
 
 impl RawPull {
+    pub(crate) fn head_sha(&self) -> &str {
+        self.head.as_ref().map_or("", |h| h.sha.as_str())
+    }
+
     /// The teams asked to review, as `org/team` when the org is known.
     pub(crate) fn requested_team_names(&self, org: &str) -> Vec<String> {
         self.requested_teams

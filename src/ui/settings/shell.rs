@@ -433,6 +433,14 @@ impl Tty7App {
         let tk = Tk::of(cx);
         let label = label.into();
         let desc = desc.into();
+        // A screen reader enters the row as a group named by the setting, so
+        // the control inside it — a switch, a dropdown — is heard with the
+        // name it belongs to rather than as a bare "switch, off".
+        let a11y_name = match desc.is_empty() {
+            true => label.clone(),
+            false => format!("{label}. {desc}"),
+        };
+        let reset_name = format!("{} {label}", t(L10nKey::Reset));
         let entry = settings_search_entries()
             .iter()
             .find(|entry| t(entry.title) == label);
@@ -483,6 +491,8 @@ impl Tty7App {
                     line.child(
                         div()
                             .id(SharedString::from(format!("reset-setting-{key:?}")))
+                            .role(gpui::Role::Button)
+                            .aria_label(reset_name.clone())
                             .flex_shrink_0()
                             .text_size(fs(11.5))
                             .text_color(tk.k4)
@@ -518,6 +528,8 @@ impl Tty7App {
             });
         let row = div()
             .id(element_id)
+            .role(gpui::Role::Group)
+            .aria_label(a11y_name)
             .flex()
             .when(stacked, |row| row.flex_col().items_start().gap(px(8.)))
             .when(!stacked, |row| {
@@ -811,8 +823,9 @@ impl Tty7App {
                 SettingsSection::Terminal => self.render_settings_terminal(cx),
                 SettingsSection::KeyboardMouse => self.render_settings_input(cx),
                 SettingsSection::Ssh => self.render_settings_ssh(cx),
+                SettingsSection::Mobile => self.render_settings_mobile(cx),
                 SettingsSection::Agents => self.render_settings_agents(cx),
-                SettingsSection::PairDevices => self.render_settings_mobile(window, cx),
+                SettingsSection::PairDevices => self.render_settings_pair_devices(window, cx),
                 SettingsSection::Keybindings => self.render_settings_keybindings(cx),
                 SettingsSection::About => self.render_settings_about(cx),
             };
@@ -1130,6 +1143,8 @@ impl Tty7App {
             .collect();
         let total: usize = counts.iter().map(|(_, n)| n).sum();
         let search_focused = self.settings_input_focused(&search, cx);
+        // Same rail, same rungs as the main window's tab list.
+        let rail = cx.global::<presets::Surfaces>().rail;
 
         let items = counts.into_iter().map(|(target, count)| {
             let active = !searching && section == target;
@@ -1138,14 +1153,17 @@ impl Tty7App {
                     "settings-nav-{}",
                     target.profile_label()
                 )))
+                .role(gpui::Role::Tab)
+                .aria_label(t(target.title()))
+                .aria_selected(active)
                 .h(px(28.))
                 .px(px(8.))
                 .gap(px(10.))
                 .items_center()
                 .rounded(px(7.))
                 .cursor_pointer()
-                .when(active, |r| r.bg(tk.k07))
-                .when(!active, |r| r.hover(move |s| s.bg(tk.k04)))
+                .when(active, |r| r.bg(gpui::rgb(rail.selected)))
+                .when(!active, |r| r.hover(move |s| s.bg(gpui::rgb(rail.hover))))
                 .child(
                     Icon::empty()
                         .path(target.icon_path())
@@ -1181,7 +1199,7 @@ impl Tty7App {
             // The main window's tab rail fill, so the two sidebars read as the
             // same surface. Opaque: the rail's translucency rule would let the
             // page behind show through.
-            .bg(gpui::rgb(cx.global::<presets::Surfaces>().rail.base))
+            .bg(gpui::rgb(rail.base))
             .border_r_1()
             .border_color(tk.k08)
             .child(div().h(px(TITLE_BAR_HEIGHT)).flex_shrink_0())
@@ -1259,6 +1277,7 @@ impl Tty7App {
                         })
                         .child(
                             kit::switch("settings-modified-switch")
+                                .label(t(L10nKey::SettingsModifiedOnly))
                                 .small()
                                 .checked(modified_only),
                         )
@@ -1394,11 +1413,14 @@ impl Tty7App {
                 SettingsSection::Ssh => {
                     self.render_ssh_connection_rows(cx);
                 }
+                SettingsSection::Mobile => {
+                    self.render_settings_mobile(cx);
+                }
                 SettingsSection::Agents => {
                     self.render_command_line_rows(cx);
                 }
                 SettingsSection::PairDevices => {
-                    self.render_settings_mobile_config(cx);
+                    self.render_settings_pair_devices_config(cx);
                 }
                 SettingsSection::About => {
                     self.render_settings_about(cx);

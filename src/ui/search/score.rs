@@ -73,6 +73,15 @@ fn align(needle: &[char], hay: &[char], start: usize) -> Option<i32> {
     (qi == needle.len()).then_some(score)
 }
 
+/// Whether every whitespace-separated word of `query` occurs in `text`,
+/// ignoring case.
+fn words_appear_in(query: &str, text: &str) -> bool {
+    let text = text.to_lowercase();
+    query
+        .split_whitespace()
+        .all(|word| text.contains(&word.to_lowercase()))
+}
+
 /// How far behind the visible label an alias hit lands. An alias *is* the
 /// command's own name, only in another language, so the gap is small — but two
 /// commands that both match must still be ordered by the text on screen.
@@ -80,9 +89,14 @@ const ALIAS_PENALTY: i32 = 10;
 
 pub(crate) fn item_score(query: &str, cmd: &Item) -> Option<i32> {
     let title = fuzzy_score(query, &cmd.title);
+    // A subtitle is prose — a description, a host — and a query's letters
+    // strewn across a sentence are no match for it: "theme" found "Git:
+    // Discard All Changes" through "Throws away every uncommitted change". The
+    // words typed have to be in it as typed.
     let subtitle = cmd
         .subtitle
         .as_deref()
+        .filter(|s| words_appear_in(query, s))
         .and_then(|s| fuzzy_score(query, s))
         .map(|s| s / 2 - 25);
     // Aliases only ever decide whether a row is in the list and where it sits.
@@ -178,6 +192,22 @@ mod tests {
         let title_hit = item_score("prod", &cmd).expect("title matches");
         let subtitle_hit = item_score("deploy", &cmd).expect("subtitle matches");
         assert!(title_hit > subtitle_hit);
+    }
+
+    #[test]
+    fn the_remote_files_panel_is_found_as_sftp() {
+        let cmd =
+            Item::localized(L10nKey::CmdSshRemoteFiles, CommandKind::ToggleSftp).with_alias("SFTP");
+        assert!(item_score("sftp", &cmd).is_some());
+    }
+
+    #[test]
+    fn letters_strewn_across_a_description_do_not_match_it() {
+        let cmd = Item::new("Git: Discard All Changes", CommandKind::NewTab)
+            .with_subtitle("Throws away every uncommitted change in the working tree.".to_string());
+        assert!(item_score("theme", &cmd).is_none());
+        assert!(item_score("uncommitted", &cmd).is_some());
+        assert!(item_score("working tree", &cmd).is_some());
     }
 
     #[test]

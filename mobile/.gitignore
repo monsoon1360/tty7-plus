@@ -4,3 +4,10 @@
 local.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+build/

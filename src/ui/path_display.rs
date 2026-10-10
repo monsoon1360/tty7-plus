@@ -92,6 +92,24 @@ pub(crate) fn native_separators(path: &Path) -> Cow<'_, Path> {
     tty7_core::core::path_spelling::native_separators(path)
 }
 
+/// A path as a person knows it, for reading only: macOS keeps `/tmp`, `/var`
+/// and `/etc` under `/private` and links them from `/`, so every real path
+/// `git` or `canonicalize` hands back for a project in `/tmp` reads
+/// `/private/tmp/…` — a spelling no shell, Finder window or pane title uses.
+/// The stored path stays what it is; only what is drawn changes.
+pub(crate) fn readable_path(path: &str) -> Cow<'_, str> {
+    if cfg!(target_os = "macos") {
+        for dir in ["/private/tmp", "/private/var", "/private/etc"] {
+            if let Some(rest) = path.strip_prefix(dir)
+                && (rest.is_empty() || rest.starts_with('/'))
+            {
+                return Cow::Owned(format!("{}{rest}", &dir["/private".len()..]));
+            }
+        }
+    }
+    Cow::Borrowed(path)
+}
+
 /// Shortens `path` to start from `~` when it is (inside) `home` — the home
 /// directory of the machine `path` is on, not of this one.
 ///
@@ -169,6 +187,17 @@ pub(crate) fn split_path_leaf(s: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn private_system_dirs_read_the_way_macos_shows_them() {
+        assert_eq!(readable_path("/private/tmp/x/.tty7"), "/tmp/x/.tty7");
+        assert_eq!(readable_path("/private/var/folders"), "/var/folders");
+        assert_eq!(readable_path("/private/tmp"), "/tmp");
+        assert_eq!(readable_path("/private/tmpfoo"), "/private/tmpfoo");
+        assert_eq!(readable_path("/private/Users"), "/private/Users");
+        assert_eq!(readable_path("/Users/x"), "/Users/x");
+    }
 
     #[test]
     fn a_path_under_home_shortens_to_tilde() {

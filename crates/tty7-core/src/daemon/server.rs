@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 use crate::daemon::pane::DaemonPane;
-use crate::daemon::protocol::{ClientMsg, DaemonMsg, DaemonVersion, RemoteKind};
+use crate::daemon::protocol::{ClientMsg, DaemonMsg, DaemonVersion, LeaseRequest, RemoteKind};
 use crate::daemon::ssh::SshConnection;
 use crate::daemon::transport::{self, Stream};
 
@@ -109,6 +109,10 @@ impl crate::host::server::PaneDirectory for Registry {
         hibernate_pane(self, pane_id);
     }
 
+    fn close_pane(&self, pane_id: u64) {
+        kill_pane(self, pane_id);
+    }
+
     fn agent_states(&self) -> Vec<crate::daemon::control::PaneAgentState> {
         let panes: Vec<Arc<DaemonPane>> = self.panes.lock().unwrap().values().cloned().collect();
         let mut states: Vec<_> = panes.iter().filter_map(|p| p.agent_state()).collect();
@@ -128,84 +132,175 @@ impl MobileBackend {
         use serde_json::json;
         let machine = self.machine.machine();
         let mut repositories = HashMap::new();
-        let workspaces: Vec<_> = machine.workspaces.iter().map(|workspace| {
-            let tabs: Vec<_> = workspace.tabs.iter().filter(|tab| !tab.hibernated).collect();
-            let panes: Vec<Vec<_>> = tabs.iter().map(|tab| {
-                tab.root.pane_ids().into_iter().filter_map(|id| {
-                    let pane = self.registry.get(id)?;
-                    let info = pane.info();
-                    if !info.alive { return None; }
-                    let remote = pane.remote_context();
-                    // Remote paths are not paths on this daemon's host.
-                    let repo = if remote.is_none() {
-                        info.cwd.as_ref().map(|cwd| repositories.entry(cwd.clone())
-                            .or_insert_with(|| mobile_repo(cwd)).clone()).unwrap_or_default()
-                    } else {
-                        MobileRepo::default()
-                    };
-                    Some((info, pane.mobile_size(), pane.mobile_agent(), remote, repo))
-                }).collect()
-            }).collect();
-            let keys: Vec<_> = tabs.iter().zip(&panes).map(|(tab, panes)| {
-                let first = tab.root.pane_ids().first().copied();
-                let resolved = panes.iter().find(|(info, _, _, _, _)| Some(info.pane_id) == first)
-                    .and_then(|(_, _, _, remote, repo)| {
-                    let ssh = remote.as_ref()
-                        .filter(|r| matches!(r.kind, RemoteKind::Ssh | RemoteKind::NativeSsh))
-                        .map(|r| r.target.as_str());
-                    auto_key(ssh, repo.home.clone())
-                });
-                place(tab.group, &workspace.groups, auto_grouping,
-                    resolved.unwrap_or_else(|| tab.last_auto.clone()))
-            }).collect();
-            let sections = mobile_sections(&keys, &workspace.groups);
-            let terminals: Vec<_> = sections.into_iter().flat_map(|(group, indices)| {
-                let tabs = &tabs;
-                let panes = &panes;
-                let keys = &keys;
-                indices.into_iter().flat_map(move |index| {
-                    let tab = tabs[index];
-                    let group = group.clone();
-                    let group_id = mobile_group_id(keys[index].as_ref());
-                    panes[index].iter().map(move |(info, size, agent, _, repo)| {
-                        mobile_terminal(tab, info, *size, *agent,
-                            group.as_deref().zip(group_id.as_deref()), repo.branch.as_deref())
+        let workspaces: Vec<_> = machine
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                let tabs: Vec<_> = workspace
+                    .tabs
+                    .iter()
+                    .filter(|tab| !tab.hibernated)
+                    .collect();
+                let panes: Vec<Vec<_>> = tabs
+                    .iter()
+                    .map(|tab| {
+                        tab.root
+                            .pane_ids()
+                            .into_iter()
+                            .filter_map(|id| {
+                                let pane = self.registry.get(id)?;
+                                let info = pane.info();
+                                if !info.alive {
+                                    return None;
+                                }
+                                let remote = pane.remote_context();
+                                // Remote paths are not paths on this daemon's host.
+                                let repo = if remote.is_none() {
+                                    info.cwd
+                                        .as_ref()
+                                        .map(|cwd| {
+                                            repositories
+                                                .entry(cwd.clone())
+                                                .or_insert_with(|| mobile_repo(cwd))
+                                                .clone()
+                                        })
+                                        .unwrap_or_default()
+                                } else {
+                                    MobileRepo::default()
+                                };
+                                Some((info, pane.mobile_size(), pane.mobile_agent(), remote, repo))
+                            })
+                            .collect()
                     })
-                })
-            }).collect();
-            json!({"id":workspace.id.to_string(),
+                    .collect();
+                let keys: Vec<_> = tabs
+                    .iter()
+                    .zip(&panes)
+                    .map(|(tab, panes)| {
+                        let first = tab.root.pane_ids().first().copied();
+                        let resolved = panes
+                            .iter()
+                            .find(|(info, _, _, _, _)| Some(info.pane_id) == first)
+                            .and_then(|(_, _, _, remote, repo)| {
+                                let ssh = remote
+                                    .as_ref()
+                                    .filter(|r| {
+                                        matches!(r.kind, RemoteKind::Ssh | RemoteKind::NativeSsh)
+                                    })
+                                    .map(|r| r.target.as_str());
+                                auto_key(ssh, repo.home.clone())
+                            });
+                        place(
+                            tab.group,
+                            &workspace.groups,
+                            auto_grouping,
+                            resolved.unwrap_or_else(|| tab.last_auto.clone()),
+                        )
+                    })
+                    .collect();
+                let sections = mobile_sections(&keys, &workspace.groups);
+                let terminals: Vec<_> = sections
+                    .into_iter()
+                    .flat_map(|(group, indices)| {
+                        let tabs = &tabs;
+                        let panes = &panes;
+                        let keys = &keys;
+                        indices.into_iter().flat_map(move |index| {
+                            let tab = tabs[index];
+                            let group = group.clone();
+                            let group_id = mobile_group_id(keys[index].as_ref());
+                            panes[index]
+                                .iter()
+                                .map(move |(info, size, agent, _, repo)| {
+                                    mobile_terminal(
+                                        tab,
+                                        info,
+                                        *size,
+                                        *agent,
+                                        group.as_deref().zip(group_id.as_deref()),
+                                        repo.branch.as_deref(),
+                                    )
+                                })
+                        })
+                    })
+                    .collect();
+                json!({"id":workspace.id.to_string(),
                 "name":workspace.name.as_deref().unwrap_or("Workspace"), "terminals":terminals})
-        }).collect();
+            })
+            .collect();
         json!({"workspaces":workspaces})
     }
 
-    fn workspace(&self, request: &serde_json::Value) -> std::io::Result<crate::core::session::WorkspaceId> {
-        let text = request.get("workspace_id").and_then(serde_json::Value::as_str)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "workspace_id is required"))?;
-        let id = text.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid workspace_id"))?;
+    fn workspace(
+        &self,
+        request: &serde_json::Value,
+    ) -> std::io::Result<crate::core::session::WorkspaceId> {
+        let text = request
+            .get("workspace_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "workspace_id is required")
+            })?;
+        let id = text.parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid workspace_id")
+        })?;
         self.machine.workspace(id)?;
         Ok(id)
     }
 
     fn pane_id(request: &serde_json::Value) -> std::io::Result<u64> {
-        request.get("pane_id").and_then(serde_json::Value::as_u64).filter(|id| *id > 0)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "pane_id is required"))
+        request
+            .get("pane_id")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|id| *id > 0)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "pane_id is required")
+            })
     }
 
-    fn member(&self, workspace: crate::core::session::WorkspaceId, pane: u64) -> std::io::Result<Arc<DaemonPane>> {
+    fn member(
+        &self,
+        workspace: crate::core::session::WorkspaceId,
+        pane: u64,
+    ) -> std::io::Result<Arc<DaemonPane>> {
         let tree = self.machine.workspace(workspace)?;
-        if !tree.tabs.iter().any(|tab| !tab.hibernated && tab.root.contains(pane)) {
-            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "terminal does not belong to this workspace"));
+        if !tree
+            .tabs
+            .iter()
+            .any(|tab| !tab.hibernated && tab.root.contains(pane))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "terminal does not belong to this workspace",
+            ));
         }
-        self.registry.get(pane).filter(|pane| pane.alive())
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "terminal is no longer running"))
+        self.registry
+            .get(pane)
+            .filter(|pane| pane.alive())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "terminal is no longer running",
+                )
+            })
     }
 
-    fn optional_string(request: &serde_json::Value, key: &str, limit: usize) -> std::io::Result<Option<String>> {
+    fn optional_string(
+        request: &serde_json::Value,
+        key: &str,
+        limit: usize,
+    ) -> std::io::Result<Option<String>> {
         match request.get(key) {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(serde_json::Value::String(text)) if text.len() <= limit && !text.chars().any(char::is_control) => Ok(Some(text.clone())),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("invalid {key}"))),
+            Some(serde_json::Value::String(text))
+                if text.len() <= limit && !text.chars().any(char::is_control) =>
+            {
+                Ok(Some(text.clone()))
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid {key}"),
+            )),
         }
     }
 }
@@ -219,23 +314,40 @@ struct MobileRepo {
 
 fn mobile_repo(cwd: &std::path::Path) -> MobileRepo {
     let host = crate::host::local::LocalHost::shared();
-    let Ok(output) = host.git(cwd, &["rev-parse", "--path-format=absolute",
-        "--show-toplevel", "--git-dir", "--git-common-dir"]) else {
+    let Ok(output) = host.git(
+        cwd,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+    ) else {
         return MobileRepo::default();
     };
     if !output.success() {
         return MobileRepo {
-            home: String::from_utf8_lossy(&output.stderr).to_ascii_lowercase()
-                .contains("not a git repository").then_some(None),
+            home: String::from_utf8_lossy(&output.stderr)
+                .to_ascii_lowercase()
+                .contains("not a git repository")
+                .then_some(None),
             branch: None,
         };
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut lines = text.lines();
-    let Some(root) = lines.next() else { return MobileRepo::default(); };
+    let Some(root) = lines.next() else {
+        return MobileRepo::default();
+    };
     let root = crate::core::git::git_path(&*host, root);
     MobileRepo {
-        home: Some(Some(crate::core::git::repo_home(&*host, &root, lines.next(), lines.next()))),
+        home: Some(Some(crate::core::git::repo_home(
+            &*host,
+            &root,
+            lines.next(),
+            lines.next(),
+        ))),
         branch: crate::core::git::branch_name(&*host, cwd),
     }
 }
@@ -244,7 +356,10 @@ fn mobile_terminal(
     tab: &crate::core::machine::Tab,
     info: &crate::daemon::protocol::PaneInfo,
     size: crate::daemon::protocol::WinSize,
-    agent: Option<(crate::core::cli_agent::CLIAgent, crate::core::cli_agent::AgentStatus)>,
+    agent: Option<(
+        crate::core::cli_agent::CLIAgent,
+        crate::core::cli_agent::AgentStatus,
+    )>,
     group: Option<(&str, &str)>,
     branch: Option<&str>,
 ) -> serde_json::Value {
@@ -261,8 +376,10 @@ fn mobile_group_id(key: Option<&crate::core::group_key::GroupKey>) -> Option<Str
     use crate::core::group_key::GroupKey;
     key.map(|key| match key {
         GroupKey::Pinned(id) => format!("pinned:{id}"),
-        GroupKey::Auto(key) => format!("auto:{}", serde_json::to_string(key)
-            .expect("auto group keys serialize as strings")),
+        GroupKey::Auto(key) => format!(
+            "auto:{}",
+            serde_json::to_string(key).expect("auto group keys serialize as strings")
+        ),
     })
 }
 
@@ -270,19 +387,19 @@ fn mobile_sections(
     keys: &[Option<crate::core::group_key::GroupKey>],
     groups: &crate::core::group_key::WorkspaceGroups,
 ) -> Vec<(Option<String>, Vec<usize>)> {
-    crate::core::group_key::sections(keys, groups, None).into_iter()
-        .map(|section| (section.name, section.tabs)).collect()
+    crate::core::group_key::sections(keys, groups, None)
+        .into_iter()
+        .map(|section| (section.name, section.tabs))
+        .collect()
 }
 
 impl crate::mobile::Backend for MobileBackend {
     fn request(&self, request: &serde_json::Value) -> std::io::Result<serde_json::Value> {
-        use serde_json::{Value, json};
         use base64::Engine;
+        use serde_json::{Value, json};
         let op = request.get("op").and_then(Value::as_str).unwrap_or("");
         match op {
-            "list" => {
-                Ok(self.list(crate::core::config::Config::load().sidebar_auto_grouping))
-            }
+            "list" => Ok(self.list(crate::core::config::Config::load().sidebar_auto_grouping)),
             "create_workspace" => {
                 let name = Self::optional_string(request, "name", 256)?;
                 let workspace = self.machine.workspace_create(None, name, None)?;
@@ -290,17 +407,37 @@ impl crate::mobile::Backend for MobileBackend {
             }
             "create_terminal" => {
                 let workspace = self.workspace(request)?;
-                let cwd = Self::optional_string(request, "cwd", 4096)?.map(std::path::PathBuf::from);
+                let cwd =
+                    Self::optional_string(request, "cwd", 4096)?.map(std::path::PathBuf::from);
                 if cwd.as_ref().is_some_and(|cwd| !cwd.is_dir()) {
-                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "cwd must be an existing directory"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "cwd must be an existing directory",
+                    ));
                 }
                 let id = self.registry.alloc_id();
-                let pane = DaemonPane::spawn(id, cwd, crate::daemon::protocol::WinSize {
-                    cols: 80, rows: 24, cell_w: 0, cell_h: 0,
-                }, None, None, Some(workspace.to_string()), None, false, reaper(self.registry.clone(), id))
-                    .map_err(std::io::Error::other)?;
+                let pane = DaemonPane::spawn(
+                    id,
+                    cwd,
+                    crate::daemon::protocol::WinSize {
+                        cols: 80,
+                        rows: 24,
+                        cell_w: 0,
+                        cell_h: 0,
+                    },
+                    None,
+                    None,
+                    Some(workspace.to_string()),
+                    None,
+                    false,
+                    reaper(self.registry.clone(), id),
+                )
+                .map_err(std::io::Error::other)?;
                 self.registry.insert(pane.clone());
-                if let Err(error) = self.machine.tab_create(workspace, None, pane.mobile_seed(), None, None) {
+                if let Err(error) =
+                    self.machine
+                        .tab_create(workspace, None, pane.mobile_seed(), None, None)
+                {
                     kill_pane(&self.registry, id);
                     return Err(error);
                 }
@@ -311,40 +448,75 @@ impl crate::mobile::Backend for MobileBackend {
                 let id = Self::pane_id(request)?;
                 self.member(workspace, id)?;
                 let removed = self.machine.pane_close(workspace, id, None)?;
-                for pane in removed { kill_pane(&self.registry, pane); }
+                for pane in removed {
+                    kill_pane(&self.registry, pane);
+                }
                 Ok(Value::Null)
             }
             "input" => {
                 let workspace = self.workspace(request)?;
                 let pane = self.member(workspace, Self::pane_id(request)?)?;
-                let text = request.get("data").and_then(Value::as_str)
-                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "input data is required"))?;
-                if text.len() > 88 * 1024 { return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "input is too large")); }
-                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text)
-                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid input encoding"))?;
+                let text = request.get("data").and_then(Value::as_str).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "input data is required")
+                })?;
+                if text.len() > 88 * 1024 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "input is too large",
+                    ));
+                }
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(text)
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "invalid input encoding",
+                        )
+                    })?;
                 // The same non-taking path as ClientMsg::SendInput: never attach or resize.
                 pane.write_input(&bytes);
                 Ok(Value::Null)
             }
-            _ => Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "operation is not permitted")),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "operation is not permitted",
+            )),
         }
     }
 
-    fn observe(&self, workspace: &str, pane_id: u64) -> std::io::Result<crate::mobile::Observation> {
-        let workspace = workspace.parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid workspace_id"))?;
+    fn observe(
+        &self,
+        workspace: &str,
+        pane_id: u64,
+    ) -> std::io::Result<crate::mobile::Observation> {
+        let workspace = workspace.parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid workspace_id")
+        })?;
         let pane = self.member(workspace, pane_id)?;
         let (send, receiver) = mpsc::channel();
         let gate = Arc::new(crate::daemon::pane::OutputGate::new());
         let size = pane.mobile_size();
         let (observer_id, initial) = pane.observe(send, gate.clone());
-        Ok(crate::mobile::Observation { pane, observer_id, receiver, gate, size, initial })
+        Ok(crate::mobile::Observation {
+            pane,
+            observer_id,
+            receiver,
+            gate,
+            size,
+            initial,
+        })
     }
 }
 
 fn start_mobile(registry: &Arc<Registry>, services: &crate::host::server::Services) {
     if let Some(machine) = &services.machine {
         registry.seed_ids_past(&machine.machine());
-        if crate::mobile::start(Arc::new(MobileBackend { registry: registry.clone(), machine: machine.clone() })).is_err() {
+        if crate::mobile::start(Arc::new(MobileBackend {
+            registry: registry.clone(),
+            machine: machine.clone(),
+        }))
+        .is_err()
+        {
             log::error!("mobile access could not start; remote access unavailable");
         }
     }
@@ -354,6 +526,33 @@ fn start_mobile(registry: &Arc<Registry>, services: &crate::host::server::Servic
 /// [`crate::daemon::pane::AGENT_STALE_AFTER`]. The threshold is half an hour,
 /// so being up to a minute late to notice costs nothing.
 const AGENT_STALE_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The pane a Codex or jcode hook's report is about, found from the report
+/// itself — where a hook runs says nothing for an agent that runs its hooks in
+/// a shared server (see [`crate::daemon::pane::codex_report_target`]). `None`
+/// for any other agent's report, which goes to the pane the hook named.
+fn codex_report_pane(
+    registry: &Registry,
+    named: u64,
+    body: &str,
+) -> Option<(Arc<DaemonPane>, crate::core::cli_agent::AgentEvent)> {
+    let event = crate::core::cli_agent::parse_agent_event_body(body.as_bytes())?;
+    use crate::core::cli_agent::CLIAgent;
+    let agent = event
+        .agent
+        .filter(|a| matches!(a, CLIAgent::Codex | CLIAgent::Jcode))?;
+    let panes = registry.all();
+    let candidates: Vec<_> = panes.iter().map(|p| p.codex_candidate(agent)).collect();
+    let target = crate::daemon::pane::codex_report_target(
+        &candidates,
+        named,
+        event.session_id.as_deref(),
+        event.cwd.as_deref(),
+        event.source.as_deref() == Some("clear"),
+    )?;
+    let pane = panes.into_iter().find(|p| p.id == target)?;
+    Some((pane, event))
+}
 
 fn spawn_agent_stale_sweep(registry: Arc<Registry>) {
     let spawned = std::thread::Builder::new()
@@ -466,6 +665,14 @@ fn spawn_snapshot_keeper(registry: Arc<Registry>) {
                     let (segments, title, mark) = pane.scrollback_snapshot();
                     crate::daemon::scrollback::save(pane.id, &segments, title.as_deref());
                     marks.insert(pane.id, mark);
+                }
+                // Before the sweep, so a closed tab that has aged out takes its
+                // screens with it on this pass rather than the next.
+                if let Some(store) = crate::core::machine::observed_store() {
+                    let now = crate::core::machine::unix_now();
+                    for pane in store.expire_closed_tabs(now) {
+                        kill_pane(&registry, pane);
+                    }
                 }
                 let restorable = restorable_pane_ids(&registry);
                 crate::daemon::scrollback::sweep(&restorable);
@@ -768,12 +975,19 @@ fn hand_over(registry: &Registry, exe: &std::path::Path) -> anyhow::Error {
         store.flush();
     }
 
-    crate::daemon::handoff::take_over(
+    // The new image cannot reap a child it did not start; it starts its own.
+    crate::daemon::mobile::stop_for_handoff();
+
+    let failed = crate::daemon::handoff::take_over(
         exe,
         carried,
         registry.alloc_id(),
         crate::daemon::singleton::held_fd(),
-    )
+    );
+    // Still this program: the exec did not happen, so this daemon goes on
+    // serving, and so does its gateway.
+    crate::daemon::mobile::handoff_failed();
+    failed
 }
 
 #[cfg(not(unix))]
@@ -849,6 +1063,9 @@ fn run_with(registry: Arc<Registry>, alone: bool) -> anyhow::Result<()> {
     report_conpty_host();
 
     crate::daemon::pidfile::write_current();
+
+    // Phone access, when it is switched on: see `daemon::mobile`.
+    crate::daemon::mobile::supervise();
 
     #[cfg(unix)]
     serve_sigterm(registry.clone());
@@ -1055,8 +1272,13 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
             )
         }
 
-        ClientMsg::SpawnNativeSsh { cwd: _, size, spec } => {
+        ClientMsg::SpawnNativeSsh { cwd, size, spec } => {
             let allow_remote_clipboard_write = spec.remote_clipboard_write;
+            // A far-host path that only travels as a `PathBuf`: taken as the
+            // text it was sent as, never resolved against this machine. One
+            // that is not UTF-8 could only reach the far shell mangled, so it
+            // is dropped and the shell starts where it would have anyway.
+            let remote_start_dir = cwd.and_then(|p| p.into_os_string().into_string().ok());
             let id = registry.alloc_id();
             let on_dead = {
                 let registry = registry.clone();
@@ -1069,7 +1291,8 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                         .ok();
                 }
             };
-            let pane = match DaemonPane::spawn_native_ssh(id, size, spec, on_dead) {
+            let pane = match DaemonPane::spawn_native_ssh(id, size, spec, remote_start_dir, on_dead)
+            {
                 Ok(p) => p,
                 Err(e) => {
                     let mut w = write_stream;
@@ -1359,6 +1582,26 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
             Ok(())
         }
 
+        ClientMsg::AgentEvent {
+            pane_id,
+            pid,
+            event,
+        } => {
+            let mut w = write_stream;
+            let applied = match codex_report_pane(&registry, pane_id, &event) {
+                Some((pane, parsed)) => pane.apply_reported_agent_event(parsed),
+                None => match registry.get(pane_id) {
+                    Some(pane) => pane.report_agent_event(pid, &event),
+                    None => Err(format!("no such pane {pane_id}")),
+                },
+            };
+            match applied {
+                Ok(()) => DaemonMsg::InputAck { pane_id }.encode(&mut w)?,
+                Err(message) => DaemonMsg::Error(message).encode(&mut w)?,
+            }
+            Ok(())
+        }
+
         ClientMsg::ListForwards { pane_id } => {
             let mut w = write_stream;
             let list = crate::daemon::ssh::SshManager::global().list_forwards(pane_id);
@@ -1421,28 +1664,38 @@ fn stream_observer(
     mut read_stream: Stream,
     write_stream: Stream,
 ) -> anyhow::Result<()> {
+    // The pane holds the channel's only sender, and refusals go through it,
+    // so an observer the pane drops at its budget loses its stream: the writer
+    // runs dry and shuts the read below down, rather than the client sitting
+    // on a connection nothing will ever be sent down again.
     let (tx, rx) = mpsc::channel::<DaemonMsg>();
-    let refusals = tx.clone();
     let gate = Arc::new(crate::daemon::pane::OutputGate::new());
     let (observer_id, initial) = pane.observe(tx, gate.clone());
     let writer = spawn_writer(rx, write_stream, gate, initial);
 
-    observe_loop(&mut read_stream, &refusals);
+    observe_loop(
+        &mut read_stream,
+        |msg| pane.tell_observer(observer_id, msg),
+        |request| pane.observer_lease(observer_id, request),
+    );
 
     pane.unobserve(observer_id);
-    drop(refusals);
     let _ = writer.join();
     Ok(())
 }
 
-fn observe_loop<R: std::io::Read>(read_stream: &mut R, refusals: &mpsc::Sender<DaemonMsg>) {
+fn observe_loop<R: std::io::Read>(
+    read_stream: &mut R,
+    mut refuse: impl FnMut(DaemonMsg) -> bool,
+    mut lease: impl FnMut(LeaseRequest),
+) {
     loop {
         match ClientMsg::read(read_stream) {
+            Ok(ClientMsg::Lease(request)) => lease(request),
             Ok(ClientMsg::Input(_)) | Ok(ClientMsg::Resize(_)) => {
-                let refused = refusals.send(DaemonMsg::Error(
+                if !refuse(DaemonMsg::Error(
                     "this connection is a read-only observer; attach to write".to_string(),
-                ));
-                if refused.is_err() {
+                )) {
                     break;
                 }
             }
@@ -1495,6 +1748,12 @@ fn run_stream(
                     }
                     pane.resize(size);
                 }
+                ClientMsg::Lease(request) => {
+                    if !pane.controls(epoch) {
+                        break 'conn;
+                    }
+                    pane.controller_lease(request);
+                }
                 ClientMsg::AuthResponse {
                     request_id,
                     response,
@@ -1537,7 +1796,7 @@ fn run_stream(
 
 const OUTPUT_COALESCE_CAP: usize = 256 * 1024;
 
-fn spawn_writer(
+pub(crate) fn spawn_writer(
     rx: Receiver<DaemonMsg>,
     mut write_stream: Stream,
     gate: Arc<crate::daemon::pane::OutputGate>,
@@ -1573,15 +1832,11 @@ fn spawn_writer(
                 } else {
                     msg
                 };
-                let drained = if replaying { 0 } else { match &msg {
-                    DaemonMsg::Output(b) => b.len(),
-                    // Image frames are lifted from the same PTY read the gate
-                    // credits, so they must debit it too or the reader stays
-                    // throttled against bytes that already left the queue.
-                    DaemonMsg::Image(b) => b.len(),
-                    DaemonMsg::ClipboardWrite(b) => b.len(),
-                    _ => 0,
-                }};
+                let drained = if replaying {
+                    0
+                } else {
+                    crate::daemon::pane::gated_len(&msg)
+                };
                 let write_ok = msg.encode(&mut write_stream).is_ok();
                 if drained > 0 {
                     gate.sub(drained);
@@ -1614,14 +1869,38 @@ mod tests {
         let worktree = directory.path().join("topic");
         std::fs::create_dir(&repo).unwrap();
         let git = |args: &[&str]| {
-            let output = std::process::Command::new("git").arg("-C").arg(&repo)
-                .args(args).output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         };
         git(&["init", "-b", "main"]);
-        git(&["-c", "user.name=tty7 test", "-c", "user.email=tty7@example.invalid",
-            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"]);
-        git(&["worktree", "add", "-b", "feature/mobile", worktree.to_str().unwrap()]);
+        git(&[
+            "-c",
+            "user.name=tty7 test",
+            "-c",
+            "user.email=tty7@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature/mobile",
+            worktree.to_str().unwrap(),
+        ]);
         let main = mobile_repo(&repo);
         let topic = mobile_repo(&worktree);
         assert_eq!(main.branch.as_deref(), Some("main"));
@@ -1636,22 +1915,33 @@ mod tests {
         use crate::core::group_key::{AutoKey, GroupKey, PinnedGroup, WorkspaceGroups};
         let first = PinnedGroup::folder(std::path::Path::new("/kept/a/project"));
         let second = PinnedGroup::folder(std::path::Path::new("/kept/b/project"));
-        let groups = WorkspaceGroups { pinned: vec![first.clone(), second.clone()], ..Default::default() };
+        let groups = WorkspaceGroups {
+            pinned: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
         let repo_a = GroupKey::Auto(AutoKey::Repo("/repos/a/project".into()));
         let repo_b = GroupKey::Auto(AutoKey::Repo("/repos/b/project".into()));
         let host = GroupKey::Auto(AutoKey::SshHost("dev@host".into()));
         let keys = vec![
-            Some(repo_b.clone()), None, Some(GroupKey::Pinned(second.id)),
-            Some(repo_a), Some(GroupKey::Pinned(first.id)), Some(repo_b), Some(host),
+            Some(repo_b.clone()),
+            None,
+            Some(GroupKey::Pinned(second.id)),
+            Some(repo_a),
+            Some(GroupKey::Pinned(first.id)),
+            Some(repo_b),
+            Some(host),
         ];
-        assert_eq!(mobile_sections(&keys, &groups), vec![
-            (Some("a/project".into()), vec![4]),
-            (Some("b/project".into()), vec![2]),
-            (Some("b/project".into()), vec![0, 5]),
-            (Some("a/project".into()), vec![3]),
-            (Some("dev@host".into()), vec![6]),
-            (None, vec![1]),
-        ]);
+        assert_eq!(
+            mobile_sections(&keys, &groups),
+            vec![
+                (Some("a/project".into()), vec![4]),
+                (Some("b/project".into()), vec![2]),
+                (Some("b/project".into()), vec![0, 5]),
+                (Some("a/project".into()), vec![3]),
+                (Some("dev@host".into()), vec![6]),
+                (None, vec![1]),
+            ]
+        );
     }
 
     #[test]
@@ -1659,15 +1949,30 @@ mod tests {
         use crate::core::group_key::{AutoKey, GroupKey, PinnedGroup, WorkspaceGroups, place};
         let kept = PinnedGroup::label("My agents");
         let removed = PinnedGroup::label("Deleted");
-        let groups = WorkspaceGroups { pinned: vec![kept.clone()], ..Default::default() };
+        let groups = WorkspaceGroups {
+            pinned: vec![kept.clone()],
+            ..Default::default()
+        };
         let auto = Some(AutoKey::Repo("/repo".into()));
-        assert_eq!(place(Some(kept.id), &groups, false, auto.clone()), Some(GroupKey::Pinned(kept.id)));
-        assert_eq!(place(Some(removed.id), &groups, true, auto.clone()), auto.clone().map(GroupKey::Auto));
+        assert_eq!(
+            place(Some(kept.id), &groups, false, auto.clone()),
+            Some(GroupKey::Pinned(kept.id))
+        );
+        assert_eq!(
+            place(Some(removed.id), &groups, true, auto.clone()),
+            auto.clone().map(GroupKey::Auto)
+        );
         assert_eq!(place(None, &groups, false, auto), None);
-        assert_eq!(mobile_sections(&[None], &WorkspaceGroups::default()), vec![(None, vec![0])]);
+        assert_eq!(
+            mobile_sections(&[None], &WorkspaceGroups::default()),
+            vec![(None, vec![0])]
+        );
         // No containment rule reassigns a tab the user removed from a folder group.
         let folder = PinnedGroup::folder(std::path::Path::new("/repo"));
-        let groups = WorkspaceGroups { pinned: vec![folder], ..Default::default() };
+        let groups = WorkspaceGroups {
+            pinned: vec![folder],
+            ..Default::default()
+        };
         let key = place(None, &groups, true, Some(AutoKey::Repo("/repo".into())));
         assert!(matches!(key, Some(GroupKey::Auto(_))));
     }
@@ -1677,9 +1982,13 @@ mod tests {
         use crate::core::group_key::{AutoKey, GroupKey, PinnedGroup, WorkspaceGroups};
         let first = PinnedGroup::label("project");
         let second = PinnedGroup::label("project");
-        let groups = WorkspaceGroups { pinned: vec![first.clone(), second.clone()], ..Default::default() };
+        let groups = WorkspaceGroups {
+            pinned: vec![first.clone(), second.clone()],
+            ..Default::default()
+        };
         let keys = vec![
-            Some(GroupKey::Pinned(first.id)), Some(GroupKey::Pinned(second.id)),
+            Some(GroupKey::Pinned(first.id)),
+            Some(GroupKey::Pinned(second.id)),
             Some(GroupKey::Auto(AutoKey::Repo("/repos/project".into()))),
             Some(GroupKey::Auto(AutoKey::SshHost("/repos/project".into()))),
         ];
@@ -1687,7 +1996,10 @@ mod tests {
         assert_eq!(sections[0], (Some("project".into()), vec![0]));
         assert_eq!(sections[1], (Some("project".into()), vec![1]));
         assert_eq!(sections[2], (Some("project".into()), vec![2]));
-        let ids: Vec<_> = keys.iter().map(|key| mobile_group_id(key.as_ref()).unwrap()).collect();
+        let ids: Vec<_> = keys
+            .iter()
+            .map(|key| mobile_group_id(key.as_ref()).unwrap())
+            .collect();
         for i in 0..ids.len() {
             assert!(!ids[..i].contains(&ids[i]));
             assert_eq!(Some(ids[i].clone()), mobile_group_id(keys[i].as_ref()));
@@ -1698,7 +2010,6 @@ mod tests {
         assert_eq!(mobile_group_id(None), None);
     }
 
-
     #[test]
     fn mobile_input_and_observe_reject_cross_workspace_panes() {
         use crate::core::machine::{MachineStore, PaneSeed};
@@ -1707,13 +2018,23 @@ mod tests {
         let machine = MachineStore::open(directory.path().join("machine.json"));
         let owner = machine.workspace_create(None, None, None).unwrap();
         let unrelated = machine.workspace_create(None, None, None).unwrap();
-        machine.tab_create(owner.id, None, PaneSeed::bare(7), None, None).unwrap();
-        let backend = MobileBackend { registry: Arc::new(Registry::new()), machine };
-        let error = backend.request(&serde_json::json!({
-            "op":"input", "workspace_id":unrelated.id.to_string(), "pane_id":7, "data":"YQ"
-        })).unwrap_err();
+        machine
+            .tab_create(owner.id, None, PaneSeed::bare(7), None, None)
+            .unwrap();
+        let backend = MobileBackend {
+            registry: Arc::new(Registry::new()),
+            machine,
+        };
+        let error = backend
+            .request(&serde_json::json!({
+                "op":"input", "workspace_id":unrelated.id.to_string(), "pane_id":7, "data":"YQ"
+            }))
+            .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-        let error = backend.observe(&unrelated.id.to_string(), 7).err().expect("must refuse observation");
+        let error = backend
+            .observe(&unrelated.id.to_string(), 7)
+            .err()
+            .expect("must refuse observation");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
@@ -1792,7 +2113,11 @@ mod tests {
             .unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        observe_loop(&mut std::io::Cursor::new(wire), &tx);
+        observe_loop(
+            &mut std::io::Cursor::new(wire),
+            |m| tx.send(m).is_ok(),
+            |_| {},
+        );
         drop(tx);
 
         assert!(
@@ -1812,7 +2137,11 @@ mod tests {
     #[test]
     fn the_observer_loop_ends_at_stream_eof() {
         let (tx, rx) = std::sync::mpsc::channel();
-        observe_loop(&mut std::io::Cursor::new(Vec::<u8>::new()), &tx);
+        observe_loop(
+            &mut std::io::Cursor::new(Vec::<u8>::new()),
+            |m| tx.send(m).is_ok(),
+            |_| {},
+        );
         drop(tx);
         assert!(rx.try_recv().is_err());
     }
@@ -1907,7 +2236,12 @@ mod tests {
         fn spawn_writer_frames_messages_then_exits_on_channel_close() {
             let (tx, rx) = mpsc::channel::<DaemonMsg>();
             let (mut client, server) = UnixStream::pair().unwrap();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             tx.send(DaemonMsg::Output(b"hi".to_vec())).unwrap();
             tx.send(DaemonMsg::Exited { code: Some(0) }).unwrap();
@@ -1934,22 +2268,48 @@ mod tests {
                 DaemonMsg::Snapshot(vec![b'x'; crate::daemon::pane::OBSERVER_BUDGET as usize]),
                 DaemonMsg::Cwd("/work".into()),
             ];
-            tx.send(DaemonMsg::Size(WinSize { cols: 100, ..SIZE })).unwrap();
+            tx.send(DaemonMsg::Size(WinSize { cols: 100, ..SIZE }))
+                .unwrap();
             gate.add(b"first live".len());
             tx.send(DaemonMsg::Output(b"first live".to_vec())).unwrap();
+            gate.add(b"queued snapshot".len());
+            tx.send(DaemonMsg::Snapshot(b"queued snapshot".to_vec()))
+                .unwrap();
             drop(tx);
             let (mut client, server) = UnixStream::pair().unwrap();
             let writer = spawn_writer(rx, server, gate.clone(), initial);
-            assert_eq!(DaemonMsg::read(&mut client).unwrap(), DaemonMsg::Snapshot(b"\x1b[?1049h".to_vec()));
+            assert_eq!(
+                DaemonMsg::read(&mut client).unwrap(),
+                DaemonMsg::Snapshot(b"\x1b[?1049h".to_vec())
+            );
             assert_eq!(DaemonMsg::read(&mut client).unwrap(), DaemonMsg::Size(SIZE));
-            let DaemonMsg::Snapshot(bytes) = DaemonMsg::read(&mut client).unwrap() else { panic!("missing owned snapshot"); };
+            let DaemonMsg::Snapshot(bytes) = DaemonMsg::read(&mut client).unwrap() else {
+                panic!("missing owned snapshot");
+            };
             assert_eq!(bytes.len(), crate::daemon::pane::OBSERVER_BUDGET as usize);
             assert!(bytes.iter().all(|byte| *byte == b'x'));
-            assert_eq!(DaemonMsg::read(&mut client).unwrap(), DaemonMsg::Cwd("/work".into()));
-            assert_eq!(DaemonMsg::read(&mut client).unwrap(), DaemonMsg::Size(WinSize { cols: 100, ..SIZE }));
-            assert_eq!(DaemonMsg::read(&mut client).unwrap(), DaemonMsg::Output(b"first live".to_vec()));
+            assert_eq!(
+                DaemonMsg::read(&mut client).unwrap(),
+                DaemonMsg::Cwd("/work".into())
+            );
+            assert_eq!(
+                DaemonMsg::read(&mut client).unwrap(),
+                DaemonMsg::Size(WinSize { cols: 100, ..SIZE })
+            );
+            assert_eq!(
+                DaemonMsg::read(&mut client).unwrap(),
+                DaemonMsg::Output(b"first live".to_vec())
+            );
+            assert_eq!(
+                DaemonMsg::read(&mut client).unwrap(),
+                DaemonMsg::Snapshot(b"queued snapshot".to_vec())
+            );
             writer.join().unwrap();
-            assert_eq!(gate.queued_bytes(), 0, "owned replay must not debit the live gate");
+            assert_eq!(
+                gate.queued_bytes(),
+                0,
+                "owned replay must not debit the live gate"
+            );
         }
 
         #[test]
@@ -1961,7 +2321,12 @@ mod tests {
             drop(tx);
 
             let (mut client, server) = UnixStream::pair().unwrap();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             assert_eq!(
                 DaemonMsg::read(&mut client).unwrap(),
@@ -1985,7 +2350,12 @@ mod tests {
             drop(tx);
 
             let (mut client, server) = UnixStream::pair().unwrap();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             let mut frames: Vec<Vec<u8>> = Vec::new();
             loop {
@@ -2021,7 +2391,12 @@ mod tests {
             drop(tx);
 
             let (mut client, server) = UnixStream::pair().unwrap();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             assert_eq!(
                 DaemonMsg::read(&mut client).unwrap(),
@@ -2045,7 +2420,12 @@ mod tests {
         fn spawn_writer_exits_on_write_failure_while_sender_is_alive() {
             let (tx, rx) = mpsc::channel::<DaemonMsg>();
             let (client, server) = UnixStream::pair().unwrap();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             drop(client);
 
@@ -2067,7 +2447,12 @@ mod tests {
             let (client, server) = UnixStream::pair().unwrap();
             let mut reader = server.try_clone().expect("clone the read half");
             let (tx, rx) = mpsc::channel::<DaemonMsg>();
-            let writer = spawn_writer(rx, server, Arc::new(crate::daemon::pane::OutputGate::new()), Vec::new());
+            let writer = spawn_writer(
+                rx,
+                server,
+                Arc::new(crate::daemon::pane::OutputGate::new()),
+                Vec::new(),
+            );
 
             // Exactly where run_stream sits between frames.
             let parked = thread::spawn(move || {

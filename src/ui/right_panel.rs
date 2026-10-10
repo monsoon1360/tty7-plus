@@ -25,17 +25,17 @@ pub(crate) fn shown_tab(tab: RightPanelTab) -> RightPanelTab {
     }
 }
 
-/// Wide enough for the three word tabs, bare, beside the two chrome tiles at
+/// Wide enough for the word tabs, bare, beside the panel toggle at
 /// the default interface size — the Changes count is dropped before a label is
 /// ever cut. A larger UI font raises the floor past this; see
 /// [`right_panel_tabs_floor`].
 pub(crate) const MIN_WIDTH: f32 = 240.;
 
 /// What the tab row needs with the count dropped: the labels, the row's lead,
-/// its 2px gaps, and the chrome tiles at the trailing end.
+/// its 2px gaps, and the panel toggle at the trailing end.
 fn right_panel_tabs_floor(window: &Window, cx: &gpui::App) -> f32 {
     let chrome = match cfg!(target_os = "macos") {
-        true => PANEL_CHROME_W,
+        true => crate::ui::tab_strip::trailing_chrome_tiles_w(),
         false => tile_trailing_inset(),
     };
     (TAB_ROW_LEAD + crate::ui::tab_strip::right_panel_tab_labels_w(window, cx) + chrome).ceil()
@@ -45,20 +45,6 @@ fn right_panel_tabs_floor(window: &Window, cx: &gpui::App) -> f32 {
 /// `CONTENT_INSET`, the edge every row fill below it starts on, and each tab's
 /// click target reaches `TAB_OUTER_PAD` past its pill.
 const TAB_ROW_LEAD: f32 = crate::ui::app::CONTENT_INSET - crate::ui::tab_strip::TAB_OUTER_PAD;
-
-/// The panel toggle and the app menu where they sit in this panel's own tab
-/// row (macOS): 26px tiles, 4px apart, the last one 12px from the panel's
-/// right edge — the edge every row below keeps too.
-///
-/// Smaller than the title bar's 32px `TILE_SIZE` on purpose. The row they
-/// share here is a word-tab row, and a 32px square beside 12.5px labels read
-/// as a toolbar dropped into a list. The toggle's centre stays 55px from the
-/// right edge either way, so it does not jump when the panel opens.
-pub(crate) const PANEL_CHROME_TILE: f32 = 26.;
-pub(crate) const PANEL_CHROME_GAP: f32 = 4.;
-pub(crate) const PANEL_CHROME_TRAIL: f32 = CONTENT_INSET;
-/// Everything those two tiles take, trailing inset included.
-const PANEL_CHROME_W: f32 = PANEL_CHROME_TRAIL + 2. * PANEL_CHROME_TILE + PANEL_CHROME_GAP;
 
 /// How tall the tab row is where it sits below the title bar (Windows and
 /// Linux): the tab's 26px hover pill plus 2px either side. A full title-bar
@@ -102,7 +88,7 @@ const INFO_ROW_H: f32 = 28.;
 
 /// How tall a process row is — a notch tighter than the Session rows, since
 /// the list is read as one block rather than line by line.
-const PROC_ROW_H: f32 = 26.;
+pub(crate) const PROC_ROW_H: f32 = 26.;
 
 /// How far a child process sits in from its parent, the width of the `└`
 /// elbow that marks it.
@@ -252,6 +238,7 @@ const SEARCH_GLYPH_GAP: f32 = 3.;
 pub(crate) struct RightPanelState {
     pub(crate) procs_pane: Option<u64>,
     pub(crate) procs: Option<PaneProcs>,
+    pub(crate) cpu: crate::ui::proc_usage::CpuTracker,
     pub(crate) procs_loading: bool,
     pub(crate) procs_gen: u64,
     pub(crate) procs_forwards: Option<crate::ui::app::ForwardRoute>,
@@ -575,13 +562,18 @@ impl Tty7App {
                 .h_full()
                 .child(backing)
                 .bg(crate::ui::theme::workspace_surface_color(cx))
-                .border_l_1()
+                .border_l(crate::ui::theme::hairline(window))
                 .border_color(cx.theme().sidebar_border)
                 .children(cfg!(target_os = "macos").then(|| {
                     let row = h_flex()
                         .id("right-panel-titlebar-drag")
                         .flex_none()
-                        .h(px(crate::ui::app::TITLE_BAR_HEIGHT));
+                        .h(px(crate::ui::app::TITLE_BAR_HEIGHT))
+                        // Match TitleBar's content height, including its invisible
+                        // bottom border. Otherwise this row centres the toggle
+                        // half a point below its position in the closed panel.
+                        .border_b_1()
+                        .border_color(cx.theme().transparent);
                     crate::ui::app::window_move_gesture(
                         row,
                         "right-panel-titlebar-drag",
@@ -594,14 +586,10 @@ impl Tty7App {
                     .relative()
                     .children(self.right_panel_tabs(cx))
                     .child(div().flex_1())
-                    // Navigation controls stay visible on both sidebars —
-                    // here at the panel row's smaller size.
-                    .child(self.window_chrome_sized(
-                        PANEL_CHROME_TILE,
-                        PANEL_CHROME_GAP,
-                        PANEL_CHROME_TRAIL,
-                        cx,
-                    ))
+                    // The toggle keeps its title-bar size and trailing inset
+                    // when it moves into this row, so opening the panel does
+                    // not shift the glyph or change its hover target.
+                    .child(self.window_chrome(cx))
                 }))
                 // Only the Files and Search tabs step down 8px. Their first row
                 // is a filled search well whose top edge is the first thing you
@@ -948,9 +936,20 @@ impl Tty7App {
                         reveal: local.then(|| cwd.clone()),
                     });
                 }
+                // A pane on the default shell runs whatever the server picked,
+                // which is not always the login shell the inventory names: a
+                // server started from bash spawns bash. The process at the root
+                // of the pane's tree is the shell itself, so it has the say
+                // once the tree is in.
+                let root = self
+                    .procs(pane_id)
+                    .and_then(|p| p.procs.first())
+                    .filter(|p| p.depth == 0)
+                    .map(|p| p.name.trim_start_matches('-').to_string())
+                    .filter(|name| !name.is_empty());
                 let shell = match view.shell_spec().map(|s| s.program.clone()) {
                     Some(program) => crate::core::shells::default_shell_name(Some(&program)),
-                    None => self.default_shell_label(cx),
+                    None => root.unwrap_or_else(|| self.default_shell_label(cx)),
                 };
                 rows.push(InfoRow::text(t(L10nKey::PanelShell), shell));
                 if let Some(ssh) = view.ssh_spec() {
@@ -1061,6 +1060,16 @@ impl Tty7App {
             _ => t(L10nKey::CmdCopy),
         };
 
+        // "cwd, /tmp/project": the row as one line. The path drawn is split
+        // and may be elided; this is the whole of it.
+        let a11y_name = format!(
+            "{}, {}",
+            row.label,
+            match &row.value {
+                InfoValue::Text(v) | InfoValue::Path(v) => v.clone(),
+                InfoValue::Diff { added, removed, .. } => format!("+{added} −{removed}"),
+            }
+        );
         let value = match row.value {
             // A path identifies a pane by its last segment, and plain
             // truncation eats exactly that: a deep checkout read
@@ -1201,6 +1210,8 @@ impl Tty7App {
 
         h_flex()
             .id(id.clone())
+            .role(gpui::Role::Label)
+            .aria_label(a11y_name)
             .group(id)
             .relative()
             .items_center()
@@ -1329,16 +1340,16 @@ impl Tty7App {
                             .when(p.foreground, |d| d.font_weight(gpui::FontWeight::MEDIUM))
                             .child(p.name.clone()),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(rems(META_MONO))
-                            .font_family(mono.clone())
-                            .text_color(cx.theme().muted_foreground)
-                            .child(p.pid.to_string()),
-                    ),
+                    .child(crate::ui::proc_usage::row_cells(
+                        p,
+                        &self.right_panel.cpu,
+                        mono.clone(),
+                        cx,
+                    )),
             );
         }
+        let total = crate::ui::proc_usage::total_row(procs, &self.right_panel.cpu, mono, cx);
+        let list = list.children(total);
         Some(
             v_flex()
                 .child(self.panel_subtitle(t(L10nKey::PanelProcessesSubtitle), None, cx))
@@ -1849,6 +1860,10 @@ impl Tty7App {
         // empties.
         if !self.right_panel.procs_loading && self.procs_wanted() {
             self.right_panel.procs_loading = true;
+            // A new chain follows a gap — the panel was shut, or the pane
+            // changed — and a CPU% across the gap would be its long average
+            // shown as if it were now. A dash for one round is honest.
+            self.right_panel.cpu = Default::default();
             let generation = self.right_panel.procs_gen;
             self.spawn_procs_query(pane_id, generation, forwards, host, cx);
         }
@@ -1906,6 +1921,9 @@ impl Tty7App {
                     // answer with in place: blanking it on one failed poll
                     // would make the panel flicker on a link that hiccups.
                     if let Some(procs) = procs {
+                        app.right_panel
+                            .cpu
+                            .sample(&procs.procs, std::time::Instant::now());
                         app.right_panel.procs = Some(procs);
                     }
                     if forwards.is_some() {

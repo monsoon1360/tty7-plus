@@ -330,6 +330,17 @@ impl ListDelegate for SearchDelegate {
         _window: &mut Window,
         cx: &mut Context<ListState<Self>>,
     ) -> Option<Self::Item> {
+        let label: gpui::SharedString = match self.row_at(ix)? {
+            Row::Item(item) => match &item.subtitle {
+                Some(sub) => format!("{}, {sub}", item.title).into(),
+                None => item.title.clone().into(),
+            },
+            Row::More { tab, hidden } => t_fmt(
+                L10nKey::SearchMoreIn,
+                &[("count", &hidden.to_string()), ("tab", tab.title())],
+            )
+            .into(),
+        };
         let content = match self.row_at(ix)? {
             Row::Item(item) => self.render_row(ix, item, cx),
             Row::More { tab, hidden } => h_flex()
@@ -346,6 +357,7 @@ impl ListDelegate for SearchDelegate {
         };
         Some(SearchRow {
             id: ("search-row", ix.section * 1000 + ix.row).into(),
+            label,
             selected: Some(ix) == self.selected,
             child: content,
         })
@@ -475,6 +487,11 @@ impl SearchView {
             editor_tabs: Vec::new(),
             _sub,
         }
+    }
+
+    /// Puts the keyboard back in the search field (`palette`).
+    pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.list.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// Whether a row's list is showing rather than a tab.
@@ -1235,6 +1252,9 @@ impl Render for SearchView {
 #[derive(IntoElement)]
 pub struct SearchRow {
     id: gpui::ElementId,
+    /// What a screen reader reads for the row: its title, and its subtitle
+    /// when there is one.
+    label: gpui::SharedString,
     selected: bool,
     child: gpui::AnyElement,
 }
@@ -1256,6 +1276,9 @@ impl RenderOnce for SearchRow {
         let (hover, picked) = (gpui::rgb(sf.hover), gpui::rgb(sf.selected));
         h_flex()
             .id(self.id)
+            .role(gpui::Role::ListBoxOption)
+            .aria_label(self.label)
+            .aria_selected(self.selected)
             .items_center()
             .flex_none()
             .h(px(ROW_H))

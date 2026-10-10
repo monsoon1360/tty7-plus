@@ -263,6 +263,22 @@ fn try_parse_port(s: &str) -> Option<u16> {
     s.parse::<u16>().ok().filter(|&p| p != 0)
 }
 
+/// The user a profile logs in as: its own, or — left blank, as the form's
+/// "resolved at connect" says — this machine's login name, the way `ssh`
+/// itself does. Sending the blank on was an empty user name the server
+/// refused, reported as every key being rejected.
+pub fn login_user(profile_user: &str) -> String {
+    if !profile_user.trim().is_empty() {
+        return profile_user.to_string();
+    }
+    ["USER", "LOGNAME", "USERNAME"]
+        .iter()
+        .filter_map(|var| std::env::var(var).ok())
+        .map(|name| name.trim().to_string())
+        .find(|name| !name.is_empty())
+        .unwrap_or_default()
+}
+
 pub fn to_connect_string(profile: &SshProfile) -> String {
     let host = if profile.host.contains(':') {
         format!("[{}]", profile.host)
@@ -365,6 +381,14 @@ fn default_identity_candidates_in(home: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blank_user_logs_in_as_this_machines_user() {
+        assert_eq!(login_user("deploy"), "deploy");
+        let here = login_user("");
+        assert!(!here.is_empty(), "a blank user must resolve to someone");
+        assert_eq!(login_user("  "), here);
+    }
 
     #[test]
     fn profiles_saved_before_the_switch_existed_default_to_integrated() {

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use gpui::{App, Global};
 use tty7_core::core::group_key::AutoKey;
 use tty7_core::core::machine::{LayoutDelta, Machine, PaneRecord, Tab, TabId, Workspace};
+use tty7_core::core::tab_view::same_title_ignoring_status_mark;
 use tty7_core::daemon::control::{ControlRequest, ReplyOk};
 use tty7_core::host::HostId;
 
@@ -134,6 +135,21 @@ impl MachineMirrors {
         cx.refresh_windows();
     }
 
+    /// Whether `delta` only says again what a pane's tab already shows.
+    ///
+    /// Asked before [`Self::apply_delta`], which overwrites the record this
+    /// compares against. A window has nothing to repaint for such a delta, and
+    /// repainting anyway is what an agent that rewrites its title every few
+    /// hundred milliseconds costs: the whole window rebuilt for the same label.
+    pub fn delta_changes_nothing_shown(cx: &App, host: HostId, delta: &LayoutDelta) -> bool {
+        let LayoutDelta::PaneFacts { pane } = delta else {
+            return false;
+        };
+        Self::machine(cx, host)
+            .and_then(|machine| machine.panes.iter().find(|p| p.id == pane.id))
+            .is_some_and(|old| shows_the_same(old, pane))
+    }
+
     pub fn apply_delta(cx: &mut App, host: HostId, key: &str, delta: &LayoutDelta) {
         let Ok(id) = key.parse::<WorkspaceId>() else {
             return;
@@ -215,6 +231,52 @@ impl MachineMirrors {
         cx.refresh_windows();
     }
 
+    /// Tabs this window has just closed into the machine's recently-closed
+    /// list (#1021), moved there in the mirror as the machine moves them.
+    ///
+    /// Nothing the machine sends says so — to other clients the close is a
+    /// plain `TabClosed`, and this window hears nothing of its own ops — yet
+    /// the home screen reads the list here to offer the tab back. Idempotent,
+    /// so a replay over a pull that already saw the close changes nothing.
+    pub fn note_remembered_closes(
+        cx: &mut App,
+        host: HostId,
+        machine_ws: WorkspaceId,
+        closed: Vec<TabId>,
+    ) {
+        let now = crate::ui::home::now_secs();
+        Self::write(cx, host, move |machine| {
+            let Some(ws) = machine.workspaces.iter_mut().find(|w| w.id == machine_ws) else {
+                return;
+            };
+            for id in &closed {
+                let Some(at) = ws.tabs.iter().position(|t| t.id == *id) else {
+                    continue;
+                };
+                let tab = ws.tabs.remove(at);
+                ws.closed.push(tty7_core::core::machine::ClosedTab {
+                    tab,
+                    closed_at: now,
+                });
+            }
+            let excess = ws
+                .closed
+                .len()
+                .saturating_sub(tty7_core::core::machine::MAX_CLOSED_TABS);
+            ws.closed.drain(..excess);
+        });
+    }
+
+    /// A closed tab the machine has handed back to this window.
+    pub fn note_reopened(cx: &mut App, host: HostId, machine_ws: WorkspaceId, tab: TabId) {
+        Self::write(cx, host, move |machine| {
+            if let Some(ws) = machine.workspaces.iter_mut().find(|w| w.id == machine_ws) {
+                ws.closed.retain(|c| c.tab.id != tab);
+            }
+        });
+        cx.refresh_windows();
+    }
+
     pub fn note_workspace_op(cx: &mut App, host: HostId, request: &ControlRequest) {
         let request = request.clone();
         // Read now rather than inside the write: a replay of the touch is the
@@ -238,6 +300,26 @@ impl MachineMirrors {
             _ => {}
         });
     }
+}
+
+/// Whether `new` would put anything on screen that the mirror's record of the
+/// same pane does not already show.
+///
+/// The OSC title only has to read the same once its status mark is off, since
+/// a tab never draws the mark. Every other field has to match as it stands,
+/// compared through the record's own equality so that a field added to it later
+/// takes part without anyone remembering to list it here.
+fn shows_the_same(old: &PaneRecord, new: &PaneRecord) -> bool {
+    let titles = match (&old.osc_title, &new.osc_title) {
+        (Some(a), Some(b)) => same_title_ignoring_status_mark(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    titles
+        && PaneRecord {
+            osc_title: new.osc_title.clone(),
+            ..old.clone()
+        } == *new
 }
 
 fn apply(machine: &mut Machine, workspace: WorkspaceId, delta: &LayoutDelta) -> bool {
@@ -552,6 +634,44 @@ mod tests {
 
     fn leaf_tab(pane: u64) -> Tab {
         Tab::leaf(pane)
+    }
+
+    /// The mirror moves a remembered close onto the workspace's list the way
+    /// the machine does — so the home screen can offer it back — and a reopen
+    /// takes it off again. Saying the same close twice moves nothing twice.
+    #[gpui::test]
+    fn a_remembered_close_moves_onto_the_mirrors_list_and_a_reopen_takes_it_off(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let id = WorkspaceId::new();
+            let (kept, closed) = (leaf_tab(1), leaf_tab(2));
+            MachineMirrors::install(cx, HostId::LOCAL, Machine::default());
+            MachineMirrors::note_synced_workspace(
+                cx,
+                HostId::LOCAL,
+                id,
+                vec![kept.clone(), closed.clone()],
+                None,
+            );
+
+            for _ in 0..2 {
+                MachineMirrors::note_remembered_closes(cx, HostId::LOCAL, id, vec![closed.id]);
+            }
+
+            let ws = |cx: &App| {
+                MachineMirrors::machine(cx, HostId::LOCAL)
+                    .unwrap()
+                    .workspaces[0]
+                    .clone()
+            };
+            assert_eq!(ws(cx).tabs, vec![kept.clone()]);
+            let listed: Vec<TabId> = ws(cx).closed.iter().map(|c| c.tab.id).collect();
+            assert_eq!(listed, vec![closed.id]);
+
+            MachineMirrors::note_reopened(cx, HostId::LOCAL, id, closed.id);
+            assert!(ws(cx).closed.is_empty());
+        });
     }
 
     #[gpui::test]
@@ -1027,6 +1147,77 @@ mod tests {
             WorkspaceId::new(),
             &LayoutDelta::WorkspaceRenamed { name: None },
         ));
+    }
+
+    /// The question is put to the mirror before the delta lands in it, against
+    /// the record of the same pane, so a pane the mirror has not met, a host it
+    /// does not hold and a delta about anything but a pane's facts all have to
+    /// answer "something may have changed".
+    #[gpui::test]
+    fn a_delta_is_only_old_news_against_the_record_the_mirror_holds(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut known = PaneRecord::new(7);
+            known.osc_title = Some("\u{25D0} fixing the switcher".into());
+            MachineMirrors::install(
+                cx,
+                HostId::LOCAL,
+                Machine {
+                    workspaces: Vec::new(),
+                    panes: vec![known.clone()],
+                },
+            );
+            let facts = |pane: PaneRecord| LayoutDelta::PaneFacts { pane };
+            let asked = |cx: &App, host, delta: &LayoutDelta| {
+                MachineMirrors::delta_changes_nothing_shown(cx, host, delta)
+            };
+
+            let mut frame = known.clone();
+            frame.osc_title = Some("\u{25D1} fixing the switcher".into());
+            assert!(asked(cx, HostId::LOCAL, &facts(frame)), "a turned frame");
+
+            let mut words = known.clone();
+            words.osc_title = Some("\u{25D1} fixing the parser".into());
+            assert!(!asked(cx, HostId::LOCAL, &facts(words)), "new words");
+
+            let stranger = PaneRecord::new(8);
+            assert!(
+                !asked(cx, HostId::LOCAL, &facts(stranger)),
+                "a pane the mirror has not met"
+            );
+            assert!(
+                !asked(cx, HostId(42), &facts(known.clone())),
+                "a host the mirror does not hold"
+            );
+            assert!(
+                !asked(
+                    cx,
+                    HostId::LOCAL,
+                    &LayoutDelta::WorkspaceRenamed { name: None }
+                ),
+                "a delta that is not about a pane's facts"
+            );
+        });
+    }
+
+    #[test]
+    fn a_spinner_frame_is_not_news_but_any_other_change_is() {
+        let mut old = PaneRecord::new(7);
+        old.osc_title = Some("\u{25D0} fixing the switcher".into());
+        let mut next = old.clone();
+        assert!(shows_the_same(&old, &next), "the same record again");
+        next.osc_title = Some("\u{25D1} fixing the switcher".into());
+        assert!(shows_the_same(&old, &next), "only the mark moved");
+        next.osc_title = Some("\u{25D1} fixing the parser".into());
+        assert!(!shows_the_same(&old, &next), "the words changed");
+        next.osc_title = None;
+        assert!(!shows_the_same(&old, &next), "the title was cleared");
+
+        let mut live = old.clone();
+        live.live = true;
+        assert!(!shows_the_same(&old, &live), "a pane that came alive");
+        let mut moved = old.clone();
+        moved.cwd = Some("/elsewhere".into());
+        assert!(!shows_the_same(&old, &moved), "a pane that moved");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-pub const SUPPORTED_GUI_LANGUAGES: &[&str] = &["en", "zh-CN", "ja-JP"];
+pub const SUPPORTED_GUI_LANGUAGES: &[&str] = &["en", "zh-CN", "ja-JP", "ru-RU"];
 
 #[derive(Default, Clone, Eq, PartialEq, Hash)]
 pub struct FontFeatures(pub Arc<Vec<(String, u32)>>);
@@ -139,10 +139,11 @@ pub struct Config {
     /// more the lighter the text, which is why light-on-dark looks bolder.
     /// On by default, because it is what every macOS app draws with.
     ///
-    /// Off pins `AppleFontSmoothing` to `0` for this process alone, so glyphs
-    /// are drawn at the face's own weight. gpui reads that preference once, the
-    /// first time it rasterizes text, so a change applies at the next launch.
-    /// Ignored elsewhere, where there is no such dilation to turn off.
+    /// Off tells gpui's rasterizer not to dilate, so tty7's glyphs are drawn
+    /// at the face's own weight. `AppleFontSmoothing` is left alone, so menus
+    /// and other natively drawn text keep the system's look (#1119). Applied
+    /// at launch, so a change takes hold at the next one. Ignored elsewhere,
+    /// where there is no such dilation to turn off.
     #[serde(default = "default_true")]
     pub font_thicken: bool,
     pub font_size: f32,
@@ -177,6 +178,14 @@ pub struct Config {
     pub window_backdrop: WindowBackdrop,
     #[serde(default = "default_true")]
     pub dim_inactive_panes: bool,
+    /// Paint the title bar's buttons — new tab and the two panel toggles —
+    /// only while the pointer is over the bar they sit in. Off by default: a
+    /// button that is not on screen is a button nobody finds, and the switch
+    /// is for those who already know where it is and would rather rest their
+    /// eyes on a bare bar. The struct-level `serde(default)` reads a file
+    /// written before the key existed as off, which is how every window drew
+    /// then.
+    pub auto_hide_titlebar_buttons: bool,
     /// Lenient one entry at a time, for the same reason the nested keys below
     /// are: this is hand-edited, and it used to be all-or-nothing. A single
     /// value serde could not read — `"ActivateTab1": null`, a number, an object
@@ -191,6 +200,7 @@ pub struct Config {
     pub keybinding_preset: String,
     #[serde(default = "default_prefix")]
     pub prefix: String,
+    #[serde(default, deserialize_with = "de_shell")]
     pub shell: Option<ShellConfig>,
     /// Lenient on purpose: this is a hand-edited key with a nested shape, and a
     /// typo in one entry must not fail the whole `Config` and hand the user
@@ -298,6 +308,11 @@ pub struct Config {
     /// a check happens every six hours.
     #[serde(default = "default_true")]
     pub auto_download_updates: bool,
+    /// Whether the local daemon runs the mobile gateway, so phones paired in
+    /// Settings → Mobile can reach this machine's panes. Off by default: it
+    /// opens a UDP port, and a paired phone can type into any pane.
+    #[serde(default)]
+    pub mobile_access: bool,
     /// Whether the GUI puts the bundled `tty7` CLI on PATH at launch (see
     /// `core::cli_install`). On by default: the CLI is the agent-facing half of
     /// this product and is worth nothing sitting unreachable inside the bundle.
@@ -305,7 +320,7 @@ pub struct Config {
     /// package manager's copy — and do not want it shadowed.
     #[serde(default = "default_true")]
     pub install_cli_on_path: bool,
-    /// GUI-only locale selection. Values: `en` or `zh-CN`.
+    /// GUI-only locale selection. See `SUPPORTED_GUI_LANGUAGES`.
     /// CLI output stays English so agent/script integrations are stable.
     #[serde(default = "default_gui_language")]
     pub gui_language: String,
@@ -313,6 +328,9 @@ pub struct Config {
     pub notify_threshold_secs: u64,
     #[serde(default = "default_true")]
     pub restore_session: bool,
+    /// When closing a tab or a pane asks first — see [`ConfirmClose`].
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub confirm_close: ConfirmClose,
     #[serde(default = "default_true")]
     pub show_tray_icon: bool,
     #[serde(default, deserialize_with = "de_lenient")]
@@ -364,9 +382,14 @@ pub struct Config {
     #[serde(default, deserialize_with = "de_lenient")]
     pub mouse_zoom_modifier: MouseZoomModifier,
     pub clipboard_trim_trailing_spaces: bool,
+    /// In a Claude Code pane, copy joins the rows Claude wrapped itself, so a
+    /// paragraph pastes as one line. ⌘⌥C and Copy Raw copy the rows as is.
+    #[serde(default)]
+    pub copy_join_wrapped: bool,
     pub copy_on_select: bool,
     /// Optional HTTP/SOCKS proxy for tty7's *own* update checks and release
-    /// downloads; when set it overrides the system proxy and the environment.
+    /// downloads, and (HTTP only) the mobile gateway's relay; when set it is
+    /// tried before the system proxy and the environment.
     /// Programs running in a pane are unaffected — they inherit their proxy
     /// from their own environment, as in any other terminal.
     ///
@@ -427,6 +450,10 @@ pub struct Config {
     /// "New Agent Tab" opens.
     #[serde(default)]
     pub agent_frecency: HashMap<String, ProfileUsage>,
+    /// Approved `.tty7/setup` scripts: repo (`worktree::setup::trust_key`) to
+    /// the sha256 of the content approved. A changed script asks again.
+    #[serde(default)]
+    pub worktree_setup_trust: HashMap<String, String>,
     /// Past agent sessions taken out of the search's Sessions tab, as
     /// `<agent slug>:<session id>`. Only the listing forgets them; the
     /// agent's own history is not touched.
@@ -618,6 +645,18 @@ pub enum NotifyMode {
     Always,
 }
 
+impl NotifyMode {
+    /// Whether a notification goes out, given whether the reader is already
+    /// watching what it is about.
+    pub fn allows(self, watched: bool) -> bool {
+        match self {
+            NotifyMode::Never => false,
+            NotifyMode::Unfocused => !watched,
+            NotifyMode::Always => true,
+        }
+    }
+}
+
 /// Which release feed this installation follows.
 ///
 /// The channel is a property of the installation, not something derived from
@@ -652,6 +691,26 @@ pub enum MouseZoomModifier {
     /// The wheel never zooms; every scroll goes to the buffer.
     #[default]
     None,
+}
+
+/// When closing a tab or a pane asks first (#1021).
+///
+/// `WhenBusy` is the question tty7 has always asked, and the default: only
+/// when something would be cut off — a program still running in the
+/// foreground, an agent mid-turn. `Always` also asks about an idle shell, for
+/// people who would rather confirm every close than ever lose one; `Never`
+/// stops asking about busy panes.
+///
+/// The warning before dropping a live SSH connection is not governed by this.
+/// It is an opt-in of its own, per host or for all of them, so it is still
+/// honoured under `Never`: turning this down is not turning that off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfirmClose {
+    Never,
+    #[default]
+    WhenBusy,
+    Always,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -746,6 +805,7 @@ impl Default for Config {
             window_blur: None,
             window_backdrop: WindowBackdrop::default(),
             dim_inactive_panes: true,
+            auto_hide_titlebar_buttons: false,
             keybindings: HashMap::new(),
             keybinding_preset: default_preset(),
             prefix: default_prefix(),
@@ -776,12 +836,14 @@ impl Default for Config {
             sidebar_auto_grouping: true,
             notify_on_command_finish: NotifyMode::Unfocused,
             check_for_updates: true,
+            mobile_access: false,
             update_channel: UpdateChannel::default(),
             auto_download_updates: true,
             install_cli_on_path: true,
             gui_language: default_gui_language(),
             notify_threshold_secs: default_notify_threshold_secs(),
             restore_session: true,
+            confirm_close: ConfirmClose::WhenBusy,
             show_tray_icon: true,
             bell: BellMode::Visual,
             prompt_editor: true,
@@ -797,6 +859,7 @@ impl Default for Config {
             mouse_reporting: true,
             mouse_zoom_modifier: MouseZoomModifier::default(),
             clipboard_trim_trailing_spaces: false,
+            copy_join_wrapped: false,
             copy_on_select: false,
             http_proxy: None,
             smart_select: true,
@@ -814,6 +877,7 @@ impl Default for Config {
             agent_commands: HashMap::new(),
             agent_launch: HashMap::new(),
             agent_frecency: HashMap::new(),
+            worktree_setup_trust: HashMap::new(),
             hidden_agent_sessions: BTreeSet::new(),
             restore_agent_sessions: true,
             per_pane_history: false,
@@ -1664,9 +1728,64 @@ where
     }))
 }
 
+/// `shell`, read the way Settings writes it: no program means the login
+/// shell. A hand-edited `"shell": { "args": ["-l"] }` — or any other shape
+/// that does not name a program — used to fail the whole file, and every other
+/// setting went with it into quarantine.
+fn de_shell<'de, D>(deserializer: D) -> Result<Option<ShellConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match ShellConfig::deserialize(&value) {
+        Ok(shell) if !shell.program.trim().is_empty() => Ok(Some(shell)),
+        Ok(_) => Ok(None),
+        Err(e) => {
+            log::warn!("ignoring invalid shell {value}: {e}; using the login shell");
+            Ok(None)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_mode_holds_back_only_what_is_watched_under_unfocused() {
+        for watched in [false, true] {
+            assert!(!NotifyMode::Never.allows(watched));
+            assert!(NotifyMode::Always.allows(watched));
+            assert_eq!(NotifyMode::Unfocused.allows(watched), !watched);
+        }
+    }
+
+    #[test]
+    fn a_shell_without_a_program_is_the_login_shell_not_a_broken_file() {
+        for shell in [
+            r#"{"args": ["-l"]}"#,
+            r#"{"program": "", "args": []}"#,
+            r#"{"program": 5}"#,
+            "null",
+        ] {
+            let text = format!(r#"{{"font_size": 17.0, "shell": {shell}}}"#);
+            let cfg: Config = serde_json::from_str(&text).expect("the file still parses");
+            assert_eq!(cfg.shell, None, "{shell}");
+            assert_eq!(cfg.font_size, 17.0, "the rest of the file is kept");
+        }
+        let cfg: Config =
+            serde_json::from_str(r#"{"shell": {"program": "fish", "args": ["-l"]}}"#).unwrap();
+        assert_eq!(
+            cfg.shell,
+            Some(ShellConfig {
+                program: "fish".into(),
+                args: vec!["-l".into()]
+            })
+        );
+    }
 
     #[test]
     fn profile_usage_score_ranks_frequency_and_recency() {
@@ -1691,6 +1810,36 @@ mod tests {
             last_used: now - 30 * day,
         };
         assert!(recent.score(now) > stale.score(now));
+    }
+
+    /// A config from before the setting keeps asking exactly what it asked
+    /// before, and a value this build does not know falls back to that too
+    /// rather than failing the file.
+    #[test]
+    fn confirm_close_defaults_to_asking_when_busy() {
+        assert_eq!(Config::default().confirm_close, ConfirmClose::WhenBusy);
+        let cfg: Config = serde_json::from_str(r#"{"restore_session": false}"#).unwrap();
+        assert_eq!(cfg.confirm_close, ConfirmClose::WhenBusy);
+        let cfg: Config = serde_json::from_str(r#"{"confirm_close": "sometimes"}"#).unwrap();
+        assert_eq!(cfg.confirm_close, ConfirmClose::WhenBusy);
+    }
+
+    #[test]
+    fn confirm_close_round_trips_under_its_written_names() {
+        for (mode, name) in [
+            (ConfirmClose::Never, "never"),
+            (ConfirmClose::WhenBusy, "when-busy"),
+            (ConfirmClose::Always, "always"),
+        ] {
+            let cfg = Config {
+                confirm_close: mode,
+                ..Config::default()
+            };
+            let json = serde_json::to_value(&cfg).unwrap();
+            assert_eq!(json["confirm_close"], name);
+            let back: Config = serde_json::from_value(json).unwrap();
+            assert_eq!(back.confirm_close, mode);
+        }
     }
 
     #[test]
@@ -1791,6 +1940,21 @@ mod tests {
         let json = serde_json::to_string(&off).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert!(!back.dim_inactive_panes);
+    }
+
+    #[test]
+    fn auto_hide_titlebar_buttons_defaults_off_and_round_trips() {
+        assert!(!Config::default().auto_hide_titlebar_buttons);
+
+        // A file from before the key existed keeps its buttons on screen.
+        let old: Config = serde_json::from_str(r#"{"font_size": 15.0}"#).unwrap();
+        assert!(!old.auto_hide_titlebar_buttons);
+
+        let on: Config = serde_json::from_str(r#"{"auto_hide_titlebar_buttons": true}"#).unwrap();
+        assert!(on.auto_hide_titlebar_buttons);
+        let json = serde_json::to_string(&on).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(back.auto_hide_titlebar_buttons, "persisted");
     }
 
     #[test]
@@ -2362,6 +2526,9 @@ mod tests {
 
         let cfg: Config = serde_json::from_str(r#"{"gui_language": "ja-JP"}"#).unwrap();
         assert_eq!(cfg.gui_language, "ja-JP");
+
+        let cfg: Config = serde_json::from_str(r#"{"gui_language": "ru-RU"}"#).unwrap();
+        assert_eq!(cfg.gui_language, "ru-RU");
 
         let mut cfg: Config = serde_json::from_str(r#"{"gui_language": "ko"}"#).unwrap();
         cfg.sanitize();

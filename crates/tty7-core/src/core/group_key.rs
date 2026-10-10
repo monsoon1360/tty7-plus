@@ -337,7 +337,9 @@ pub fn sections(
     ungrouped: Option<&str>,
 ) -> Vec<GroupSection> {
     let members = |key: Option<&GroupKey>| -> Vec<usize> {
-        (0..keys.len()).filter(|&i| keys[i].as_ref() == key).collect()
+        (0..keys.len())
+            .filter(|&i| keys[i].as_ref() == key)
+            .collect()
     };
     let mut auto_order = Vec::new();
     for key in keys.iter().flatten().filter_map(GroupKey::auto) {
@@ -345,20 +347,39 @@ pub fn sections(
             auto_order.push(key);
         }
     }
-    let mut result: Vec<_> = groups.pinned.iter().zip(pinned_names(&groups.pinned))
+    let mut result: Vec<_> = groups
+        .pinned
+        .iter()
+        .zip(pinned_names(&groups.pinned))
         .map(|(group, name)| {
             let key = GroupKey::Pinned(group.id);
-            GroupSection { tabs: members(Some(&key)), key: Some(key), name: Some(name) }
-        }).collect();
-    result.extend(auto_order.iter().zip(auto_names(&auto_order)).map(|(auto, name)| {
-        let key = GroupKey::Auto((*auto).clone());
-        GroupSection { tabs: members(Some(&key)), key: Some(key), name: Some(name) }
-    }));
+            GroupSection {
+                tabs: members(Some(&key)),
+                key: Some(key),
+                name: Some(name),
+            }
+        })
+        .collect();
+    result.extend(
+        auto_order
+            .iter()
+            .zip(auto_names(&auto_order))
+            .map(|(auto, name)| {
+                let key = GroupKey::Auto((*auto).clone());
+                GroupSection {
+                    tabs: members(Some(&key)),
+                    key: Some(key),
+                    name: Some(name),
+                }
+            }),
+    );
     let rest = members(None);
     if !rest.is_empty() || result.is_empty() {
         result.push(GroupSection {
             key: None,
-            name: (!auto_order.is_empty()).then(|| ungrouped.map(str::to_string)).flatten(),
+            name: (!auto_order.is_empty())
+                .then(|| ungrouped.map(str::to_string))
+                .flatten(),
             tabs: rest,
         });
     }
@@ -367,49 +388,78 @@ pub fn sections(
 
 /// Pinned labels remain verbatim; unnamed folders use disambiguated path tails.
 pub fn pinned_names(pinned: &[PinnedGroup]) -> Vec<String> {
-    let unnamed: Vec<_> = pinned.iter().filter(|group| group.given_name().is_none())
-        .filter_map(PinnedGroup::folder_path).collect();
+    let unnamed: Vec<_> = pinned
+        .iter()
+        .filter(|group| group.given_name().is_none())
+        .filter_map(PinnedGroup::folder_path)
+        .collect();
     let mut folders = group_names(&unnamed).into_iter();
-    pinned.iter().map(|group| match (group.given_name(), group.folder_path()) {
-        (Some(name), _) => name.to_string(),
-        (None, Some(_)) => folders.next().expect("one name per folder"),
-        (None, None) => String::new(),
-    }).collect()
+    pinned
+        .iter()
+        .map(|group| match (group.given_name(), group.folder_path()) {
+            (Some(name), _) => name.to_string(),
+            (None, Some(_)) => folders.next().expect("one name per folder"),
+            (None, None) => String::new(),
+        })
+        .collect()
 }
 
-fn auto_names(keys: &[&AutoKey]) -> Vec<String> {
-    let roots: Vec<_> = keys.iter().filter_map(|key| match key {
-        AutoKey::Repo(path) => Some(path.as_path()),
-        AutoKey::SshHost(_) => None,
-    }).collect();
+pub fn auto_names(keys: &[&AutoKey]) -> Vec<String> {
+    let roots: Vec<_> = keys
+        .iter()
+        .filter_map(|key| match key {
+            AutoKey::Repo(path) => Some(path.as_path()),
+            AutoKey::SshHost(_) => None,
+        })
+        .collect();
     let mut names = group_names(&roots).into_iter();
-    keys.iter().map(|key| match key {
-        AutoKey::Repo(_) => names.next().expect("one name per repo"),
-        AutoKey::SshHost(host) => host.clone(),
-    }).collect()
+    keys.iter()
+        .map(|key| match key {
+            AutoKey::Repo(_) => names.next().expect("one name per repo"),
+            AutoKey::SshHost(host) => host.clone(),
+        })
+        .collect()
 }
 
 pub fn group_names(roots: &[&Path]) -> Vec<String> {
-    let components: Vec<Vec<_>> = roots.iter().map(|root| root.components()
-        .filter(|component| matches!(component, std::path::Component::Normal(_)))
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect()).collect();
+    let components: Vec<Vec<_>> = roots
+        .iter()
+        .map(|root| {
+            root.components()
+                .filter(|component| matches!(component, std::path::Component::Normal(_)))
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect()
+        })
+        .collect();
     let mut depth = vec![1; roots.len()];
     loop {
-        let names: Vec<_> = components.iter().zip(&depth).enumerate().map(|(i, (parts, &n))| {
-            if parts.is_empty() { roots[i].display().to_string() }
-            else { parts[parts.len().saturating_sub(n)..].join("/") }
-        }).collect();
+        let names: Vec<_> = components
+            .iter()
+            .zip(&depth)
+            .enumerate()
+            .map(|(i, (parts, &n))| {
+                if parts.is_empty() {
+                    roots[i].display().to_string()
+                } else {
+                    parts[parts.len().saturating_sub(n)..].join("/")
+                }
+            })
+            .collect();
         let mut grew = false;
         for i in 0..names.len() {
-            if names.iter().enumerate().any(|(j, name)| j != i && name == &names[i])
+            if names
+                .iter()
+                .enumerate()
+                .any(|(j, name)| j != i && name == &names[i])
                 && depth[i] < components[i].len()
             {
                 depth[i] += 1;
                 grew = true;
             }
         }
-        if !grew { return names; }
+        if !grew {
+            return names;
+        }
     }
 }
 
@@ -703,5 +753,49 @@ mod tests {
         assert_eq!(g.given_name(), None);
         g.name = Some(" tty ".into());
         assert_eq!(g.given_name(), Some("tty"));
+    }
+
+    /// A label is the name the user typed. Running it through the path
+    /// splitter would chop one containing a `/` into components and then
+    /// "shorten" it to the tail, so `work/urgent` would print as `urgent`.
+    #[test]
+    fn a_label_is_never_shortened_the_way_a_path_is() {
+        let pinned = vec![
+            PinnedGroup::label("work/urgent"),
+            PinnedGroup::folder(Path::new("/home/u/tty7")),
+        ];
+        assert_eq!(pinned_names(&pinned), vec!["work/urgent", "tty7"]);
+    }
+
+    /// Two folders ending in the same component grow a prefix until they
+    /// differ, the way two repo roots do; a named one sits that out.
+    #[test]
+    fn pinned_folders_disambiguate_like_repo_roots() {
+        let mut named = PinnedGroup::folder(Path::new("/home/u/other/app"));
+        named.name = Some("mine".into());
+        let pinned = vec![
+            PinnedGroup::folder(Path::new("/home/u/work/app")),
+            named,
+            PinnedGroup::folder(Path::new("/home/u/fork/app")),
+        ];
+        assert_eq!(pinned_names(&pinned), vec!["work/app", "mine", "fork/app"]);
+    }
+
+    #[test]
+    fn group_names_disambiguate_only_the_collisions() {
+        let (a, b, c) = (
+            p("/home/u/work/app"),
+            p("/home/u/fork/app"),
+            p("/home/u/tty7"),
+        );
+        let names = group_names(&[&a, &b, &c]);
+        assert_eq!(names, vec!["work/app", "fork/app", "tty7"]);
+    }
+
+    #[test]
+    fn group_names_handle_suffix_roots() {
+        let (short, long) = (p("/app"), p("/x/app"));
+        let names = group_names(&[&short, &long]);
+        assert_eq!(names, vec!["app", "x/app"]);
     }
 }

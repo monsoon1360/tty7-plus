@@ -158,6 +158,17 @@ pub fn strip_status_mark(title: &str) -> &str {
     }
 }
 
+/// Whether two titles read the same on a tab: equal once the status mark in
+/// front of each is taken off, which is all a spinner frame changes.
+///
+/// Claude Code rewrites its title every few hundred milliseconds while it
+/// works, one quadrant of the circle at a time, and a tab never draws the mark
+/// ([`TabView::label`]). A repaint for such a title would paint the same label
+/// again. Trimmed the way `label` trims, so the two agree on what a tab shows.
+pub fn same_title_ignoring_status_mark(a: &str, b: &str) -> bool {
+    strip_status_mark(a.trim()) == strip_status_mark(b.trim())
+}
+
 impl TabView {
     pub fn label(&self) -> TabLabel<'_> {
         if let Some(name) = self
@@ -227,6 +238,30 @@ pub fn tab_views_of(ws: &Workspace, panes: &[PaneRecord]) -> Vec<TabView> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A spinner frame is the only thing that changes between two of these, so
+    /// a tab that already shows one has nothing new to paint for the other.
+    #[test]
+    fn titles_that_differ_only_by_a_status_mark_read_the_same() {
+        for (a, b) in [
+            (
+                "\u{25D0} fixing the switcher",
+                "\u{25D1} fixing the switcher",
+            ),
+            ("\u{2733} fixing the switcher", "fixing the switcher"),
+            ("\u{280B} building", "\u{2819} building"),
+            ("  \u{25D0} fixing the switcher ", "fixing the switcher"),
+        ] {
+            assert!(same_title_ignoring_status_mark(a, b), "on {a:?} / {b:?}");
+        }
+        for (a, b) in [
+            ("\u{25D0} fixing the switcher", "\u{25D1} fixing the parser"),
+            ("vim", "vim \u{2014} main.rs"),
+            ("", "vim"),
+        ] {
+            assert!(!same_title_ignoring_status_mark(a, b), "on {a:?} / {b:?}");
+        }
+    }
 
     /// The marks come off, whichever alphabet the agent picked.
     #[test]

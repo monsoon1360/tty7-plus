@@ -256,8 +256,9 @@ fn starts_with_tag(s: &str, name: &str) -> bool {
     let Some(rest) = s.strip_prefix('<') else {
         return false;
     };
-    rest.len() > name.len()
-        && rest[..name.len()].eq_ignore_ascii_case(name)
+    // `get`, not a slice: `name.len()` can land inside a multibyte char.
+    rest.get(..name.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(name))
         && rest[name.len()..]
             .chars()
             .next()
@@ -607,6 +608,13 @@ mod tests {
 
     fn s(src: &str) -> String {
         sanitize(src, "image")
+    }
+
+    #[test]
+    fn a_multibyte_char_after_lt_is_prose() {
+        assert!(s("a <日本 b").contains("日本"));
+        assert!(!starts_with_tag("<日本", "img"));
+        assert!(starts_with_tag("<IMG src=x>", "img"));
     }
 
     #[test]

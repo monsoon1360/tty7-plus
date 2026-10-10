@@ -30,6 +30,9 @@ pub(crate) fn window_options(cx: &mut App) -> WindowOptions {
         ))),
         app_id: Some("tty7".to_owned()),
         titlebar: Some(TitlebarOptions {
+            // Not drawn (the title bar is the window's own), but it is the
+            // name the Window menu, Mission Control and VoiceOver give it.
+            title: Some(crate::ui::i18n::t(crate::ui::i18n::L10nKey::SettingsWindowTitle).into()),
             traffic_light_position: Some(crate::ui::theme::traffic_light_position()),
             ..TitleBar::title_bar_options()
         }),
@@ -41,7 +44,7 @@ pub(crate) fn window_options(cx: &mut App) -> WindowOptions {
 }
 
 pub(crate) struct SettingsWindow {
-    app: WeakEntity<Tty7App>,
+    pub(crate) app: WeakEntity<Tty7App>,
     _observe: Subscription,
     _release: Subscription,
 }

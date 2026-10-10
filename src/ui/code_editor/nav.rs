@@ -754,7 +754,10 @@ impl Tty7App {
         } else {
             let roots = self.tab_code().map(|c| c.roots.as_slice()).unwrap_or(&[]);
             let local = f.host.id() == self.spawn_host(cx);
-            path_segments(&f.path, if local { roots } else { &[] })
+            match local {
+                true => path_segments(&self.project_spelling(&f.path, cx), roots),
+                false => path_segments(&f.path, &[]),
+            }
         };
         let file = (f.untitled.is_none()).then(|| f.path.clone());
         // A rendered Markdown file keeps the path; its symbols are the source's.

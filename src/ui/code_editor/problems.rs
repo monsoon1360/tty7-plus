@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ScrollHandle, Window, div, px};
+use gpui::{AnyElement, App, Context, ScrollHandle, Window, div, px};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, v_flex};
 use lsp_types::DiagnosticSeverity;
@@ -108,12 +108,13 @@ impl Tty7App {
 
     /// Where a file's name sits in the list: relative to the project the
     /// tab shows, when it is inside it.
-    fn problems_label(&self, path: &Path) -> (String, String) {
+    fn problems_label(&self, path: &Path, cx: &App) -> (String, String) {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| path.display().to_string());
-        let dir = path.parent().map(|parent| {
+        let spelled = self.project_spelling(path, cx);
+        let dir = spelled.parent().map(|parent| {
             self.tab_code()
                 .and_then(|c| {
                     c.roots
@@ -192,7 +193,7 @@ impl Tty7App {
                 left += file.problems.len();
                 continue;
             }
-            let (name, dir) = self.problems_label(&file.path);
+            let (name, dir) = self.problems_label(&file.path, cx);
             rows.push(
                 h_flex()
                     .id(("editor-problems-file", file_ix))

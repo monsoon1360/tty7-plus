@@ -2,10 +2,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 mod en;
 mod ja;
+mod ru;
 mod zh;
 
 use en::{translate_en, translate_variant_en};
 use ja::{translate_ja, translate_variant_ja};
+use ru::{translate_ru, translate_variant_ru};
 use zh::{translate_variant_zh, translate_zh};
 
 pub struct LanguageInfo {
@@ -33,6 +35,12 @@ pub const SUPPORTED_LANGUAGES: &[LanguageInfo] = &[
         label_key: L10nKey::SettingsLanguageJapanese,
         translate_fn: translate_ja,
         translate_variant_fn: translate_variant_ja,
+    },
+    LanguageInfo {
+        code: "ru-RU",
+        label_key: L10nKey::SettingsLanguageRussian,
+        translate_fn: translate_ru,
+        translate_variant_fn: translate_variant_ru,
     },
 ];
 
@@ -105,6 +113,29 @@ l10n_keys! {
     SettingsDefinedIn,
     SettingsConnectInNewTab,
     SettingsCopied,
+    SettingsNavMobile,
+    SettingsMobileAccess,
+    SettingsMobileAccessDesc,
+    SettingsMobileStatusStarting,
+    SettingsMobileStatusFailed,
+    SettingsMobileStartFailed,
+    SettingsMobileNoAnswer,
+    SettingsMobilePair,
+    SettingsMobileShowCode,
+    SettingsMobilePairDesc,
+    SettingsMobilePairNeedsAccess,
+    SettingsMobilePairScan,
+    SettingsMobilePairValid,
+    SettingsMobileNewCode,
+    SettingsMobilePairExpired,
+    SettingsMobilePairTried,
+    SettingsMobilePairReplaced,
+    SettingsMobileCopyCode,
+    SettingsMobilePaired,
+    SettingsMobilePhones,
+    SettingsMobileNoPhones,
+    SettingsMobileUnpair,
+    SettingsSearchMobileKeywords,
     SettingsCopySshCommand,
     SettingsStoredInTty7,
     SettingsClickAgainToRemove,
@@ -260,6 +291,9 @@ l10n_keys! {
     CloseTabBusyTitle,
     CloseBusyCommandBody,
     CloseBusyAgentBody,
+    CloseIdleBody,
+    CloseTabsTitle,
+    CloseTabsBody,
     Keep,
     SettingsNavAppearance,
     SettingsNavTerminal,
@@ -274,7 +308,7 @@ l10n_keys! {
     SettingsMobileRelayUrlDesc,
     SettingsMobileTlsPin,
     SettingsMobileTlsPinDesc,
-    SettingsMobilePairDesc,
+    SettingsPairDevicesDesc,
     SettingsMobileGenerateQr,
     SettingsMobileRegenerateQr,
     SettingsMobileScanQr,
@@ -296,6 +330,7 @@ l10n_keys! {
     SettingsNavKeybindings,
     SettingsNavAbout,
     SettingsHeader,
+    SettingsWindowTitle,
     Reset,
     Save,
     Connect,
@@ -334,6 +369,7 @@ l10n_keys! {
     SettingsLanguageEnglish,
     SettingsLanguageChinese,
     SettingsLanguageJapanese,
+    SettingsLanguageRussian,
     SettingsSearchLanguageKeywords,
     SettingsTransparency,
     SettingsOpacity,
@@ -353,6 +389,8 @@ l10n_keys! {
     FollowTheme,
     SettingsDimInactivePanes,
     SettingsDimInactivePanesDesc,
+    SettingsAutoHideTitlebarButtons,
+    SettingsAutoHideTitlebarButtonsDesc,
     SettingsOpenThemesFolder,
     SettingsChangeThemeImage,
     SettingsChooseThemeImage,
@@ -633,6 +671,11 @@ l10n_keys! {
     SettingsTabs,
     SettingsNewTabPosition,
     SettingsNewTabPositionDesc,
+    SettingsConfirmClose,
+    SettingsConfirmCloseDesc,
+    ConfirmCloseNever,
+    ConfirmCloseWhenBusy,
+    ConfirmCloseAlways,
     SettingsTabBarPosition,
     SettingsTabBarPositionDesc,
     SettingsSidebarGrouping,
@@ -648,6 +691,7 @@ l10n_keys! {
     NotifyModeNever,
     NotifyModeUnfocused,
     NotifyModeAlways,
+    ProgramNotesDropped,
     SettingsStartupNormal,
     SettingsStartupMaximized,
     SettingsStartupFullscreen,
@@ -756,6 +800,10 @@ l10n_keys! {
     SettingsAgentCursorCli,
     SettingsAgentPrimeAgent,
     SettingsAgentAntigravity,
+    SettingsAgentEmpryo,
+    SettingsAgentJcode,
+    SettingsAgentMuse,
+    SettingsMuseManualInstall,
     SettingsAgentQoderCn,
     SettingsSearchAppHttpProxyKeywords,
     SettingsSearchAboutKeywords,
@@ -781,6 +829,7 @@ l10n_keys! {
     SettingsSearchCustomThemesKeywords,
     SettingsSearchDetectUrlsKeywords,
     SettingsSearchDimInactivePanesKeywords,
+    SettingsSearchAutoHideTitlebarButtonsKeywords,
     SettingsSearchDroidKeywords,
     SettingsSearchFocusFollowsMouseKeywords,
     SettingsSearchFontFamilyKeywords,
@@ -801,6 +850,7 @@ l10n_keys! {
     SettingsSearchLineHeightKeywords,
     SettingsSearchUiFontFamilyKeywords,
     SettingsSearchNewTabPositionKeywords,
+    SettingsSearchConfirmCloseKeywords,
     SettingsSearchNotifyOnCommandFinishKeywords,
     SettingsSearchNotifyThresholdKeywords,
     SettingsSearchOhMyPiKeywords,
@@ -818,6 +868,9 @@ l10n_keys! {
     SettingsSearchCursorCliKeywords,
     SettingsSearchPrimeAgentKeywords,
     SettingsSearchAntigravityKeywords,
+    SettingsSearchEmpryoKeywords,
+    SettingsSearchJcodeKeywords,
+    SettingsSearchMuseKeywords,
     SettingsSearchQoderCnKeywords,
     SettingsSearchRememberWindowSizeKeywords,
     SettingsSearchReportMouseToAppsKeywords,
@@ -1066,6 +1119,7 @@ l10n_keys! {
     PanelMoreChangedFiles,
     PanelSessionSubtitle,
     PanelProcessesSubtitle,
+    PanelProcessesTotal,
     PanelPortsSubtitle,
     PanelPortsUnsupported,
     PanelPortsProbeFailed,
@@ -1316,6 +1370,7 @@ l10n_keys! {
     SidebarUngroupedGroup,
     SidebarMoveToGroup,
     SidebarNewGroup,
+    SidebarRemoveFromGroup,
     SidebarNewGroupName,
     SidebarRenameGroup,
     SidebarPinGroup,
@@ -1348,6 +1403,7 @@ l10n_keys! {
     RemoteNoticeDisconnected,
     RemoteActionRetryNow,
     RemoteActionTakeBack,
+    PaneLeasedBy,
     RemoteActionConnect,
     RemoteActionRetry,
     RemoteActionRemoveEntry,
@@ -1398,6 +1454,7 @@ l10n_keys! {
     SwitcherCopyingServer,
     SwitcherThisWindow,
     SwitcherOpen,
+    SwitcherOffline,
     SwitcherDisconnect,
     SwitcherEditHost,
     SwitcherSaveAsHost,
@@ -1428,7 +1485,7 @@ l10n_keys! {
     SwitcherFormHost,
     SwitcherFormNamePlaceholder,
     SwitcherFormBack,
-    SwitcherFormCreateHint,
+    SwitcherFormCreate,
     SwitcherFormPickHint,
     SshPromptPasswordFor,
     SshPromptPassphraseFor,
@@ -1553,6 +1610,27 @@ l10n_keys! {
     CmdGitToggleGraph,
     CmdClearScrollback,
     CmdFindInTerminal,
+    CmdToggleComposer,
+    ComposerPlaceholder,
+    ComposerPlaceholderFiles,
+    ComposerSendTip,
+    ComposerAttach,
+    ComposerMenuCommands,
+    ComposerMenuFiles,
+    ComposerCmdProject,
+    ComposerCmdUser,
+    ComposerAgentAsking,
+    ComposerModeDefault,
+    ComposerModeAcceptEdits,
+    ComposerModePlan,
+    ComposerModeBypass,
+    ComposerModeAuto,
+    ComposerModeTip,
+    ComposerModel,
+    ComposerModelTip,
+    ComposerModelDefault,
+    ComposerEffort,
+    ComposerEffortTip,
     CmdFindNext,
     CmdFindPrevious,
     CmdCopy,
@@ -1617,7 +1695,17 @@ l10n_keys! {
     PaneDragHandleTooltip,
     AppWorktreeRemoved,
     AppWorktreeRemoveFailed,
-    AppForkStillConnecting,
+    WorktreePromptAgent,
+    WorktreePromptShell,
+    WorktreePromptTask,
+    WorktreePromptSetup,
+    WorktreePromptSetupHint,
+    AppWorktreeSetupTitle,
+    AppWorktreeSetupDetail,
+    AppWorktreeSetupRun,
+    AppWorktreeSetupSkip,
+    AppWorktreeNotCarried,
+    AppWorktreeRemovedBranchKept,
     AppPaneNoCodingAgent,
     AppForkNoCommand,
     AppForkLocalOnly,
@@ -1668,6 +1756,7 @@ l10n_keys! {
     AppAgentHooksOpFailed,
     AppAgentHooksInstalled,
     AppAgentHooksInstalledEnableCodexThere,
+    AppAgentHooksMuseManualInstall,
     AppAgentHooksInstalledCodexEnableFailed,
     AppAgentHooksRemoved,
     AppAgentHooksNothingInstalled,
@@ -1793,6 +1882,10 @@ l10n_keys! {
     GitHubShowFullText,
     GitHubShowHiddenComments,
     GitHubShowAllReviewers,
+    CmdCopyRaw,
+    SettingsCopyJoinWrapped,
+    SettingsCopyJoinWrappedDesc,
+    SettingsSearchCopyJoinWrappedKeywords,
 }
 
 /// The source control strings that are translated but not yet displayed.
@@ -1856,15 +1949,27 @@ pub fn alias_translations(key: L10nKey) -> Vec<&'static str> {
 pub enum PluralCategory {
     Zero,
     One,
+    Few,
+    Many,
     Other,
 }
 
 impl PluralCategory {
     pub fn from_count(n: usize) -> Self {
-        match n {
-            0 => Self::Zero,
-            1 => Self::One,
-            _ => Self::Other,
+        if n == 0 {
+            return Self::Zero;
+        }
+        if SUPPORTED_LANGUAGES[current_locale_index()].code == "ru-RU" {
+            // CLDR Russian cardinal rules for integers. Zero remains an explicit UI branch.
+            match (n % 10, n % 100) {
+                (1, last_two) if last_two != 11 => Self::One,
+                (2..=4, last_two) if !(12..=14).contains(&last_two) => Self::Few,
+                _ => Self::Many,
+            }
+        } else if n == 1 {
+            Self::One
+        } else {
+            Self::Other
         }
     }
 
@@ -1872,6 +1977,8 @@ impl PluralCategory {
         match self {
             Self::Zero => "zero",
             Self::One => "one",
+            Self::Few => "few",
+            Self::Many => "many",
             Self::Other => "other",
         }
     }
@@ -1931,7 +2038,19 @@ fn translate_variant(locale_idx: usize, key: L10nKey, branch: &'static str) -> &
             return text;
         }
     }
-    translate_variant_en(key, branch).unwrap_or_else(|| translate(locale_idx, key))
+    // Locales without few/many use their own other form before falling back to English.
+    let fallback = match branch {
+        "few" | "many" => "other",
+        _ => branch,
+    };
+    if fallback != branch {
+        if let Some(lang) = SUPPORTED_LANGUAGES.get(locale_idx) {
+            if let Some(text) = (lang.translate_variant_fn)(key, fallback) {
+                return text;
+            }
+        }
+    }
+    translate_variant_en(key, fallback).unwrap_or_else(|| translate(locale_idx, key))
 }
 
 #[cfg(test)]
@@ -1979,6 +2098,9 @@ mod tests {
             L10nKey::SettingsAgentCursorCli,
             L10nKey::SettingsAgentPrimeAgent,
             L10nKey::SettingsAgentAntigravity,
+            L10nKey::SettingsAgentEmpryo,
+            L10nKey::SettingsAgentJcode,
+            L10nKey::SettingsAgentMuse,
             L10nKey::SettingsAgentQoderCn,
             // Windows names its backdrop materials, and Japanese Windows keeps
             // those names in Latin script — so does this list. Chinese does
@@ -1991,6 +2113,7 @@ mod tests {
             L10nKey::SettingsLanguageEnglish,
             L10nKey::SettingsLanguageChinese,
             L10nKey::SettingsLanguageJapanese,
+            L10nKey::SettingsLanguageRussian,
             // The pane-type labels: one names a program, the other a protocol,
             // and no locale renames either.
             L10nKey::PanelShell,
@@ -2005,20 +2128,28 @@ mod tests {
             L10nKey::AppCmdAgentLaunchTitle,
             // A product name, spelled the same in every language.
             L10nKey::PanelGitHubTitle,
+            // Russian keeps this punctuation separator and product-name template.
+            L10nKey::TrayAgentSep,
+            L10nKey::TrayTooltipAgents,
         ];
 
         for &key in KEPT_IN_ENGLISH {
             let en = translate_en(key);
             let zh = translate_zh(key).unwrap();
             let ja = translate_ja(key).unwrap();
-            if zh != en && ja != en {
+            let ru = translate_ru(key).unwrap();
+            if zh != en && ja != en && ru != en {
                 println!("STALE ALLOWLIST ENTRY: {key:?} en={en:?} zh={zh:?} ja={ja:?}");
             }
         }
         for &key in L10nKey::ALL {
             let en = translate_en(key);
             assert!(!en.is_empty(), "missing en translation for {key:?}");
-            for (name, text) in [("zh", translate_zh(key)), ("ja", translate_ja(key))] {
+            for (name, text) in [
+                ("zh", translate_zh(key)),
+                ("ja", translate_ja(key)),
+                ("ru", translate_ru(key)),
+            ] {
                 let text = text.unwrap_or_else(|| panic!("missing {name} translation for {key:?}"));
                 assert!(!text.is_empty(), "empty {name} translation for {key:?}");
                 // A value byte-identical to the English one is almost always
@@ -2071,6 +2202,9 @@ mod tests {
         assert_eq!(current_locale_index(), 1);
         set_locale("ja-JP");
         assert_eq!(current_locale_index(), 2);
+        set_locale("ru-RU");
+        assert_eq!(current_locale_index(), 3);
+        assert_eq!(t(L10nKey::SettingsLanguageRussian), "Русский");
         set_locale("en");
         assert_eq!(current_locale_index(), 0);
         set_locale("ko");
@@ -2078,8 +2212,54 @@ mod tests {
     }
 
     #[test]
+    fn russian_plural_forms_follow_the_count_and_locale() {
+        set_locale("ru-RU");
+        for (count, expected) in [
+            (0, "нет файлов"),
+            (1, "1 файл"),
+            (2, "2 файла"),
+            (5, "5 файлов"),
+            (11, "11 файлов"),
+            (12, "12 файлов"),
+            (14, "14 файлов"),
+            (21, "21 файл"),
+            (22, "22 файла"),
+            (25, "25 файлов"),
+            (101, "101 файл"),
+            (111, "111 файлов"),
+        ] {
+            assert_eq!(
+                t_plural(L10nKey::PanelSearchFileCount, count, &[]),
+                expected
+            );
+        }
+        for lang in ["en", "zh-CN", "ja-JP"] {
+            set_locale(lang);
+            assert_eq!(PluralCategory::from_count(0), PluralCategory::Zero);
+            assert_eq!(PluralCategory::from_count(1), PluralCategory::One);
+            for count in [2, 5, 11, 21, 22, 25] {
+                assert_eq!(PluralCategory::from_count(count), PluralCategory::Other);
+            }
+            let idx = current_locale_index();
+            for branch in ["few", "many"] {
+                assert_eq!(
+                    translate_variant(idx, L10nKey::PanelSearchFileCount, branch),
+                    translate_variant(idx, L10nKey::PanelSearchFileCount, "other"),
+                );
+            }
+        }
+        set_locale(default_language_code());
+    }
+
+    #[test]
     fn plural_and_select_branches_are_translated() {
         let plural_keys = [
+            L10nKey::PanelSearchResultCount,
+            L10nKey::PanelSearchFileCount,
+            L10nKey::SftpReplaceBody,
+            L10nKey::CloseTabsTitle,
+            L10nKey::AppTabsNotRestored,
+            L10nKey::LaunchWorkspacesLeftRunning,
             L10nKey::SettingsDeleteProfileCascade,
             L10nKey::SettingsAliasesLinked,
             L10nKey::SettingsMoreAgents,
@@ -2118,6 +2298,11 @@ mod tests {
             L10nKey::GitHubShowAllReviewers,
         ];
         for key in plural_keys {
+            for branch in ["zero", "one", "few", "many", "other"] {
+                let text = translate_variant_ru(key, branch)
+                    .unwrap_or_else(|| panic!("ru is missing branch {branch:?} for {key:?}"));
+                assert!(!text.is_empty(), "empty ru branch {branch:?} for {key:?}");
+            }
             for branch in ["zero", "one", "other"] {
                 assert!(
                     !translate_variant(0, key, branch).is_empty(),

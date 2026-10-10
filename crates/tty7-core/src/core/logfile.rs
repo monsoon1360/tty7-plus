@@ -41,7 +41,8 @@ impl Log for FileLogger {
 fn payload_safe(metadata: &Metadata<'_>) -> bool {
     // Websocket libraries print full frames at debug/trace, including the host
     // registration token. Verbose diagnostics must not turn into credential logs.
-    !(metadata.target().starts_with("tungstenite") || metadata.target().starts_with("tokio_tungstenite"))
+    !(metadata.target().starts_with("tungstenite")
+        || metadata.target().starts_with("tokio_tungstenite"))
         || metadata.level() <= log::Level::Info
 }
 
@@ -126,9 +127,15 @@ mod tests {
         fn metadata(target: &str, level: Level) -> Metadata<'_> {
             Metadata::builder().target(target).level(level).build()
         }
-        assert!(!payload_safe(&metadata("tungstenite::protocol", Level::Trace)));
+        assert!(!payload_safe(&metadata(
+            "tungstenite::protocol",
+            Level::Trace
+        )));
         assert!(!payload_safe(&metadata("tokio_tungstenite", Level::Debug)));
-        assert!(payload_safe(&metadata("tungstenite::protocol", Level::Warn)));
+        assert!(payload_safe(&metadata(
+            "tungstenite::protocol",
+            Level::Warn
+        )));
         assert!(payload_safe(&metadata("tty7_core::mobile", Level::Debug)));
     }
 
