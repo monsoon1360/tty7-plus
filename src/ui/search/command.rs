@@ -327,7 +327,6 @@ impl CommandKind {
             |spec: &str| -> Option<String> { cfg!(target_os = "macos").then(|| spec.to_string()) };
         match self {
             CopyText => return inline("secondary-c"),
-            CopyRaw => return inline("secondary-alt-c"),
             CutText => return inline("secondary-x"),
             PasteText => return inline("secondary-v"),
             SelectAllText => return inline("secondary-a"),
@@ -439,8 +438,8 @@ impl CommandKind {
             OpenBranchPicker => "ScmCheckoutBranch",
             ToggleDiffViewMode => "ToggleDiffViewMode",
             QuickOpenFile => "QuickOpenFile",
+            CopyRaw => "CopyRaw",
             CopyText
-            | CopyRaw
             | CutText
             | PasteText
             | SelectAllText

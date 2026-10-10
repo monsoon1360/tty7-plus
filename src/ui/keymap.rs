@@ -3,7 +3,7 @@ use gpui::{App, Global, KeyBinding, Keystroke, Modifiers};
 use crate::core::actions::*;
 use crate::core::config::{Config, KeybindingOverride};
 use crate::terminal::view::{
-    AlternatePaste, ClearScrollback, CopyText, FindInTerminal, FindNext, FindPrevious,
+    AlternatePaste, ClearScrollback, CopyRaw, CopyText, FindInTerminal, FindNext, FindPrevious,
     InsertNewline, InsertNewlineFallback, PasteText, ToggleComposer,
 };
 use crate::ui::i18n::{L10nKey, t, t_fmt};
@@ -609,6 +609,7 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
             per_platform("secondary-i", "secondary-shift-i"),
         ),
         ("CopyText", per_platform("", "ctrl-shift-c")),
+        ("CopyRaw", "cmd-alt-c"),
         ("PasteText", paste_text_default()),
         ("AlternatePaste", alternate_paste_default()),
         ("OpenSettings", "secondary-,"),
@@ -1009,6 +1010,7 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
             t(L10nKey::CmdClearScrollback).to_string(),
         ),
         "CopyText" => (CommandGroup::Terminal, t(L10nKey::CmdCopy).to_string()),
+        "CopyRaw" => (CommandGroup::Terminal, t(L10nKey::CmdCopyRaw).to_string()),
         "PasteText" => (CommandGroup::Terminal, t(L10nKey::CmdPaste).to_string()),
         "AlternatePaste" => (
             CommandGroup::Terminal,
@@ -1696,7 +1698,7 @@ fn keystroke_is_valid(s: &str) -> bool {
 fn action_context(action: &str) -> Option<&'static str> {
     match action {
         "FindInTerminal" | "FindNext" | "FindPrevious" | "ClearScrollback" | "InsertNewline"
-        | "CopyText" | "PasteText" | "ToggleComposer" => Some("Terminal"),
+        | "CopyText" | "CopyRaw" | "PasteText" | "ToggleComposer" => Some("Terminal"),
         // `alt_screen` is declared by the pane whenever a full-screen program
         // owns the grid, so this binding is simply absent there and Ctrl+V
         // carries on to the PTY as SYN (#677).
@@ -1814,6 +1816,7 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "ClearScrollback" => KeyBinding::new(keystroke, ClearScrollback, action_context(action)),
         "InsertNewline" => KeyBinding::new(keystroke, InsertNewline, action_context(action)),
         "CopyText" => KeyBinding::new(keystroke, CopyText, action_context(action)),
+        "CopyRaw" => KeyBinding::new(keystroke, CopyRaw, action_context(action)),
         "PasteText" => KeyBinding::new(keystroke, PasteText, action_context(action)),
         "AlternatePaste" => KeyBinding::new(keystroke, AlternatePaste, action_context(action)),
         "OpenSettings" => KeyBinding::new(keystroke, OpenSettings, None),

@@ -6393,13 +6393,15 @@ impl Tty7App {
             CopyText => {
                 if let Some(leaf) = self.focused_leaf(window, cx) {
                     leaf.update(cx, |view, cx| {
-                        view.copy_contextual(false, cx);
+                        view.copy_contextual(false, false, cx);
                     });
                 }
             }
             CopyRaw => {
                 if let Some(leaf) = self.focused_leaf(window, cx) {
-                    leaf.update(cx, |view, cx| view.copy_raw(cx));
+                    leaf.update(cx, |view, cx| {
+                        view.copy_contextual(false, true, cx);
+                    });
                 }
             }
             CutText => {

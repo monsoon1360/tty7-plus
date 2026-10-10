@@ -7,12 +7,7 @@ use alacritty_terminal::Term;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
-use gpui::Context;
 use unicode_width::UnicodeWidthChar;
-
-use super::TerminalView;
-use crate::core::cli_agent::CLIAgent;
-use crate::core::config::Config;
 
 /// One line as the copy sees it: the grid's rows up to the next one without
 /// WRAPLINE, read from column 0 whatever the selection's start.
@@ -22,29 +17,9 @@ struct Row {
     end: usize,
 }
 
-/// What `copy_selection` copies: the selection with Claude's wrapped rows
-/// joined, in a Claude pane with `copy_join_wrapped` on and `raw` off. Every
-/// other program's output is copied as the grid holds it: `ls` columns,
-/// separators and an editor's own wraps all look like Claude's.
-pub(super) fn selection_text(
-    view: &TerminalView,
-    raw: bool,
-    cx: &Context<TerminalView>,
-) -> Option<String> {
-    let join = !raw
-        && cx.global::<Config>().copy_join_wrapped
-        && view.terminal.foreground_agent() == Some(CLIAgent::Claude);
-    let term = view.terminal.term.lock();
-    if join {
-        joined(&term)
-    } else {
-        term.selection_to_string()
-    }
-}
-
 /// The selection's text with app-wrapped rows joined. Any doubt (block
 /// selection, a row count that doesn't line up) copies raw.
-fn joined<T>(term: &Term<T>) -> Option<String> {
+pub(super) fn joined<T>(term: &Term<T>) -> Option<String> {
     let raw = term.selection_to_string()?;
     let Some(range) = term.selection.as_ref().and_then(|s| s.to_range(term)) else {
         return Some(raw);
@@ -58,12 +33,14 @@ fn joined<T>(term: &Term<T>) -> Option<String> {
 
 /// `raw` split at its newlines, which must be one per row boundary.
 fn rejoin(raw: &str, rows: &[Row], cols: usize) -> String {
+    let mut parts: Vec<&str> = raw.split('\n').collect();
     // A Lines selection ends in a newline its rows don't account for.
-    let (body, tail) = match raw.strip_suffix('\n') {
-        Some(body) if body.split('\n').count() == rows.len() => (body, "\n"),
-        _ => (raw, ""),
+    let tail = if parts.len() == rows.len() + 1 && parts.last() == Some(&"") {
+        parts.pop();
+        "\n"
+    } else {
+        ""
     };
-    let parts: Vec<&str> = body.split('\n').collect();
     if parts.len() != rows.len() {
         return raw.to_string();
     }
@@ -112,62 +89,89 @@ enum Sep {
     Nothing,
 }
 
+/// Where the rows before a boundary leave off.
+#[derive(Default)]
+struct Block {
+    /// (leading spaces, text column) of the row that opened the current run.
+    opened: Option<(usize, usize)>,
+    fenced: bool,
+    /// The indent of a `⎿` tool result whose rows we are inside.
+    tool: Option<usize>,
+}
+
+impl Block {
+    fn advance(&mut self, row: &Row) {
+        let t = row.text.trim();
+        if t.starts_with("```") {
+            self.fenced = !self.fenced;
+        }
+        if !t.is_empty() {
+            let indent = lead(&row.text);
+            if self.tool.is_some_and(|t| indent <= t) {
+                self.tool = None;
+            }
+            if t.starts_with('⎿') {
+                self.tool = Some(indent);
+            }
+        }
+        self.opened
+            .get_or_insert_with(|| (lead(&row.text), text_col(&row.text)));
+    }
+}
+
 /// For each boundary between `rows[i]` and `rows[i + 1]`, what goes there.
 fn joins(rows: &[Row], cols: usize) -> Vec<Sep> {
-    let mut out = Vec::with_capacity(rows.len().saturating_sub(1));
-    // (leading spaces, text column) of the row that opened the current run.
-    let mut opened: Option<(usize, usize)> = None;
-    let mut fenced = false;
-    // The indent of a `⎿` tool result whose rows we are inside.
-    let mut tool: Option<usize> = None;
-    for pair in rows.windows(2) {
-        let (a, b) = (&pair[0], &pair[1]);
-        let a_trim = a.text.trim();
-        if a_trim.starts_with("```") {
-            fenced = !fenced;
-        }
-        if !a_trim.is_empty() {
-            if tool.is_some_and(|t| lead(&a.text) <= t) {
-                tool = None;
+    let mut block = Block::default();
+    rows.windows(2)
+        .map(|pair| {
+            block.advance(&pair[0]);
+            let sep = sep(&pair[0], &pair[1], &block, cols);
+            if sep == Sep::Newline {
+                block.opened = None;
             }
-            if a_trim.starts_with('⎿') {
-                tool = Some(lead(&a.text));
-            }
-        }
-        let (lo, hi) = *opened.get_or_insert_with(|| (lead(&a.text), text_col(&a.text)));
-        let b_trim = b.text.trim();
-        let word = cells(b_trim.split(' ').next().unwrap_or(""));
-        // Ink breaks one cell early when the next word would land exactly on
-        // the edge, so a word that just fits still counts as not fitting.
-        // A word too long for any row tells nothing about where `a` ended.
-        let full = a.end + 1 + word >= cols && lead(&b.text) + word <= cols;
-        let join = full
-            && !fenced
-            && tool.is_none()
-            && !b_trim.is_empty()
-            && b_trim
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii() || c.is_alphabetic())
-            && !a_trim.ends_with('…')
-            && (lo..=hi).contains(&lead(&b.text))
-            && text_col(&b.text) == lead(&b.text)
-            && !structural(&a.text)
-            && !structural(&b.text);
-        let wide = |c: Option<char>| c.is_some_and(|c| c.width() == Some(2));
-        // A one-word row that fills the row is a word Ink cut in two: its hard
-        // breaks fill to the edge, its word wraps stop short of it.
-        let one_word = a.end >= cols && !a.text[text_byte(&a.text)..].trim_end().contains(' ');
-        out.push(if !join {
-            opened = None;
-            Sep::Newline
-        } else if one_word || (wide(a_trim.chars().last()) && wide(b_trim.chars().next())) {
-            Sep::Nothing
-        } else {
-            Sep::Space
-        });
+            sep
+        })
+        .collect()
+}
+
+fn sep(a: &Row, b: &Row, block: &Block, cols: usize) -> Sep {
+    if block.fenced || block.tool.is_some() {
+        return Sep::Newline;
     }
-    out
+    let (a_trim, b_trim) = (a.text.trim(), b.text.trim());
+    let Some(first) = b_trim.chars().next() else {
+        return Sep::Newline;
+    };
+    if !(first.is_ascii() || first.is_alphabetic())
+        || a_trim.ends_with('…')
+        || structural(&a.text)
+        || structural(&b.text)
+    {
+        return Sep::Newline;
+    }
+    let indent = lead(&b.text);
+    let continues = block
+        .opened
+        .is_some_and(|(lo, hi)| (lo..=hi).contains(&indent));
+    if !continues || text_col(&b.text) != indent {
+        return Sep::Newline;
+    }
+    let word = cells(b_trim.split(' ').next().unwrap_or(""));
+    // Ink breaks one cell early when the next word would land exactly on
+    // the edge, so a word that just fits still counts as not fitting.
+    // A word too long for any row tells nothing about where `a` ended.
+    if a.end + 1 + word < cols || indent + word > cols {
+        return Sep::Newline;
+    }
+    let wide = |c: Option<char>| c.is_some_and(|c| c.width() == Some(2));
+    // A one-word row that fills the row is a word Ink cut in two: its hard
+    // breaks fill to the edge, its word wraps stop short of it.
+    let one_word = a.end >= cols && !a.text[text_byte(&a.text)..].trim_end().contains(' ');
+    if one_word || (wide(a_trim.chars().last()) && wide(Some(first))) {
+        Sep::Nothing
+    } else {
+        Sep::Space
+    }
 }
 
 fn apply(parts: &[&str], seps: &[Sep]) -> String {
@@ -227,25 +231,14 @@ fn text_byte(text: &str) -> usize {
     }
 }
 
-/// Box drawing, block elements, a raw table row, or a prompt: never joined.
+/// Box drawing, block elements, a raw table row, a prompt or a code fence:
+/// never joined.
 fn structural(text: &str) -> bool {
     let t = text.trim();
     text.chars().any(|c| ('\u{2500}'..='\u{259f}').contains(&c))
-        || ["|", "$ ", "> ", "❯ ", "```", "⎿"]
+        || ["|", "$ ", "> ", "❯ ", "```"]
             .iter()
             .any(|p| t.starts_with(p))
-}
-
-impl TerminalView {
-    /// ⌘⌥C and Copy Raw: Copy, with the grid's rows as it holds them.
-    pub(crate) fn copy_raw(&mut self, cx: &mut Context<Self>) -> bool {
-        let editor_selection = self.input_active() && self.cmd.selected_text().is_some();
-        if editor_selection || !self.has_selection() {
-            return self.copy_contextual(false, cx);
-        }
-        self.copy_selection_as(true, cx);
-        true
-    }
 }
 
 #[cfg(test)]
@@ -255,22 +248,6 @@ mod tests {
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::index::Side;
     use alacritty_terminal::selection::{Selection, SelectionType};
-
-    /// Rows the way `tty7 capture --plain` prints them; a capture line longer
-    /// than the pane was soft-wrapped, so its last row is the remainder.
-    fn unwrap(text: &str, cols: usize) -> String {
-        let rows: Vec<Row> = text
-            .split('\n')
-            .map(|p| {
-                let w = cells(p.trim_end());
-                Row {
-                    text: p.to_string(),
-                    end: if w > cols { (w - 1) % cols + 1 } else { w },
-                }
-            })
-            .collect();
-        rejoin(text, &rows, cols)
-    }
 
     fn term(cols: usize, lines: usize, input: &str) -> Term<VoidListener> {
         let mut term = Term::new(
@@ -292,6 +269,23 @@ mod tests {
         let mut sel = Selection::new(ty, Point::new(Line(from.0), Column(from.1)), Side::Left);
         sel.update(Point::new(Line(to.0), Column(to.1)), Side::Right);
         term.selection = Some(sel);
+    }
+
+    /// `text` printed into a `cols`-wide pane and copied whole. A line longer
+    /// than the pane soft-wraps, as `tty7 capture --plain` saw it.
+    fn unwrap(text: &str, cols: usize) -> String {
+        let lines: usize = text
+            .split('\n')
+            .map(|l| cells(l).div_ceil(cols).max(1))
+            .sum();
+        let mut term = term(cols, lines, &text.replace('\n', "\r\n"));
+        select(
+            &mut term,
+            SelectionType::Simple,
+            (0, 0),
+            (lines as i32 - 1, cols - 1),
+        );
+        joined(&term).unwrap()
     }
 
     const C111: &str = include_str!("fixtures/copy_unwrap_111.txt");
