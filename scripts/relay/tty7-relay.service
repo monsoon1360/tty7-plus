@@ -1,0 +1,34 @@
+[Unit]
+Description=tty7 encrypted mobile relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+LoadCredential=tls.crt:/opt/tty7-relay/tls.crt
+LoadCredential=tls.key:/opt/tty7-relay/tls.key
+ExecStart=/opt/tty7-relay/tty7-relay --listen 0.0.0.0:8443 --cert %d/tls.crt --key %d/tls.key
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

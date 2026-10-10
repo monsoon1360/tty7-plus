@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'none'; img-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<link rel="stylesheet" href="xterm.css">
+<style>
+html,body{margin:0;height:100%;background:#101014;color:#eee;overflow:hidden}
+#viewport{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;touch-action:none}
+#terminal{width:max-content;min-width:100%;padding:2px;box-sizing:border-box}
+.xterm-viewport{overscroll-behavior:contain}
+#history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:#101014;z-index:20}
+#history-toolbar{position:sticky;top:0;left:0;background:#202026;padding:8px;font:14px sans-serif}
+#return-live{margin-left:8px;padding:6px 10px;background:#373742;color:#fff;border:0;border-radius:4px}
+#history-text{margin:0;padding:2px;font:14px monospace;white-space:pre}
+</style>
+</head><body>
+<div id="viewport" aria-label="远程终端，上下滑动查看历史，左右滑动查看宽屏内容">
+<div id="terminal"></div>
+<section id="history" aria-label="已保留的主屏幕历史" hidden>
+<div id="history-toolbar">主屏幕历史（只读）<button id="return-live" type="button">返回实时终端</button></div>
+<pre id="history-text"></pre>
+</section>
+</div>
+<script src="xterm.js"></script><script src="terminal.js"></script></body></html>

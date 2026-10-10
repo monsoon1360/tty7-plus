@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Duo artwork from assets/app-icon.svg, including its original tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="1024" android:viewportHeight="1024">
+    <path android:fillColor="#ECEAE4"
+        android:pathData="M285,100H739Q924,100 924,285V739Q924,924 739,924H285Q100,924 100,739V285Q100,100 285,100Z" />
+    <group android:translateX="108.8" android:translateY="125.6" android:scaleX="8.4" android:scaleY="8.4">
+        <path android:fillColor="#3FDD8C" android:fillAlpha="0.8"
+            android:pathData="M40,16H74Q86,16 86,28V50Q86,62 74,62H40Q28,62 28,50V28Q28,16 40,16Z" />
+        <path android:fillColor="#17171A"
+            android:pathData="M22,30H56Q68,30 68,42V64Q68,76 56,76H22Q10,76 10,64V42Q10,30 22,30Z" />
+        <path android:fillColor="@android:color/transparent" android:strokeColor="#ECEAE4"
+            android:strokeWidth="7" android:strokeLineCap="round" android:strokeLineJoin="round"
+            android:pathData="M24,42L35,53L24,64" />
+    </group>
+</vector>
