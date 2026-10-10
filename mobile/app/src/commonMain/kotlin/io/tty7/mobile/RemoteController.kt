@@ -46,6 +46,8 @@ class RemoteController(
     private var subscribedPane: Long? = null
     private var failedTerminal: TerminalFeed? = null
     private val refreshing = Mutex()
+    private data class AgentReading(val revision: ULong, val name: String?, val status: String?)
+    private val agentReadings = mutableMapOf<Long, AgentReading>()
     private fun fail(error: Throwable) {
         mutable.value = mutable.value.copy(error = error.message ?: "Remote connection failed")
     }
@@ -65,39 +67,37 @@ class RemoteController(
     }
     private suspend fun ensureLoaded() = storage.withLock {
         if (!loaded) {
-            val computers = platform.loadComputers()
+            val stored = platform.loadComputers()
             currentCoroutineContext().ensureActive()
-            mutable.value = mutable.value.copy(computers = computers)
-            loaded = true
+            val computers = listOfNotNull(retainedComputer(stored))
+            withContext(NonCancellable) {
+                if (computers != stored) platform.saveComputers(computers)
+                mutable.value = mutable.value.copy(computers = computers, computer = computers.singleOrNull())
+                loaded = true
+            }
         }
     }
-    private suspend fun remember(computer: Computer) {
+    private suspend fun remember(computer: Computer, newPair: Boolean = false) {
         ensureLoaded()
         storage.withLock {
             currentCoroutineContext().ensureActive()
             // A completed commit and its in-memory publication are one transaction.
             // Handshakes and reconnects deliberately remain cancellable outside it.
             withContext(NonCancellable) {
-                val computers = mergeComputer(mutable.value.computers, computer)
+                val saved = updatedComputer(mutable.value.computers.singleOrNull(), computer, newPair)
+                val computers = listOf(saved)
                 platform.saveComputers(computers)
-                val current = mutable.value.computer
-                val selected = when {
-                    current == null || current.hostId != computer.hostId -> current
-                    current.credentialId == computer.credentialId -> computer
-                    !computer.pending && current.pending -> computer
-                    else -> current
-                }
-                mutable.value = mutable.value.copy(computers = computers, computer = selected)
+                mutable.value = mutable.value.copy(computers = computers, computer = saved)
             }
         }
     }
     fun pair(uri: String) {
-        restoring?.cancel()
         action {
             val generation = lifetime.generation
             ensureLoaded()
+            check(mutable.value.computers.isEmpty()) { UNPAIR_BEFORE_PAIRING }
             val computer = platform.parseQr(uri)
-            remember(computer)
+            remember(computer, newPair = true)
             currentCoroutineContext().ensureActive()
             if (lifetime.accepts(generation)) connect(computer)
         }
@@ -113,7 +113,6 @@ class RemoteController(
             ensureLoaded()
             if (networkAvailable && automaticConnection && lifetime.accepts(generation) && connection?.isActive != true) {
                 val saved = mutable.value.computer?.takeUnless { it.pending && !allowPending }
-                    ?: mutable.value.computers.lastOrNull { !it.pending }
                 saved?.let { connect(it) }
             }
         }
@@ -129,18 +128,17 @@ class RemoteController(
     }
     fun connect(computer: Computer) {
         if (!lifetime.active) return
+        if (mutable.value.computers.singleOrNull() != computer) {
+            fail(IllegalStateException(UNPAIR_BEFORE_PAIRING))
+            return
+        }
         automaticConnection = true
         restoring?.cancel()
         lifetime.invalidate()
         val generation = lifetime.generation
         invalidateTerminalIntent()
-        if (mutable.value.computer?.hostId != computer.hostId) {
-            clearTerminalSelection()
-            mutable.value = mutable.value.copy(workspaces = emptyList())
-        } else {
-            mutable.value.terminal?.cancel()
-            mutable.value = mutable.value.copy(terminal = null, terminalSynced = false)
-        }
+        mutable.value.terminal?.cancel()
+        mutable.value = mutable.value.copy(terminal = null, terminalSynced = false)
         val previous = connection
         previous?.cancel()
         socket?.close()
@@ -295,6 +293,42 @@ class RemoteController(
                                 feed.completeSnapshot(target)
                             }
                         }
+                        "terminal_lease" -> {
+                            require(authenticated) { "Terminal lease before authentication" }
+                            val feed = mutable.value.terminal
+                            if (feed != null && feed.matches(message.getValue("pane_id").jsonPrimitive.long, message.text("subscription_id"))) {
+                                val held = message.getValue("held").jsonPrimitive.boolean
+                                feed.updateSizeLease(held)
+                                if (!held) mutable.value = mutable.value.copy(
+                                    error = "Desktop took back terminal size control. Reopen the terminal to use the phone grid.",
+                                )
+                            }
+                        }
+                        "agent" -> {
+                            require(authenticated) { "Agent status before authentication" }
+                            val feed = mutable.value.terminal
+                            if (feed != null && feed.matches(message.getValue("pane_id").jsonPrimitive.long, message.text("subscription_id"))) {
+                                val agent = message["agent"]?.takeUnless { it is JsonNull }?.jsonObject
+                                val reading = AgentReading(message.text("agent_revision").toULong(),
+                                    agent?.optionalText("name"), agent?.optionalText("status"))
+                                val previous = agentReadings[feed.pane.id]
+                                if (previous == null || reading.revision >= previous.revision) {
+                                    agentReadings[feed.pane.id] = reading
+                                    feed.updatePane(reconcileAgent(feed.pane))
+                                    val selected = mutable.value.terminalSelection?.let { (workspace, pane) ->
+                                        workspace to if (pane.id == feed.pane.id) reconcileAgent(pane) else pane
+                                    }
+                                    mutable.value = mutable.value.copy(
+                                        workspaces = mutable.value.workspaces.map { workspace ->
+                                            workspace.copy(panes = workspace.panes.map { pane ->
+                                                if (pane.id == feed.pane.id) reconcileAgent(pane) else pane
+                                            })
+                                        },
+                                        terminalSelection = selected,
+                                    )
+                                }
+                            }
+                        }
                         "exited" -> {
                             require(authenticated) { "Terminal exit before authentication" }
                             val feed = mutable.value.terminal ?: failedTerminal
@@ -323,6 +357,7 @@ class RemoteController(
                 requests.values.forEach { it.completeExceptionally(IllegalStateException("Disconnected")) }; requests.clear()
                 pendingSubscriptions.clear()
                 retiredRequests.clear()
+                agentReadings.clear()
                 subscribedPane = null
                 failedTerminal = null
                 invalidateTerminalIntent()
@@ -341,7 +376,7 @@ class RemoteController(
     private suspend fun sendInner(inner: JsonObject) {
         (socket ?: error("Not connected")).send(obj("type" to JsonPrimitive("data"), "payload" to JsonPrimitive(inner.toString())).toString())
     }
-    private suspend fun sendEncrypted(message: JsonObject, feed: TerminalFeed? = null, input: Boolean = false) {
+    private suspend fun sendEncrypted(message: JsonObject, feed: TerminalFeed? = null, input: Boolean = false, sizing: Boolean = false) {
         val generation = lifetime.generation
         val session = crypto ?: error("Not authenticated")
         val remote = socket ?: error("Not connected")
@@ -349,7 +384,8 @@ class RemoteController(
             currentCoroutineContext().ensureActive()
             if (!lifetime.accepts(generation) || crypto !== session || socket !== remote ||
                 (feed != null && (mutable.value.terminal !== feed || !feed.active)) ||
-                (input && (!mutable.value.connected || !mutable.value.terminalSynced))) {
+                (input && (!mutable.value.connected || !mutable.value.terminalSynced)) ||
+                (sizing && (!mutable.value.connected || !mutable.value.terminalSynced || feed?.synced != true || feed?.sizeLeaseLost == true))) {
                 throw CancellationException("Encrypted send is no longer current")
             }
             commitEncrypted(message, session, remote)
@@ -381,6 +417,7 @@ class RemoteController(
     }
     private suspend fun request(
         op: String, vararg fields: Pair<String, JsonElement>, subscribing: TerminalFeed? = null, input: TerminalFeed? = null,
+        sizing: TerminalFeed? = null,
     ): JsonElement {
         check(mutable.value.connected) { "Connect to a computer first" }
         val generation = lifetime.generation
@@ -390,7 +427,7 @@ class RemoteController(
         if (subscribing != null) pendingSubscriptions[id] = subscribing
         try {
             sendEncrypted(obj("type" to JsonPrimitive("request"), "id" to JsonPrimitive(id), "op" to JsonPrimitive(op), *fields),
-                feed = subscribing ?: input, input = input != null)
+                feed = subscribing ?: input ?: sizing, input = input != null, sizing = sizing != null)
             val response = withTimeout(requestTimeout) { result.await() }
             if (!lifetime.accepts(generation)) throw CancellationException("Connection changed")
             return response
@@ -400,6 +437,15 @@ class RemoteController(
             if (requests.remove(id) != null && lifetime.accepts(generation)) retiredRequests.add(id)
             pendingSubscriptions.remove(id)
         }
+    }
+    private fun reconcileAgent(pane: Pane): Pane {
+        val previous = agentReadings[pane.id]
+        val revision = pane.agentRevision
+        if (revision != null && (previous == null || revision >= previous.revision)) {
+            agentReadings[pane.id] = AgentReading(revision, pane.agentName, pane.agentStatus)
+            return pane
+        }
+        return previous?.let { pane.copy(agentName = it.name, agentStatus = it.status, agentRevision = it.revision) } ?: pane
     }
     fun refresh() = action {
         if (!refreshing.tryLock()) return@action
@@ -411,16 +457,20 @@ class RemoteController(
                 Workspace(workspace.text("id"), workspace.text("name"), workspace.getValue("terminals").jsonArray.map { terminal ->
                     val pane = terminal.jsonObject
                     val agent = pane["agent"]?.takeUnless { it is JsonNull }?.jsonObject
-                    Pane(pane.getValue("pane_id").jsonPrimitive.long, pane.text("title"), pane.optionalText("cwd"),
+                    reconcileAgent(Pane(pane.getValue("pane_id").jsonPrimitive.long, pane.text("title"), pane.optionalText("cwd"),
                         pane.getValue("cols").jsonPrimitive.int, pane.getValue("rows").jsonPrimitive.int,
                         pane.optionalText("tab_id"), pane.optionalText("group"), pane.optionalText("git_branch"),
-                        agent?.optionalText("status"), agent?.optionalText("name"), pane.optionalText("group_id"))
+                        agent?.optionalText("status"), agent?.optionalText("name"), pane.optionalText("group_id"),
+                        pane.optionalText("agent_revision")?.toULong()))
                 })
             }
             mutable.value = mutable.value.copy(workspaces = workspaces)
             mutable.value.terminalSelection?.let { (workspace, pane) ->
-                if (terminalIntent == selectionIntent &&
-                    workspaces.none { it.id == workspace && it.panes.any { listed -> listed.id == pane.id } }) leaveTerminal()
+                val listed = workspaces.firstOrNull { it.id == workspace }?.panes?.firstOrNull { it.id == pane.id }
+                if (listed != null) {
+                    mutable.value.terminal?.takeIf { it.workspace == workspace && it.pane.id == pane.id }?.updatePane(listed)
+                    mutable.value = mutable.value.copy(terminalSelection = workspace to listed)
+                } else if (terminalIntent == selectionIntent) leaveTerminal()
             }
         } finally { refreshing.unlock() }
     }
@@ -469,7 +519,8 @@ class RemoteController(
                     subscribedPane = null
                 }
                 if (!isCurrent()) return@withLock
-                val feed = TerminalFeed(workspace, pane, onSynced = { syncedFeed ->
+                val currentPane = mutable.value.terminalSelection?.second ?: pane
+                val feed = TerminalFeed(workspace, currentPane, onSynced = { syncedFeed ->
                     if (isCurrent() && mutable.value.terminal === syncedFeed && syncedFeed.active) {
                         mutable.value = mutable.value.copy(terminalSynced = true)
                     }
@@ -513,6 +564,23 @@ class RemoteController(
             }
         }
     }
+    fun resizeTerminal(feed: TerminalFeed, cols: Int, rows: Int): Job? {
+        if (mutable.value.terminal !== feed || !feed.active || !feed.synced ||
+            !mutable.value.connected || !mutable.value.terminalSynced || feed.sizeLeaseLost) return null
+        val subscriptionId = feed.subscriptionId ?: return null
+        return action {
+            if (mutable.value.terminal !== feed || !feed.active || !feed.synced || feed.sizeLeaseLost) return@action
+            require(cols in 20..1000 && rows in 5..1000) { "Terminal size must be 20..1000 columns and 5..1000 rows" }
+            try {
+                request("terminal_size", "workspace_id" to JsonPrimitive(feed.workspace),
+                    "pane_id" to JsonPrimitive(feed.pane.id), "subscription_id" to JsonPrimitive(subscriptionId),
+                    "cols" to JsonPrimitive(cols), "rows" to JsonPrimitive(rows), sizing = feed)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (mutable.value.terminal === feed && feed.active) fail(error)
+            }
+        }
+    }
     fun input(text: String) = action {
         if (!mutable.value.connected || !mutable.value.terminalSynced) return@action
         val feed = mutable.value.terminal ?: return@action
@@ -520,18 +588,20 @@ class RemoteController(
             "data" to JsonPrimitive(platform.encodeInput(text)), input = feed)
     }
     fun forget(computer: Computer) = action {
-        if (mutable.value.computer?.hostId == computer.hostId) {
-            clearTerminalSelection()
-            disconnectAndJoin()
-        }
         ensureLoaded()
+        if (mutable.value.computers.singleOrNull()?.hostId != computer.hostId) return@action
+        automaticConnection = false
+        val unpairing = currentCoroutineContext()[Job]
+        restoring?.cancel()
+        actions.toList().filterNot { it === unpairing }.forEach { it.cancel() }
+        clearTerminalSelection()
+        disconnectAndJoin()
         storage.withLock {
             currentCoroutineContext().ensureActive()
             withContext(NonCancellable) {
-                val saved = mutable.value.computers.filterNot { it.hostId == computer.hostId && it.credentialId == computer.credentialId }
-                platform.saveComputers(saved)
-                mutable.value = mutable.value.copy(computers = saved,
-                    computer = mutable.value.computer?.takeUnless { it.hostId == computer.hostId && it.credentialId == computer.credentialId })
+                platform.saveComputers(emptyList())
+                lifetime.invalidate()
+                mutable.value = RemoteState()
             }
         }
     }

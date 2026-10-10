@@ -356,10 +356,7 @@ fn mobile_terminal(
     tab: &crate::core::machine::Tab,
     info: &crate::daemon::protocol::PaneInfo,
     size: crate::daemon::protocol::WinSize,
-    agent: Option<(
-        crate::core::cli_agent::CLIAgent,
-        crate::core::cli_agent::AgentStatus,
-    )>,
+    agent: crate::daemon::pane::MobileAgentState,
     group: Option<(&str, &str)>,
     branch: Option<&str>,
 ) -> serde_json::Value {
@@ -369,7 +366,8 @@ fn mobile_terminal(
         "cwd":info.cwd.as_ref().map(|p| p.to_string_lossy()),
         "cols":size.cols, "rows":size.rows, "group":group.map(|(name, _)| name),
         "group_id":group.map(|(_, id)| id), "git_branch":branch,
-        "agent":agent.map(|(name, status)| json!({"name":name.display_name(), "status":status}))})
+        "agent_revision":agent.revision,
+        "agent":agent.agent.map(|(name, status)| json!({"name":name.display_name(), "status":status}))})
 }
 
 fn mobile_group_id(key: Option<&crate::core::group_key::GroupKey>) -> Option<String> {

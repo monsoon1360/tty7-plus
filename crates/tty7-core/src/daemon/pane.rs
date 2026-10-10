@@ -797,14 +797,24 @@ struct PaneState {
 /// was lost.
 #[derive(Default)]
 struct AgentClock {
-    /// Bumped by every hook event and every session reset, so a pending
-    /// interrupt can tell whether anything spoke after the key it was armed by.
+    /// Bumped by hook events, inferred transitions and foreground changes, so
+    /// interrupts and mobile readers can reject an older reading.
     generation: u64,
     /// The last hook event, or when the sweep first saw a turn it had no
     /// event time for (a pane carried across a daemon handoff).
     last_event: Option<std::time::Instant>,
     /// An interrupt key is already waiting out [`INTERRUPT_SETTLE`].
     interrupt_pending: bool,
+}
+
+/// One atomic reading of the agent badge, ordered against mobile list replies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MobileAgentState {
+    pub revision: u64,
+    pub agent: Option<(
+        crate::core::cli_agent::CLIAgent,
+        crate::core::cli_agent::AgentStatus,
+    )>,
 }
 
 /// How long after an interrupt key a real hook event still gets to speak
@@ -986,6 +996,25 @@ fn lease_take(st: &mut PaneState, observer: u64, size: WinSize, by: String) -> O
         .retain(|obs| obs.tx.send(DaemonMsg::Size(size)).is_ok());
     tell_observer(st, observer, DaemonMsg::Lease(Some(by)));
     Some(size)
+}
+
+/// A mobile subscription may take once, then only update its own lease.
+/// Checking ownership and taking under the same lock prevents queued viewport
+/// changes from stealing the pane back after the desktop ends the lease.
+fn mobile_lease_resize(
+    st: &mut PaneState,
+    observer: u64,
+    size: WinSize,
+    initial: bool,
+) -> std::io::Result<WinSize> {
+    if !st.observers.iter().any(|obs| obs.id == observer) {
+        return Err(std::io::Error::other("terminal subscription is no longer active"));
+    }
+    if !initial && !st.lease.as_ref().is_some_and(|lease| lease.observer == observer) {
+        return Err(std::io::Error::other("terminal size control was taken back"));
+    }
+    lease_take(st, observer, size, "phone".into())
+        .ok_or_else(|| std::io::Error::other("terminal subscription is no longer active"))
 }
 
 /// Ends the lease, whoever holds it, and puts the pane back at the size the
@@ -2605,6 +2634,18 @@ impl DaemonPane {
         }
     }
 
+    pub(crate) fn mobile_observer_resize(
+        &self,
+        observer_id: u64,
+        size: WinSize,
+        initial: bool,
+    ) -> std::io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let size = mobile_lease_resize(&mut state, observer_id, size, initial)?;
+        self.resize_pty(size);
+        Ok(())
+    }
+
     /// The controller's [`LeaseRequest`]: hear about leases, or end one.
     pub fn controller_lease(&self, request: LeaseRequest) {
         let apply = {
@@ -2784,13 +2825,12 @@ impl DaemonPane {
             .tail_size()
     }
 
-    pub(super) fn mobile_agent(
-        &self,
-    ) -> Option<(
-        crate::core::cli_agent::CLIAgent,
-        crate::core::cli_agent::AgentStatus,
-    )> {
-        mobile_agent(&self.state.lock().unwrap_or_else(|e| e.into_inner()))
+    pub(crate) fn mobile_agent(&self) -> MobileAgentState {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        MobileAgentState {
+            revision: state.agent_clock.generation,
+            agent: mobile_agent(&state),
+        }
     }
 
     pub(crate) fn mobile_seed(&self) -> crate::core::machine::PaneSeed {
@@ -3756,6 +3796,7 @@ fn settle_interrupt(st: &mut PaneState, armed_at: u64) {
         return;
     };
     sess.assume_interrupted();
+    st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     notify(st, DaemonMsg::AgentStatus(st.agent_session.clone()));
 }
 
@@ -3777,6 +3818,7 @@ fn expire_stale_agent(st: &mut PaneState, now: std::time::Instant) {
     if let Some(sess) = st.agent_session.as_mut() {
         sess.assume_stale();
     }
+    st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     notify(st, DaemonMsg::AgentStatus(st.agent_session.clone()));
 }
 
@@ -3821,6 +3863,7 @@ fn apply_agent_signals(
             .get_or_insert_with(AgentSessionState::default);
         sess.status = AgentStatus::Waiting;
         sess.message = Some(body);
+        st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     }
 
     if let (Some(sess), Some(argv)) = (&mut st.agent_session, &st.agent_argv)
@@ -4012,11 +4055,11 @@ fn apply_agent(
         stamp_launch_argv(st, argv);
         return;
     }
+    st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     // The session belongs to whoever was in the foreground. Switching from
     // Claude to omp (or back to the shell) must not keep the previous id.
     if st.agent_session.is_some() {
         st.agent_session = None;
-        st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
         st.agent_clock.last_event = None;
         notify(st, DaemonMsg::AgentStatus(None));
     }
@@ -7262,6 +7305,40 @@ mod tests {
         drain(&controller_rx);
         drain(&observer_rx);
         (st, controller_rx, phone, observer_rx)
+    }
+
+    #[test]
+    fn mobile_grid_updates_cannot_retake_a_revoked_or_cancelled_subscription() {
+        let (mut st, controller_rx, phone, observer_rx) = leased_rig();
+        assert_eq!(mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap(), ws(42, 28));
+        assert_eq!(mobile_lease_resize(&mut st, phone, ws(45, 18), false).unwrap(), ws(45, 18));
+        assert_eq!(controller_resize(&mut st, ws(120, 40)), None);
+        drain(&controller_rx);
+        drain(&observer_rx);
+        assert_eq!(lease_end(&mut st), Some(ws(120, 40)));
+        assert!(mobile_lease_resize(&mut st, phone, ws(45, 18), false).is_err());
+        assert_eq!(st.ring.size(), ws(120, 40));
+        assert_eq!(drain(&observer_rx), vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(120, 40))]);
+        st.observers.retain(|observer| observer.id != phone);
+        assert!(mobile_lease_resize(&mut st, phone, ws(42, 28), true).is_err());
+        assert_eq!(st.ring.size(), ws(120, 40));
+    }
+
+    #[test]
+    fn cancelling_mobile_lease_restores_last_desktop_grid_without_affecting_other_observers() {
+        let (mut st, controller_rx, phone, observer_rx) = leased_rig();
+        mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap();
+        let (other_tx, other_rx) = mpsc::channel();
+        let (other, _) = observe_subscriber(&mut st, other_tx, Arc::new(OutputGate::new()), false);
+        assert_eq!(lease_release(&mut st, other), None);
+        assert_eq!(controller_resize(&mut st, ws(130, 45)), None);
+        drain(&controller_rx);
+        drain(&observer_rx);
+        assert_eq!(lease_release(&mut st, phone), Some(ws(130, 45)));
+        st.observers.retain(|observer| observer.id != phone);
+        assert_eq!(st.ring.size(), ws(130, 45));
+        assert_eq!(drain(&other_rx), vec![DaemonMsg::Size(ws(130, 45))]);
+        assert_eq!(drain(&controller_rx), vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(130, 45))]);
     }
 
     #[test]

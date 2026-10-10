@@ -93,9 +93,13 @@ class AndroidPlatform(context: Context) : MobilePlatform {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, storageKey(), GCMParameterSpec(128, decode(record.text("iv"))))
         val plain = cipher.doFinal(decode(record.text("data"))).toString(Charsets.UTF_8)
-        wireJson.parseToJsonElement(plain).jsonArray.map { Computer.fromJson(it.jsonObject) }
+        val storedComputers = wireJson.parseToJsonElement(plain).jsonArray.map { Computer.fromJson(it.jsonObject) }
+        val computers = listOfNotNull(retainedComputer(storedComputers))
+        if (computers != storedComputers) withContext(NonCancellable) { saveComputers(computers) }
+        computers
     }
     override suspend fun saveComputers(computers: List<Computer>) = withContext(Dispatchers.IO) {
+        require(computers.size <= 1) { "Only one paired computer can be stored" }
         val plain = JsonArray(computers.map { it.toJson() }).toString().toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, storageKey())

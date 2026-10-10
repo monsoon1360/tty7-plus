@@ -1,7 +1,21 @@
 package io.tty7.mobile
 
-internal fun mergeComputer(computers: List<Computer>, computer: Computer): List<Computer> =
-    computers.filterNot { it.hostId == computer.hostId && (!computer.pending || it.pending) } + computer
+// Legacy storage was ordered by the last successful pairing/authentication.
+// Prefer the last usable credential over an unfinished QR, then the latest QR.
+internal fun retainedComputer(computers: List<Computer>): Computer? =
+    computers.lastOrNull { !it.pending } ?: computers.lastOrNull()
+
+internal const val UNPAIR_BEFORE_PAIRING = "Unpair the current computer before pairing another."
+
+internal fun updatedComputer(current: Computer?, computer: Computer, newPair: Boolean = false): Computer {
+    if (newPair) check(current == null) { UNPAIR_BEFORE_PAIRING }
+    else {
+        check(current != null && current.hostId == computer.hostId) { "Computer is no longer paired" }
+        check(current.pending || current.credentialId == computer.credentialId) { UNPAIR_BEFORE_PAIRING }
+        check(current.pending || !computer.pending) { UNPAIR_BEFORE_PAIRING }
+    }
+    return computer
+}
 
 internal class ForegroundLifetime {
     var active = false

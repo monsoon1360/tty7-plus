@@ -34,6 +34,7 @@ fun MobileApp(
     val state by controller.state.collectAsState()
     var scanning by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(false) }
+    var pairingSubmitted by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     var qrText by remember { mutableStateOf("") }
     var workspaceName by remember { mutableStateOf("") }
@@ -47,10 +48,19 @@ fun MobileApp(
     }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     LaunchedEffect(pairingLinks) {
-        pairingLinks.collect { showPairing = false; controller.pair(it) }
+        pairingLinks.collect {
+            scanning = false
+            showPairing = true
+            pairingSubmitted = state.computers.isEmpty()
+            scope.launch { drawer.close() }
+            controller.pair(it)
+        }
     }
-    LaunchedEffect(state.computer?.hostId, state.connected) {
-        if (state.computer != null) showPairing = false
+    LaunchedEffect(state.connected) {
+        if (state.connected && pairingSubmitted) {
+            showPairing = false
+            pairingSubmitted = false
+        }
     }
     LaunchedEffect(state.connected, state.terminalSelection, showPairing) {
         if (state.connected && state.terminalSelection == null && !showPairing) drawer.open()
@@ -80,7 +90,7 @@ fun MobileApp(
     MaterialTheme(colorScheme = colors) {
         Surface(Modifier.fillMaxSize()) {
             if (scanning) {
-                CameraScanner(onScan = { scanning = false; controller.pair(it) }, onClose = { scanning = false })
+                CameraScanner(onScan = { scanning = false; pairingSubmitted = true; controller.pair(it) }, onClose = { scanning = false })
             } else BoxWithConstraints(Modifier.fillMaxSize()) {
                 val drawerWidth = minOf(360.dp, maxWidth * 0.86f)
                 ModalNavigationDrawer(
@@ -113,16 +123,11 @@ fun MobileApp(
                                 )
                             }
                             HorizontalDivider()
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                TextButton(onClick = {
-                                    controller.disconnect(); showPairing = false
-                                    scope.launch { drawer.close() }
-                                }, modifier = Modifier.testTag("switch-computer")) { Text("切换电脑") }
-                                TextButton(onClick = {
-                                    controller.disconnect(); showPairing = true
-                                    scope.launch { drawer.close() }
-                                }, modifier = Modifier.testTag("add-computer")) { Text("添加电脑") }
-                            }
+                            TextButton(onClick = {
+                                controller.leaveTerminal()
+                                showPairing = true
+                                scope.launch { drawer.close() }
+                            }, modifier = Modifier.fillMaxWidth().testTag("pairing-management")) { Text("扫描与配对管理") }
                         }
                     }
                 },
@@ -131,7 +136,6 @@ fun MobileApp(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("toggle-sessions").semantics { contentDescription = "打开会话抽屉" }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
                     Column(Modifier.weight(1f)) {
-                        Text("tty7", style = MaterialTheme.typography.headlineSmall)
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Text("●", color = if (state.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
                             Text(
@@ -140,9 +144,6 @@ fun MobileApp(
                                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("connection-status"),
                             )
                         }
-                    }
-                    if (state.connected || state.reconnecting || state.status != "Disconnected") {
-                        TextButton(onClick = controller::disconnect, modifier = Modifier.testTag("disconnect")) { Text("断开") }
                     }
                 }
                 state.verificationCode?.takeIf { state.computer?.pending == true }?.let {
@@ -153,58 +154,44 @@ fun MobileApp(
                     Text(connectionError(error, state.terminalSelection != null && !state.connected || state.reconnecting), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("connection-error"))
                     TextButton(onClick = controller::clearError) { Text("关闭提示") }
                 }
-                if (!state.connected && state.terminalSelection == null) {
+                if (showPairing || state.computer == null) {
+                    Text("扫描与配对管理", style = MaterialTheme.typography.titleMedium)
                     val computer = state.computer
-                    val remembered = state.computers.filterNot { it.pending }
-                    val pairingVisible = showPairing || (computer == null && remembered.isEmpty())
-                    if (pairingVisible) {
-                        Text("添加或切换电脑", style = MaterialTheme.typography.titleMedium)
+                    if (computer != null) {
+                        Card(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("paired-computer")) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(computer.hostName, style = MaterialTheme.typography.titleLarge)
+                                Text(if (computer.pending) "等待电脑批准配对。" else "当前已配对的电脑。")
+                                Text("一部手机只能配对一台电脑。如需扫描新的二维码，请先解除当前配对。")
+                                TextButton(onClick = { forgetting = computer }, modifier = Modifier.testTag("unpair-computer")) { Text("解除配对") }
+                            }
+                        }
+                        TextButton(onClick = { showPairing = false }, modifier = Modifier.testTag("cancel-pairing")) { Text("返回工作区与会话") }
+                    } else {
                         Button(onClick = { scanning = true }, modifier = Modifier.testTag("scan-qr")) { Text("扫描电脑二维码") }
                         Text("在电脑的「配对设备」设置中显示二维码，也可以粘贴配对链接。")
                         OutlinedTextField(qrText, { qrText = it }, label = { Text("配对链接（tty7://pair?data=…）") }, modifier = Modifier.fillMaxWidth().testTag("pairing-uri"), singleLine = true)
-                        TextButton(onClick = { showPairing = false; controller.pair(qrText); qrText = "" }, enabled = qrText.isNotBlank(), modifier = Modifier.testTag("pair-uri")) { Text("使用链接配对") }
-                        if (computer != null || remembered.isNotEmpty()) {
-                            TextButton(onClick = { showPairing = false }, modifier = Modifier.testTag("cancel-pairing")) { Text("返回已保存的电脑") }
-                        }
-                    } else {
-                        computer?.let {
-                            Card(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("saved-computer")) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Text(it.hostName, style = MaterialTheme.typography.titleLarge)
-                                    Text(when {
-                                        it.pending -> "请在电脑端核对验证码并批准配对。"
-                                        state.reconnecting -> "正在恢复与已授权电脑的连接…"
-                                        state.status != "Disconnected" -> "正在连接已授权的电脑，请稍候…"
-                                        else -> "此电脑已授权，无需重新扫描二维码。请确认电脑上的 tty7 正在运行且网络可用。"
-                                    })
-                                    Row {
-                                        Button(onClick = { controller.connect(it) }, modifier = Modifier.testTag(if (it.pending) "resume-pairing-${it.hostId}" else "connect-${it.hostId}")) {
-                                            Text(if (it.pending) "重试配对" else "重新连接")
-                                        }
-                                        TextButton(onClick = { forgetting = it }) { Text("忘记电脑") }
-                                    }
-                                }
-                            }
-                        }
-                        TextButton(onClick = { showPairing = true }, modifier = Modifier.testTag("switch-computer")) { Text("切换或添加电脑") }
+                        TextButton(onClick = { pairingSubmitted = true; controller.pair(qrText); qrText = "" }, enabled = qrText.isNotBlank(), modifier = Modifier.testTag("pair-uri")) { Text("使用链接配对") }
                     }
-                    LazyColumn(Modifier.weight(1f)) {
-                        items(state.computers, key = { "${it.hostId}:${it.credentialId}" }) { computer ->
-                            if (pairingVisible || computer != state.computer) {
-                                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                    Column(Modifier.padding(12.dp)) {
-                                        Text(computer.hostName, style = MaterialTheme.typography.titleMedium)
-                                        Text(if (computer.pending) "等待电脑批准" else "已保存的授权电脑")
-                                        Text(computer.relayUrl, style = MaterialTheme.typography.bodySmall)
-                                        Row {
-                                            Button(onClick = { showPairing = false; controller.connect(computer) }, modifier = Modifier.testTag(if (computer.pending) "resume-pairing-${computer.hostId}" else "connect-${computer.hostId}")) { Text(if (computer.pending) "继续配对" else "连接") }
-                                            TextButton(onClick = { forgetting = computer }) { Text("忘记电脑") }
-                                        }
-                                    }
+                } else if (!state.connected && state.terminalSelection == null) {
+                    val computer = state.computer
+                    computer?.let {
+                        Card(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("saved-computer")) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(it.hostName, style = MaterialTheme.typography.titleLarge)
+                                Text(when {
+                                    it.pending -> "请在电脑端核对验证码并批准配对。"
+                                    state.reconnecting -> "正在恢复与已授权电脑的连接…"
+                                    state.status != "Disconnected" -> "正在连接已授权的电脑，请稍候…"
+                                    else -> "此电脑已授权，无需重新扫描二维码。请确认电脑上的 tty7 正在运行且网络可用。"
+                                })
+                                Button(onClick = { controller.connect(it) }, modifier = Modifier.testTag(if (it.pending) "resume-pairing-${it.hostId}" else "connect-${it.hostId}")) {
+                                    Text(if (it.pending) "重试配对" else "重新连接")
                                 }
                             }
                         }
                     }
+                    TextButton(onClick = { showPairing = true }, modifier = Modifier.testTag("pairing-management-root")) { Text("扫描与配对管理") }
                 } else {
                     val selection = state.terminalSelection
                     if (selection == null) {
@@ -225,12 +212,16 @@ fun MobileApp(
                             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(pane.title, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 if (pane.agentName != null || pane.agentStatus != null) AgentBadge(pane)
-                                TextButton(onClick = { showCommand = !showCommand }, enabled = inputEnabled, modifier = Modifier.testTag("toggle-command")) { Text(if (showCommand) "收起输入" else "输入") }
+                                TextButton(onClick = { showCommand = !showCommand }, enabled = inputEnabled, modifier = Modifier.testTag("toggle-command")) { Text(if (showCommand) "收起编辑" else "编辑消息") }
                             }
                             Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF17171A)).testTag("terminal-surface")) {
                                 if (feed != null) {
                                     Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
-                                        key(feed) { TerminalSurface(feed, controller::input) { controller.terminalFailed(feed, it) } }
+                                        key(feed) {
+                                            TerminalSurface(feed, inputEnabled, controller::input,
+                                                { cols, rows -> controller.resizeTerminal(feed, cols, rows) },
+                                                { controller.terminalFailed(feed, it) })
+                                        }
                                     }
                                 }
                                 if (syncing) TerminalSyncOverlay(
@@ -264,7 +255,7 @@ fun MobileApp(
                 OutlinedTextField(workspaceName, { workspaceName = it }, label = { Text("名称（可选）") }, modifier = Modifier.testTag("workspace-name"))
             }, confirmButton = { TextButton(onClick = { controller.createWorkspace(workspaceName); workspaceName = ""; createWorkspace = false }) { Text("创建") } }, dismissButton = { TextButton(onClick = { createWorkspace = false }) { Text("取消") } })
             closing?.let { (workspace, pane) -> AlertDialog(onDismissRequest = { closing = null }, title = { Text("关闭终端？") }, text = { Text("确定关闭「${pane.title}」？电脑上此终端的 Shell 和正在运行的程序都将被终止。") }, confirmButton = { TextButton(onClick = { controller.closeTerminal(workspace.id, pane); closing = null }, modifier = Modifier.testTag("confirm-close-terminal")) { Text("关闭终端") } }, dismissButton = { TextButton(onClick = { closing = null }) { Text("取消") } }) }
-            forgetting?.let { computer -> AlertDialog(onDismissRequest = { forgetting = null }, title = { Text("忘记「${computer.hostName}」？") }, text = { Text("这会删除手机上的连接凭据。若要彻底撤销访问权限，请在电脑的「配对设备」设置中移除此设备。") }, confirmButton = { TextButton(onClick = { controller.forget(computer); forgetting = null }) { Text("忘记电脑") } }, dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } }) }
+            forgetting?.let { computer -> AlertDialog(onDismissRequest = { forgetting = null }, title = { Text("解除与「${computer.hostName}」的配对？") }, text = { Text("这会关闭手机上的连接并删除连接凭据，之后才能扫描二维码配对电脑。若要彻底撤销访问权限，请在电脑的「配对设备」设置中移除此设备。") }, confirmButton = { TextButton(onClick = { controller.forget(computer); forgetting = null; pairingSubmitted = false; qrText = ""; showPairing = true }, modifier = Modifier.testTag("confirm-unpair-computer")) { Text("解除配对") } }, dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } }) }
         }
     }
 }
@@ -462,6 +453,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "Verification code mismatch" -> "验证码不匹配，请重新配对，并在电脑端仔细核对验证码。"
     "TLS certificate pin is required", "Invalid TLS SHA256 fingerprint" -> "配对链接缺少有效的 TLS 证书指纹，请重新生成配对二维码。"
     "Invalid relay URL", "Relay must use wss", "Unencrypted WebSocket is only allowed for loopback in debug builds" -> "中继地址无效，远程连接必须使用安全的 WSS 地址。"
+    UNPAIR_BEFORE_PAIRING -> "请先在「扫描与配对管理」中解除当前电脑的配对，再扫描或使用新的配对链接。"
     "Could not securely save paired computers" -> "无法安全保存电脑的连接凭据，请检查手机存储空间。"
     "Relay refused connection" -> "中继服务拒绝了连接，请检查电脑与网络后重试。"
     else -> if (error.contains(" timed out; the remote operation may still complete. Refresh to reconcile its outcome.")) {

@@ -35,6 +35,7 @@ data class Pane(
     val id: Long, val title: String, val cwd: String?, val cols: Int, val rows: Int,
     val tabId: String? = null, val group: String? = null, val gitBranch: String? = null,
     val agentStatus: String? = null, val agentName: String? = null, val groupId: String? = null,
+    val agentRevision: ULong? = null,
 )
 data class Workspace(val id: String, val name: String, val panes: List<Pane>)
 data class TerminalFrame(
@@ -43,15 +44,26 @@ data class TerminalFrame(
 )
 class TerminalFeed(
     val workspace: String,
-    val pane: Pane,
+    pane: Pane,
     private val onSynced: (TerminalFeed) -> Unit,
     private val onParsed: suspend (TerminalFeed, TerminalFrame) -> Unit,
 ) {
+    var pane: Pane = pane
+        private set
+    internal fun updatePane(pane: Pane) {
+        require(pane.id == this.pane.id) { "Terminal metadata belongs to another pane" }
+        this.pane = pane
+    }
     val frames = Channel<TerminalFrame>(256)
     internal var subscriptionId: String? = null
         private set
     internal var active = true
         private set
+    internal var sizeLeaseLost = false
+        private set
+    internal fun updateSizeLease(held: Boolean) {
+        if (!held) sizeLeaseLost = true
+    }
     private var receivedSequence = 0uL
     private var parsedSequence = 0uL
     private var snapshotSequence: ULong? = null
@@ -124,5 +136,5 @@ interface MobilePlatform {
     fun nowSeconds(): Long
 }
 @Composable expect fun CameraScanner(onScan: (String) -> Unit, onClose: () -> Unit)
-@Composable expect fun TerminalSurface(feed: TerminalFeed, onInput: (String) -> Unit, onFailure: (String) -> Unit)
+@Composable expect fun TerminalSurface(feed: TerminalFeed, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit)
 @Composable expect fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit)

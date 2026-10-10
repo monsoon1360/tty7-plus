@@ -12,7 +12,7 @@ const historyText = document.getElementById('history-text');
 const terminal = new Terminal({
     cols:80, rows:24, fontSize:14, fontFamily:'monospace', scrollback:5000,
     convertEol:false, allowProposedApi:false, altClickMovesCursor:false,
-    theme:{background:'#101014'}
+    cursorBlink:true, cursorInactiveStyle:'block', theme:{background:'#101014'}
 });
 terminal.open(document.getElementById('terminal'));
 const screen = terminal.element.querySelector('.xterm-screen');
@@ -35,9 +35,33 @@ terminal.onData(data => {
 });
 
 let following = true;
+let inputReady = false;
+let sizeTimer;
+let sentGrid = '';
+function requestPhoneGrid() {
+    clearTimeout(sizeTimer);
+    sizeTimer = setTimeout(() => {
+        if (!inputReady || !screen.clientWidth || !screen.clientHeight) return;
+        const cellWidth = screen.clientWidth / terminal.cols;
+        const cellHeight = screen.clientHeight / terminal.rows;
+        // Leave room for the terminal's own vertical scrollbar and page padding.
+        const cols = Math.max(20, Math.min(1000, Math.floor((viewport.clientWidth - 20) / cellWidth)));
+        const rows = Math.max(5, Math.min(1000, Math.floor((viewport.clientHeight - 4) / cellHeight)));
+        const grid = `${cols}x${rows}`;
+        if (grid === sentGrid) return;
+        sentGrid = grid;
+        if (window.Tty7) window.Tty7.resize(cols, rows);
+    }, 120);
+}
+window.tty7Synced = function() {
+    inputReady = true;
+    terminal.focus();
+    requestPhoneGrid();
+};
 function sizeSurface() {
-    // Never fit/reflow the PTY to the phone. Scroll the full desktop-sized grid.
+    // Grid changes come back in ordered PTY frames, never reflow ahead of output.
     terminal.element.style.height = screen.style.height;
+    requestPhoneGrid();
 }
 function isAtLive() {
     return history.hidden &&
@@ -123,7 +147,7 @@ viewport.addEventListener('touchend', event => {
     // Leave toolbar buttons clickable, without xterm's synthesized mouse reports.
     if (touch && !touch.moved && history.hidden) {
         event.preventDefault();
-        terminal.focus();
+        if (inputReady) terminal.focus();
     } else if (touch?.moved) event.preventDefault();
     touch = undefined;
 }, {capture:true, passive:false});
@@ -143,7 +167,7 @@ for (const type of ['mousedown','mouseup','mousemove','contextmenu']) {
     terminal.element.addEventListener(type, event => {
         event.preventDefault();
         event.stopPropagation();
-        if (type === 'mousedown') terminal.focus();
+        if (type === 'mousedown' && inputReady) terminal.focus();
     }, {capture:true});
 }
 

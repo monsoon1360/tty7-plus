@@ -25,11 +25,18 @@ private sealed interface TerminalRenderEvent {
     data class Failed(val message: String) : TerminalRenderEvent
 }
 
-private class TerminalBridge(private val onInput: (String) -> Unit, private val events: Channel<TerminalRenderEvent>) {
+private class TerminalBridge(
+    private val onInput: (String) -> Unit,
+    private val onResize: (Int, Int) -> Unit,
+    private val events: Channel<TerminalRenderEvent>,
+) {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var disposed = false
     @JavascriptInterface fun input(text: String) {
         if (!disposed && text.length <= 65_536) main.post { if (!disposed) onInput(text) }
+    }
+    @JavascriptInterface fun resize(cols: Int, rows: Int) {
+        if (!disposed && cols in 20..1000 && rows in 5..1000) main.post { if (!disposed) onResize(cols, rows) }
     }
     @JavascriptInterface fun ready() { if (!disposed) events.trySend(TerminalRenderEvent.Ready) }
     @JavascriptInterface fun rendered(sequence: Long) { if (!disposed) events.trySend(TerminalRenderEvent.Rendered(sequence)) }
@@ -38,17 +45,25 @@ private class TerminalBridge(private val onInput: (String) -> Unit, private val 
 }
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-actual fun TerminalSurface(feed: TerminalFeed, onInput: (String) -> Unit, onFailure: (String) -> Unit) {
+actual fun TerminalSurface(feed: TerminalFeed, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit) {
     val context = LocalContext.current
     val currentInput by rememberUpdatedState(onInput)
+    val currentResize by rememberUpdatedState(onResize)
     val events = remember(feed) { Channel<TerminalRenderEvent>(Channel.UNLIMITED) }
     val feedFailure = remember(feed) { onFailure }
     var error by remember(feed) { mutableStateOf<String?>(null) }
-    val bridge = remember(feed) { TerminalBridge({ if (feed.synced) currentInput(it) }, events) }
+    var pageReady by remember(feed) { mutableStateOf(false) }
+    val bridge = remember(feed) {
+        TerminalBridge(
+            { if (feed.synced) currentInput(it) },
+            { cols, rows -> if (feed.synced) currentResize(cols, rows) },
+            events,
+        )
+    }
     val web = remember(feed) {
         val assets = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context)).build()
         WebView(context).apply {
-            contentDescription = "远程终端。上下滑动查看历史，左右滑动查看宽屏内容。"
+            contentDescription = "远程终端。点击光标直接输入，上下滑动查看历史。"
             settings.javaScriptEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
@@ -61,6 +76,7 @@ actual fun TerminalSurface(feed: TerminalFeed, onInput: (String) -> Unit, onFail
             settings.mediaPlaybackRequiresUserGesture = true
             settings.safeBrowsingEnabled = true
             isHorizontalScrollBarEnabled = true
+            isFocusableInTouchMode = true
             setBackgroundColor(android.graphics.Color.rgb(16, 16, 20))
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
@@ -93,10 +109,16 @@ actual fun TerminalSurface(feed: TerminalFeed, onInput: (String) -> Unit, onFail
     DisposableEffect(web) {
         onDispose { feed.cancel(); bridge.dispose(); web.stopLoading(); web.removeJavascriptInterface("Tty7"); web.destroy(); events.close() }
     }
+    LaunchedEffect(synced, pageReady, web) {
+        if (synced && pageReady) {
+            web.requestFocus()
+            web.evaluateJavascript("window.tty7Synced()", null)
+        }
+    }
     LaunchedEffect(feed, web) {
         try {
             when (val event = withTimeout(15_000) { events.receive() }) {
-                TerminalRenderEvent.Ready -> Unit
+                TerminalRenderEvent.Ready -> pageReady = true
                 is TerminalRenderEvent.Failed -> throw IllegalStateException(event.message)
                 is TerminalRenderEvent.Rendered -> throw IllegalStateException("终端渲染器尚未就绪")
             }

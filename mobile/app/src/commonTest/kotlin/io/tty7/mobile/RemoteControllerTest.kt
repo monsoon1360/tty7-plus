@@ -13,27 +13,30 @@ class RemoteControllerTest {
     private val replacement = approved.copy(credentialId = "device-new", secret = "new-secret")
     private val pane = Pane(1, "shell", null, 80, 24)
 
-    @Test fun pendingCannotOverwriteApprovedCredential() {
-        val entries = mergeComputer(listOf(approved), pending)
-        assertEquals(approved, entries.single { !it.pending })
-        assertEquals(listOf(replacement), mergeComputer(entries, replacement))
-        assertEquals(listOf(approved, pending.copy(credentialId = "pair:next")),
-            mergeComputer(entries, pending.copy(credentialId = "pair:next")))
+    @Test fun singleComputerPolicyRejectsReplacementUntilUnpaired() {
+        assertEquals(approved, retainedComputer(listOf(approved, pending)))
+        assertEquals(pending, retainedComputer(listOf(pending)))
+        assertNull(retainedComputer(emptyList()))
+        assertEquals(pending, updatedComputer(null, pending, newPair = true))
+        assertEquals(replacement, updatedComputer(pending, replacement))
+        assertFailsWith<IllegalStateException> { updatedComputer(approved, pending, newPair = true) }
+        assertFailsWith<IllegalStateException> { updatedComputer(approved, pending) }
+        assertFailsWith<IllegalStateException> { updatedComputer(approved, replacement.copy(hostId = "other")) }
+        assertFailsWith<IllegalStateException> { updatedComputer(null, approved) }
     }
 
-    @Test fun rejectedSameHostPairingPreservesWorkingCredential() = runTest {
+    @Test fun sameHostDeepLinkCannotReplaceWorkingCredential() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
-        platform.socket.handshake()
-        platform.socket.encrypted(obj("type" to JsonPrimitive("pair_rejected"), "message" to JsonPrimitive("Not approved")))
-        val controller = controller(platform)
-        controller.setForeground(true)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
         controller.pair("pairing-link")
         runCurrent()
-        assertEquals(approved, platform.disk.single { !it.pending })
-        assertEquals(approved, controller.state.value.computers.single { !it.pending })
-        assertEquals("Not approved", controller.state.value.error)
-        assertFalse(controller.state.value.connected)
-        assertFalse(controller.state.value.reconnecting)
+        assertEquals(listOf(approved), platform.disk)
+        assertEquals(listOf(approved), controller.state.value.computers)
+        assertEquals(UNPAIR_BEFORE_PAIRING, controller.state.value.error)
+        assertEquals(listOf(approved), platform.connections)
+        assertSame(feed, controller.state.value.terminal)
+        assertTrue(controller.state.value.connected)
         controller.setForeground(false)
     }
 
@@ -49,7 +52,63 @@ class RemoteControllerTest {
         assertEquals(listOf(recent), platform.connections)
         assertEquals(recent, controller.state.value.computer)
         assertTrue(controller.state.value.connected)
-        assertEquals(recent, platform.disk.last())
+        assertEquals(listOf(recent), platform.disk)
+        controller.setForeground(false)
+    }
+
+    @Test fun differentComputerCannotConnectOrPairBeforeUnpairing() = runTest {
+        val other = pending.copy(hostId = "other", hostName = "Other")
+        val platform = ControlledPlatform(listOf(approved), other)
+        val controller = authenticatedController(platform)
+        controller.connect(other)
+        controller.pair("other-link")
+        runCurrent()
+        assertEquals(UNPAIR_BEFORE_PAIRING, controller.state.value.error)
+        assertEquals(listOf(approved), platform.disk)
+        assertEquals(listOf(approved), platform.connections)
+        assertEquals(approved, controller.state.value.computer)
+        assertTrue(controller.state.value.connected)
+        controller.setForeground(false)
+    }
+
+    @Test fun concurrentPairingLinksStoreOnlyOnePendingComputer() = runTest {
+        val platform = ControlledPlatform(emptyList(), pending)
+        val controller = controller(platform)
+        controller.setForeground(true)
+        controller.pair("first-link")
+        controller.pair("second-link")
+        runCurrent()
+        assertEquals(listOf(pending), platform.disk)
+        assertEquals(listOf(pending), controller.state.value.computers)
+        assertEquals(listOf(pending), platform.connections)
+        assertEquals(UNPAIR_BEFORE_PAIRING, controller.state.value.error)
+        controller.setForeground(false)
+    }
+
+    @Test fun unpairClosesSocketAndAllowsNewPairWithoutAutomaticReconnection() = runTest {
+        val other = pending.copy(hostId = "other", hostName = "Other")
+        val platform = ControlledPlatform(listOf(approved), other)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        controller.forget(approved)
+        runCurrent()
+        assertTrue(platform.socket.closed)
+        assertFalse(feed.active)
+        assertTrue(platform.disk.isEmpty())
+        assertNull(controller.state.value.computer)
+        assertNull(controller.state.value.terminalSelection)
+        assertEquals("Disconnected", controller.state.value.status)
+        controller.networkChanged(true)
+        controller.setForeground(false)
+        controller.setForeground(true)
+        runCurrent()
+        assertEquals(listOf(approved), platform.connections)
+        platform.nextSocket().handshake()
+        controller.pair("other-link")
+        runCurrent()
+        assertEquals(listOf(other), platform.disk)
+        assertEquals(other, controller.state.value.computer)
+        assertEquals(listOf(approved, other), platform.connections)
         controller.setForeground(false)
     }
 
@@ -73,7 +132,7 @@ class RemoteControllerTest {
     }
 
     @Test fun approvalCommittedWhileStoppedRestoresNewCredentialOnReturn() = runTest {
-        val platform = ControlledPlatform(listOf(approved), pending)
+        val platform = ControlledPlatform(emptyList(), pending)
         val release = CompletableDeferred<Unit>()
         platform.afterCommit = { entries -> if (entries.any { it.credentialId == replacement.credentialId }) release.await() }
         platform.socket.handshake()
@@ -266,6 +325,62 @@ class RemoteControllerTest {
         assertEquals("done", controller.state.value.workspaces.single().panes.single().agentStatus)
         assertEquals("Renamed", controller.state.value.workspaces.single().panes.single().group)
         assertSame(feed, controller.state.value.terminal)
+        controller.setForeground(false)
+    }
+
+    @Test fun liveAgentStateWinsOverOlderListAndReplayedCompletion() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        controller.refresh()
+        runCurrent()
+        platform.socket.agent("working", revision = 2)
+        runCurrent()
+        platform.socket.response(3, listing("done", revision = 1))
+        platform.socket.agent("done", revision = 1)
+        runCurrent()
+        assertTrue(controller.state.value.connected)
+        assertEquals("working", controller.state.value.workspaces.single().panes.single().agentStatus)
+        assertEquals("working", controller.state.value.terminalSelection?.second?.agentStatus)
+        assertEquals("working", feed.pane.agentStatus)
+        assertSame(feed, controller.state.value.terminal)
+        for ((revision, status) in listOf(3L to "waiting", 4L to "working", 5L to "done")) {
+            platform.socket.agent(status, revision)
+            runCurrent()
+            assertEquals(status, controller.state.value.workspaces.single().panes.single().agentStatus)
+            assertEquals(status, controller.state.value.terminalSelection?.second?.agentStatus)
+            assertEquals(status, feed.pane.agentStatus)
+        }
+        platform.socket.agent(null, revision = 6)
+        runCurrent()
+        assertNull(controller.state.value.workspaces.single().panes.single().agentStatus)
+        assertNull(feed.pane.agentName)
+        controller.setForeground(false)
+    }
+
+    @Test fun reconnectRejectsOldSubscriptionCompletionButAcceptsNewDaemonRevision() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val original = openTerminal(controller, platform.socket)
+        platform.socket.agent("done", revision = 99)
+        runCurrent()
+        controller.setForeground(false)
+        runCurrent()
+        val resumed = platform.nextSocket().apply { authenticate() }
+        controller.setForeground(true)
+        runCurrent()
+        resumed.subscribed(4, "fresh-agent-subscription")
+        resumed.agent("working", revision = 2)
+        resumed.response(3, listing("done", revision = 1))
+        resumed.agent("done", revision = 100, subscription = "subscription-1")
+        resumed.snapshotComplete(0)
+        runCurrent()
+        assertTrue(controller.state.value.connected)
+        val current = assertNotNull(controller.state.value.terminal)
+        assertNotSame(original, current)
+        assertEquals("working", controller.state.value.workspaces.single().panes.single().agentStatus)
+        assertEquals("working", current.pane.agentStatus)
+        assertEquals("working", controller.state.value.terminalSelection?.second?.agentStatus)
         controller.setForeground(false)
     }
 
@@ -497,7 +612,7 @@ class RemoteControllerTest {
     }
 
     @Test fun explicitNavigationAndCurrentExitClearRetainedTerminalFailure() = runTest {
-        for (navigation in listOf("leave", "disconnect", "forget", "switch", "closed", "exited")) {
+        for (navigation in listOf("leave", "disconnect", "forget", "closed", "exited")) {
             val platform = ControlledPlatform(listOf(approved), pending)
             val controller = authenticatedController(platform)
             val feed = openTerminal(controller, platform.socket)
@@ -509,7 +624,6 @@ class RemoteControllerTest {
                 "leave" -> controller.leaveTerminal()
                 "disconnect" -> controller.disconnect()
                 "forget" -> controller.forget(approved)
-                "switch" -> controller.connect(approved.copy(hostId = "other", hostName = "Other"))
                 "closed" -> {
                     controller.refresh()
                     runCurrent()
@@ -862,28 +976,12 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
-    @Test fun switchingComputerAndTerminalExitClearSelectionWithoutResurrectingOldIntent() = runTest {
+    @Test fun terminalExitClearsSelectionWithoutResurrectingOldIntent() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
-        openTerminal(controller, platform.socket)
-        controller.selectTerminal("workspace", pane.copy(id = 2))
-        runCurrent()
-        val other = approved.copy(hostId = "other-host", hostName = "Other")
-        val remote = platform.nextSocket().apply { authenticate("Other") }
-        controller.connect(other)
-        assertNull(controller.state.value.terminalSelection)
-        assertNull(controller.state.value.terminal)
-        assertFalse(controller.state.value.terminalSynced)
-        runCurrent()
-        remote.response(4, listing())
-        runCurrent()
-        controller.selectTerminal("workspace", pane)
-        runCurrent()
-        remote.subscribed(5, "other-computer-generation")
-        remote.snapshotComplete(0)
-        runCurrent()
-        remote.encrypted(obj("type" to JsonPrimitive("exited"), "pane_id" to JsonPrimitive(pane.id),
-            "subscription_id" to JsonPrimitive("other-computer-generation"), "code" to JsonPrimitive(0)))
+        val feed = openTerminal(controller, platform.socket)
+        platform.socket.encrypted(obj("type" to JsonPrimitive("exited"), "pane_id" to JsonPrimitive(pane.id),
+            "subscription_id" to JsonPrimitive(feed.subscriptionId!!), "code" to JsonPrimitive(0)))
         runCurrent()
         assertNull(controller.state.value.terminalSelection)
         assertNull(controller.state.value.terminal)
@@ -1122,11 +1220,12 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
-    private fun listing(status: String = "idle", group: String = "Project", branch: String = "main") = obj(
+    private fun listing(status: String = "idle", group: String = "Project", branch: String = "main", revision: Long = 0) = obj(
         "workspaces" to JsonArray(listOf(obj("id" to JsonPrimitive("workspace"), "name" to JsonPrimitive("Workspace"),
             "terminals" to JsonArray(listOf(obj("pane_id" to JsonPrimitive(1), "title" to JsonPrimitive("shell"),
                 "cols" to JsonPrimitive(80), "rows" to JsonPrimitive(24), "tab_id" to JsonPrimitive("tab"),
                 "group" to JsonPrimitive(group), "group_id" to JsonPrimitive("pinned:project"), "git_branch" to JsonPrimitive(branch),
+                "agent_revision" to JsonPrimitive(revision),
                 "agent" to obj("status" to JsonPrimitive(status), "name" to JsonPrimitive("Pi"))))))))
     )
     private fun TestScope.controller(platform: ControlledPlatform) = RemoteController(
@@ -1233,6 +1332,10 @@ class RemoteControllerTest {
             nextSequence = 1
             response(id, obj("subscription_id" to JsonPrimitive(subscriptionId), "cols" to JsonPrimitive(80), "rows" to JsonPrimitive(24)))
         }
+        fun agent(status: String?, revision: Long, subscription: String = subscriptionId) = encrypted(obj(
+            "type" to JsonPrimitive("agent"), "pane_id" to JsonPrimitive(1),
+            "subscription_id" to JsonPrimitive(subscription), "agent_revision" to JsonPrimitive(revision),
+            "agent" to (status?.let { obj("status" to JsonPrimitive(it), "name" to JsonPrimitive("Pi")) } ?: JsonNull)))
         fun snapshotComplete(
             sequence: Long, subscriptionId: String = this.subscriptionId, paneId: Long = 1,
         ) = encrypted(obj("type" to JsonPrimitive("snapshot_complete"), "pane_id" to JsonPrimitive(paneId),

@@ -1,7 +1,7 @@
 use super::crypto::{self, Cipher, Envelope};
 use super::store::{Credential, Store};
 use super::{AdminReply, AdminRequest, Device, Pairing, Pending, Status};
-use crate::daemon::pane::{DaemonPane, OutputGate};
+use crate::daemon::pane::{DaemonPane, MobileAgentState, OutputGate};
 use crate::daemon::protocol::{DaemonMsg, WinSize};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Condvar, Mutex};
@@ -147,6 +147,9 @@ struct RelayConfig {
 }
 struct Subscription {
     id: String,
+    workspace: String,
+    observer: Option<(Arc<DaemonPane>, u64)>,
+    lease_started: bool,
     credit: Arc<OutputCredit>,
 }
 impl Drop for Subscription {
@@ -932,7 +935,10 @@ impl Service {
                 }
                 let backend = self.backend.clone();
                 let observation =
-                    tokio::task::spawn_blocking(move || backend.observe(&workspace, pane))
+                    tokio::task::spawn_blocking({
+                        let workspace = workspace.clone();
+                        move || backend.observe(&workspace, pane)
+                    })
                         .await
                         .map_err(|_| io::Error::other("observer failed"))??;
                 let size = observation.size;
@@ -941,6 +947,9 @@ impl Service {
                 let credit = Arc::new(OutputCredit::new());
                 let subscription = Subscription {
                     id: id.clone(),
+                    workspace,
+                    observer: Some((observation.pane.clone(), observation.observer_id)),
+                    lease_started: false,
                     credit: credit.clone(),
                 };
                 let sink = MobileOutput {
@@ -959,6 +968,27 @@ impl Service {
                 peer.subscriptions.insert(pane, subscription);
                 // The actor sends this response before it can dequeue output.
                 Ok(json!({"subscription_id":id, "cols":size.cols, "rows":size.rows}))
+            }
+            "terminal_size" => {
+                let size = terminal_size(&request)?;
+                let pane_id = number(&request, "pane_id")?;
+                let subscription_id = field(&request, "subscription_id")?;
+                let workspace = field(&request, "workspace_id")?;
+                let subscription = peer.subscriptions.get_mut(&pane_id).filter(|subscription| {
+                    subscription.id == subscription_id
+                        && subscription.workspace == workspace
+                        && subscription.credit.active()
+                }).ok_or_else(|| io::Error::other("terminal subscription is no longer active"))?;
+                let (pane, observer_id) = subscription.observer.as_ref()
+                    .ok_or_else(|| io::Error::other("terminal observer is unavailable"))?;
+                let pane = pane.clone();
+                let observer_id = *observer_id;
+                let initial = !subscription.lease_started;
+                tokio::task::spawn_blocking(move || pane.mobile_observer_resize(observer_id, size, initial))
+                    .await
+                    .map_err(|_| io::Error::other("terminal resize failed"))??;
+                subscription.lease_started = true;
+                Ok(Value::Null)
             }
             "unsubscribe" => {
                 peer.subscriptions.remove(&number(&request, "pane_id")?);
@@ -1082,6 +1112,7 @@ fn forward_output(mut observation: Observation, sink: MobileOutput) {
         &observation.gate,
         observation.size,
         initial,
+        || observation.pane.mobile_agent(),
         &sink,
     );
 }
@@ -1091,11 +1122,13 @@ fn forward_observer(
     gate: &OutputGate,
     mut size: WinSize,
     initial: Vec<DaemonMsg>,
+    agent_state: impl Fn() -> MobileAgentState,
     sink: &MobileOutput,
 ) {
     let mut initial = initial.into_iter();
     let mut pending = None;
     let mut staging = Vec::new();
+    let mut last_agent = None;
     if initial.len() == 0 && !sink.snapshot_complete() {
         return;
     }
@@ -1117,7 +1150,15 @@ fn forward_observer(
             }
         };
         match message {
-            DaemonMsg::Size(new) => size = new,
+            DaemonMsg::Size(new) => {
+                let changed = size != new;
+                size = new;
+                // Geometry is itself ordered output. Even a quiet shell must
+                // resize both the screen mirror and renderer at this boundary.
+                if !replaying && changed && !sink.chunks(false, &[], size) {
+                    return;
+                }
+            }
             // Replay vectors are chunked directly; never copy the 8 MiB history
             // into a second buffer. Snapshot and dimension boundaries are exact.
             DaemonMsg::Snapshot(bytes) => {
@@ -1165,6 +1206,16 @@ fn forward_observer(
                     return;
                 }
             }
+            DaemonMsg::Lease(holder) => {
+                if !sink.send(
+                    json!({"type":"terminal_lease", "pane_id":sink.pane,
+                        "subscription_id":sink.id, "held":holder.is_some()}),
+                    None,
+                    false,
+                ) {
+                    return;
+                }
+            }
             DaemonMsg::Exited { code } => {
                 sink.send(
                     json!({"type":"exited", "pane_id":sink.pane,
@@ -1177,6 +1228,24 @@ fn forward_observer(
             DaemonMsg::Error(message) => {
                 sink.error(&message);
                 return;
+            }
+            DaemonMsg::Agent(_) | DaemonMsg::AgentStatus(_) => {
+                // Replay and queued status frames are wakeups, not current
+                // state. Read the same atomic badge as list and the desktop.
+                let state = agent_state();
+                if last_agent != Some(state) {
+                    last_agent = Some(state);
+                    if !sink.send(
+                        json!({"type":"agent", "pane_id":sink.pane,
+                        "subscription_id":sink.id, "agent_revision":state.revision,
+                        "agent":state.agent.map(|(name, status)| json!({
+                            "name":name.display_name(), "status":status}))}),
+                        None,
+                        false,
+                    ) {
+                        return;
+                    }
+                }
             }
             _ => {}
         }
@@ -1238,6 +1307,22 @@ fn number(value: &Value, key: &str) -> io::Result<u64> {
                 format!("missing or invalid {key}"),
             )
         })
+}
+fn terminal_size(request: &Value) -> io::Result<WinSize> {
+    let cols = number(request, "cols")?;
+    let rows = number(request, "rows")?;
+    if !(20..=1000).contains(&cols) || !(5..=1000).contains(&rows) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal size must be 20..1000 columns and 5..1000 rows",
+        ));
+    }
+    Ok(WinSize {
+        cols: cols as u16,
+        rows: rows as u16,
+        cell_w: 0,
+        cell_h: 0,
+    })
 }
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -1487,6 +1572,111 @@ impl rustls::client::danger::ServerCertVerifier for PinnedCertificate {
 mod tests {
     use super::*;
 
+    #[test]
+    fn phone_grid_bounds_reject_nonintegers_and_do_not_truncate() {
+        for (cols, rows) in [(20, 5), (1000, 1000), (42, 28)] {
+            assert_eq!(terminal_size(&json!({"cols":cols, "rows":rows})).unwrap(), size(cols, rows));
+        }
+        for request in [
+            json!({"cols":19, "rows":5}),
+            json!({"cols":20, "rows":4}),
+            json!({"cols":1001, "rows":5}),
+            json!({"cols":20, "rows":1001}),
+            json!({"cols":65556, "rows":5}),
+            json!({"cols":-20, "rows":5}),
+            json!({"cols":20.5, "rows":5}),
+            json!({"cols":"20", "rows":5}),
+            json!({"cols":20}),
+        ] {
+            assert_eq!(terminal_size(&request).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[tokio::test]
+    async fn phone_resize_requires_current_subscription_workspace_and_active_credit() {
+        let mut service = test_service();
+        let credit = add_subscription(&mut service, "phone", 7, "current");
+        let mut peer = service.peers.remove("phone").unwrap();
+        for (pane, subscription, workspace) in [
+            (7, "retired", "workspace"),
+            (8, "current", "workspace"),
+            (7, "current", "different"),
+        ] {
+            let error = service.operation("phone", &mut peer, json!({
+                "op":"terminal_size", "pane_id":pane, "subscription_id":subscription,
+                "workspace_id":workspace, "cols":42, "rows":28,
+            })).await.unwrap_err();
+            assert_eq!(error.to_string(), "terminal subscription is no longer active");
+            assert!(!peer.subscriptions[&7].lease_started);
+            assert!(credit.active());
+        }
+        credit.cancel();
+        let error = service.operation("phone", &mut peer, json!({
+            "op":"terminal_size", "pane_id":7, "subscription_id":"current",
+            "workspace_id":"workspace", "cols":42, "rows":28,
+        })).await.unwrap_err();
+        assert_eq!(error.to_string(), "terminal subscription is no longer active");
+    }
+
+    #[tokio::test]
+    async fn phone_lease_and_restore_keep_output_and_empty_grid_markers_ordered() {
+        let mut service = test_service();
+        let credit = add_subscription(&mut service, "phone", 7, "feed");
+        let (sender, completed, producer) = worker(
+            service.output.clone(), credit, Vec::new(),
+            vec![
+                DaemonMsg::Output(b"desk-before".to_vec()),
+                DaemonMsg::Size(size(42, 28)),
+                DaemonMsg::Lease(Some("phone".into())),
+                DaemonMsg::Output(b"phone".to_vec()),
+                DaemonMsg::Lease(None),
+                DaemonMsg::Size(size(120, 40)),
+                DaemonMsg::Output(b"desk-after".to_vec()),
+                DaemonMsg::Exited { code: Some(0) },
+            ],
+        );
+        receive_completion(&mut service, 0).await;
+        let mut grids = Vec::new();
+        let mut held = Vec::new();
+        let mut sequence = 0;
+        loop {
+            let output = receive_output(&mut service).await;
+            match output.value["type"].as_str().unwrap() {
+                "output" => {
+                    sequence += 1;
+                    assert_eq!(output.sequence, Some(sequence));
+                    grids.push((
+                        output.value["cols"].as_u64().unwrap(),
+                        output.value["rows"].as_u64().unwrap(),
+                        crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
+                    ));
+                    service.output_frame(output, &mut Vec::new());
+                    acknowledge(&mut service, sequence - 1, "feed", sequence).await;
+                }
+                "terminal_lease" => {
+                    assert_eq!(output.value["subscription_id"], "feed");
+                    assert_eq!(output.value["pane_id"], 7);
+                    assert!(output.sequence.is_none() && !output.finished);
+                    held.push((sequence, output.value["held"].as_bool().unwrap()));
+                    service.output_frame(output, &mut Vec::new());
+                }
+                "exited" => { service.output_frame(output, &mut Vec::new()); break; }
+                kind => panic!("unexpected frame {kind}"),
+            }
+        }
+        assert_eq!(grids, vec![
+            (80, 24, b"desk-before".to_vec()),
+            (42, 28, Vec::new()),
+            (42, 28, b"phone".to_vec()),
+            (120, 40, Vec::new()),
+            (120, 40, b"desk-after".to_vec()),
+        ]);
+        assert_eq!(held, vec![(2, true), (3, false)]);
+        completed.await.unwrap();
+        producer.join().unwrap();
+        drop(sender);
+    }
+
     fn size(cols: u16, rows: u16) -> WinSize {
         WinSize {
             cols,
@@ -1527,6 +1717,9 @@ mod tests {
                 pane,
                 Subscription {
                     id: id.into(),
+                    workspace: "workspace".into(),
+                    observer: None,
+                    lease_started: false,
                     credit: credit.clone(),
                 },
             );
@@ -1573,7 +1766,9 @@ mod tests {
         };
         let (finished, completed) = tokio::sync::oneshot::channel();
         let producer = std::thread::spawn(move || {
-            forward_observer(&receive, &gate, size(80, 24), initial, &sink);
+            forward_observer(
+                &receive, &gate, size(80, 24), initial, MobileAgentState::default, &sink,
+            );
             let _ = finished.send(());
         });
         (completed, producer)
@@ -1801,8 +1996,14 @@ mod tests {
             "all retained history reaches the consumer exactly once"
         );
         receive_completion(&mut service, frames).await;
+        let resize = receive_output(&mut service).await;
+        assert_eq!(resize.sequence, Some(frames + 1));
+        assert_eq!(resize.value["cols"], 120);
+        assert_eq!(resize.value["rows"], 40);
+        assert_eq!(resize.value["data"], "");
+        service.output_frame(resize, &mut Vec::new());
         let live = receive_output(&mut service).await;
-        assert_eq!(live.sequence, Some(frames + 1));
+        assert_eq!(live.sequence, Some(frames + 2));
         assert_eq!(live.value["snapshot"], false);
         assert_eq!(live.value["cols"], 120);
         assert_eq!(live.value["rows"], 40);
@@ -1867,6 +2068,12 @@ mod tests {
         acknowledge(&mut service, 1, "feed", 2).await;
         let output = receive_output(&mut service).await;
         assert_eq!(output.sequence, Some(6));
+        assert_eq!(output.value["cols"], 100);
+        assert_eq!(output.value["data"], "");
+        service.output_frame(output, &mut Vec::new());
+        acknowledge(&mut service, 2, "feed", 3).await;
+        let output = receive_output(&mut service).await;
+        assert_eq!(output.sequence, Some(7));
         assert_eq!(output.value["cols"], 100);
         assert_eq!(
             crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
@@ -2049,6 +2256,9 @@ mod tests {
             .unwrap();
             drop(Subscription {
                 id: "feed".into(),
+                workspace: "workspace".into(),
+                observer: None,
+                lease_started: false,
                 credit,
             });
             tokio::time::timeout(Duration::from_millis(250), completed)
@@ -2168,6 +2378,7 @@ mod tests {
         receive_completion(&mut service, 0).await;
         let expected = [
             (false, 80, 24, vec![0xc3, 0xa9, 0x1b, b'[', b'3', b'1']),
+            (false, 100, 30, Vec::new()),
             (false, 100, 30, b"mred".to_vec()),
             (true, 100, 30, snapshot[..MAX_OUTPUT_BYTES].to_vec()),
             (true, 100, 30, snapshot[MAX_OUTPUT_BYTES..].to_vec()),
