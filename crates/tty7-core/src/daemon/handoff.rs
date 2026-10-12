@@ -97,6 +97,9 @@ struct PaneRecord {
     /// Length of this pane's ring in the data section, which follows the
     /// manifest in pane order.
     ring_len: u32,
+    /// Complete parser checkpoints follow all rings, preserving the old ring layout.
+    #[serde(default)]
+    screen_len: u64,
 }
 
 /// What this process was told on the command line, if it was started as the far
@@ -243,8 +246,14 @@ fn stage(panes: &[Carried], next_pane_id: u64) -> std::io::Result<std::fs::File>
             agent_argv: pane.agent_argv.clone(),
             agent_session: pane.agent_session.clone(),
             ring_len: encoded.len() as u32,
+            screen_len: pane.screen_checkpoint.as_ref().map_or(0, |bytes| bytes.len() as u64),
         });
         data.extend_from_slice(&encoded);
+    }
+    for pane in panes {
+        if let Some(checkpoint) = &pane.screen_checkpoint {
+            data.extend_from_slice(checkpoint);
+        }
     }
 
     let manifest = serde_json::to_vec(&Manifest {
@@ -349,6 +358,9 @@ pub fn adopt(fd: RawFd) -> Option<Adopted> {
     };
 
     let mut cursor = 4 + manifest_len;
+    let mut screen_cursor = manifest.panes.iter().try_fold(cursor, |offset, pane| {
+        offset.checked_add(pane.ring_len as usize)
+    })?;
     let mut panes = Vec::with_capacity(manifest.panes.len());
     for record in manifest.panes {
         let end = cursor + record.ring_len as usize;
@@ -358,6 +370,14 @@ pub fn adopt(fd: RawFd) -> Option<Adopted> {
             .map(|(segments, _)| segments)
             .unwrap_or_default();
         cursor = end;
+        let screen_len = usize::try_from(record.screen_len).ok()?;
+        let screen_end = screen_cursor.checked_add(screen_len)?;
+        let screen_checkpoint = if screen_len == 0 {
+            None
+        } else {
+            Some(raw.get(screen_cursor..screen_end)?.to_vec())
+        };
+        screen_cursor = screen_end;
         panes.push(Carried {
             id: record.id,
             owner: record.owner,
@@ -366,6 +386,7 @@ pub fn adopt(fd: RawFd) -> Option<Adopted> {
             integration_dir: record.integration_dir,
             size: record.size,
             ring,
+            screen_checkpoint,
             cwd: record.cwd,
             osc_title: record.osc_title,
             shell_spec: record.shell,
@@ -410,6 +431,7 @@ mod tests {
                 size: size(),
                 bytes: output.to_vec(),
             }],
+            screen_checkpoint: None,
             cwd: Some(PathBuf::from("/work")),
             osc_title: Some("user@host:~/work".into()),
             shell_spec: None,
@@ -451,6 +473,25 @@ mod tests {
             adopted.panes[1].ring[0].bytes, b"second pane",
             "each pane's ring has to be read back at its own offset, not the first one's"
         );
+    }
+
+    #[test]
+    fn full_checkpoints_cross_after_all_rings_and_missing_state_stays_missing() {
+        use crate::daemon::screen::ScreenMirror;
+        let mut mirror = ScreenMirror::with_config(size(), false, &crate::core::config::Config::default());
+        mirror.feed(b"primary\x1b[?1049hALT\x1b[31;");
+        let mut first = carried(1, 31, b"not a complete screen");
+        first.screen_checkpoint = Some(mirror.checkpoint().unwrap());
+        let second = carried(2, 32, b"legacy ring");
+        let staged = stage(&[first, second], 3).unwrap();
+        let adopted = adopt(std::os::fd::IntoRawFd::into_raw_fd(staged)).unwrap();
+        assert_eq!(adopted.panes[1].ring[0].bytes, b"legacy ring");
+        assert!(adopted.panes[1].screen_checkpoint.is_none());
+        let mut restored = ScreenMirror::restore(adopted.panes[0].screen_checkpoint.as_deref().unwrap()).unwrap();
+        mirror.feed(b"1m!\x1b[?1049l");
+        restored.feed(b"1m!\x1b[?1049l");
+        assert_eq!(mirror.snapshot().lines, restored.snapshot().lines);
+        assert_eq!(mirror.snapshot().cursor, restored.snapshot().cursor);
     }
 
     #[test]

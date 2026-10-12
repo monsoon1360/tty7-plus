@@ -275,7 +275,7 @@ mod tests {
     fn term(cols: usize, lines: usize, input: &str) -> Term<VoidListener> {
         let mut term = Term::new(
             alacritty_terminal::term::Config::default(),
-            &crate::terminal::size::TermSize::new(cols, lines),
+            &tty7_core::terminal::size::TermSize::new(cols, lines),
             VoidListener,
         );
         alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new()

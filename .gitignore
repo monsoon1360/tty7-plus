@@ -37,3 +37,4 @@ repomix-output.*
 
 # Scratch design mockups (HTML previews made while designing, not shipped)
 /design/
+tests/

@@ -38,7 +38,7 @@ use super::size::TermSize;
 /// Resizes `term` to `size`. `shell_redraws` says the pane is at a shell
 /// prompt that will repaint itself for the new width — the caller's shell
 /// integration state; everything else resizes exactly as `Term::resize` does.
-pub(super) fn resize<T: EventListener>(term: &mut Term<T>, size: TermSize, shell_redraws: bool) {
+pub fn resize<T: EventListener>(term: &mut Term<T>, size: TermSize, shell_redraws: bool) {
     // Rows alone reflow nothing, and the alternate screen is a full-screen
     // program's, which repaints the whole of it.
     let reflows = size.cols.max(MIN_COLUMNS) != term.columns();
@@ -109,7 +109,7 @@ impl PromptMark {
 /// the padding's, not the text's — so it becomes a hard break. A prompt that
 /// simply carried on from the output (bash has no `PROMPT_SP`) leaves its own
 /// text on that row rather than blanks, and is left alone.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct PromptBreak {
     /// Where `A` found a dangling line: how many rows into its wrapped line
     /// the cursor was, the column, and the character it had just written —

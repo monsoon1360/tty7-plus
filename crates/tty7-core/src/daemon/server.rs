@@ -491,17 +491,12 @@ impl crate::mobile::Backend for MobileBackend {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid workspace_id")
         })?;
         let pane = self.member(workspace, pane_id)?;
-        let (send, receiver) = mpsc::channel();
-        let gate = Arc::new(crate::daemon::pane::OutputGate::new());
-        let size = pane.mobile_size();
-        let (observer_id, initial) = pane.observe(send, gate.clone());
+        let (send, receiver) = mpsc::sync_channel(1);
+        let observer_id = pane.mobile_screen_observe(send)?;
         Ok(crate::mobile::Observation {
             pane,
             observer_id,
             receiver,
-            gate,
-            size,
-            initial,
         })
     }
 }
@@ -952,19 +947,27 @@ fn hand_over(registry: &Registry, exe: &std::path::Path) -> anyhow::Error {
         }
     }
 
-    let mut carried = Vec::new();
-    for pane in registry.all() {
-        match pane.carry() {
-            Some(c) => carried.push(c),
-            None => {
-                // A native-SSH pane's session is cipher state in this process's
-                // memory; the socket would cross and nothing able to speak on
-                // it would. Hanging it up here means the far end sees a close
-                // rather than a connection that has stopped answering.
-                log::info!("pane {} cannot cross a handoff; closing it", pane.id);
-                kill_pane(registry, pane.id);
+    let panes = registry.all();
+    let mut prepared = Vec::new();
+    let mut uncarried = Vec::new();
+    for pane in &panes {
+        match pane.prepare_handoff() {
+            Ok(Some(guard)) => prepared.push(guard),
+            Ok(None) => uncarried.push(pane.id),
+            Err(error) => {
+                return anyhow::anyhow!("cannot checkpoint pane {}: {error}", pane.id);
             }
         }
+    }
+    // Retain the guards through exec: no reader may consume bytes or resize
+    // the mirrored state after its checkpoint. A failed exec drops the guards
+    // and resumes every pane without discarding pending kernel PTY output.
+    let carried = prepared.iter_mut().map(|guard| guard.take_carried()).collect();
+    for id in uncarried {
+        // Native SSH cipher state cannot cross exec; preserve its existing
+        // close-on-handoff behavior only after all PTYs were checkpointed.
+        log::info!("pane {id} cannot cross a handoff; closing it");
+        kill_pane(registry, id);
     }
 
     // The tree is what the window rebuilds itself from when it reconnects, and

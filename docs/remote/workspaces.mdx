@@ -161,8 +161,8 @@ foreground while connected.
    sessions or send terminal input.
 4. Open the left session drawer and select a terminal. The Chinese-first Android
    interface groups sessions with the desktop's repository grouping rules and
-   displays branches and Agent status. A loading overlay hides historical replay
-   until the selected terminal's latest snapshot has been parsed.
+   displays branches and Agent status. A loading overlay stays until the selected
+   terminal's current screen has been atomically applied by its renderer.
    Synchronization does not focus the keyboard. Tap the terminal without dragging
    to type at its cursor. **编辑消息** opens an optional message
    editor; Enter, Ctrl-C, Tab, Esc and arrow controls remain available. Opening
@@ -186,18 +186,21 @@ foreground while connected.
 
 ### Content synchronization and failure handling
 
-The phone observes the same daemon-owned PTY as the desktop. Synchronization is
-an ANSI snapshot followed by ordered live output, not video frames or a copy of
-the desktop GUI. While its size lease is held, the phone controls the shared
-terminal grid; the desktop's previous grid is restored on release. Desktop
-takeback prevents subsequent phone resize requests from reclaiming control;
-explicitly reopen the terminal to use the phone grid again. Each client keeps
-its own selected session and scroll position. Live-follow updates both the outer
-viewport and xterm's inner scrollback position after replay, grid changes and
-normal/alternate-buffer transitions; reading history deliberately suspends following.
-Normal-buffer history remains readable while an alternate-screen Agent is active,
-without inventing history for the alternate screen. Touch scrolling stays local
-and does not send mouse or terminal-query responses to the shared PTY.
+The daemon continuously interprets each new PTY with the same terminal engine,
+width rules, prompt reflow and cursor repair as the desktop. Protocol 3 sends a
+snapshot of **only the visible screen**, then changed rows and cursor/input modes.
+This is terminal cell state, not a screenshot image, video, or raw historical ANSI.
+The phone paints safe synthesized row instructions; it never resumes the
+application's original escape stream from a screen-only reconstruction.
+
+The prewarmed WebView is reused across selections and reconnects. Its measured
+geometry is included in the initial subscription, so a phone-sized snapshot can
+be produced without first replaying a desktop-width terminal. While its size
+lease is held, the phone controls the shared PTY grid; release restores the
+desktop grid. Desktop takeback prevents later phone resize requests from
+reclaiming control until the terminal is explicitly reopened. Selection and
+scroll positions remain client-local. Touch scrolling sends neither mouse
+reports nor terminal-query responses to the PTY.
 
 Vertical touch scrolling runs at 1.8× finger travel and coasts after a flick;
 a new touch stops the coast. Horizontal panning remains 1:1. Pointer capture on
@@ -208,32 +211,41 @@ after closing the message editor. The dark terminal sets explicit light text
 and cursor colours and enforces a 4.5:1 minimum text contrast for ANSI/truecolour
 output, so a desktop application's dark text remains readable on the phone.
 
-Protocol 2 gives each subscription a new generation and monotonically ordered
-output sequence. Android acknowledges output only after its terminal parser
-has consumed it; the host allows at most four unacknowledged output chunks.
-An ordered snapshot-complete marker releases the initial/reconnect overlay
-only after all preceding snapshot output has been parsed. Late callbacks from
-old subscriptions cannot unmask or acknowledge the new one. Initial history
-is bounded separately from the 8 MiB live-output queue, so a full initial
-replay does not disconnect its observer on the first new byte.
+Every subscription has its own generation and ordered frame sequence. Screen
+revisions and geometry/buffer epochs are decimal strings; patches identify the
+exact base revision they replace. Geometry changes and normal/alternate-buffer
+transitions require a complete replacement. A mismatched base requests a fresh
+screen instead of applying a potentially stale patch.
 
-A visually blank terminal is not necessarily an empty replay: clearing the
-screen does not discard the daemon's retained ANSI history. Replay chunks are
-at most 48 KiB; a full 8 MiB history needs at least 171 chunks, all parsed before
-the overlay clears. Even an empty snapshot carries the terminal dimensions and
-reset through the renderer. Each selected feed currently creates a new WebView,
-and switching waits for the previous unsubscribe response before subscribing.
-There is no normal 30-second synchronization delay. For slow opening, distinguish
-connection/authentication, unsubscribe/subscribe, WebView startup, received bytes
-and frames, parser callbacks, and snapshot completion before tuning the output
-window. Increasing that window cannot accelerate a single empty output frame.
+Frames are at most 128 KiB, with at most 8 MiB staged for one logical screen and
+four frames awaiting credit. Android acknowledges intermediate parts only after
+bounded staging; the final part is acknowledged after the complete state has
+been applied by the terminal parser. That commit releases the loading overlay.
+Old-generation callbacks cannot acknowledge or reveal another selection. When
+credit stalls, the producer samples the latest immutable screen after it can
+send again, rather than accumulating a raw-output backlog.
 
-Optimization priorities are to measure those phases on the device, reuse an
-initialized renderer for short/empty sessions, and replace raw historical repaint
-replay with a canonical current-screen snapshot plus bounded/lazy history for long
-sessions. Preserve subscription generations, ordered geometry and parser-confirmed
-completion; hiding the overlay early would expose stale terminal state. Tune the
-credit window only after distinguishing network/ACK latency from parser work.
+History is a separate, read-only surface opened by upward scrolling:
+
+- The primary buffer retains at most 5,000 rows and an 8 MiB history budget.
+  It remains available during an alternate-screen application; the alternate
+  screen does not acquire invented scrollback.
+- A history request captures an immutable view, then pages backward through it
+  using opaque cursors. New output and resize/reflow cannot move those cursors.
+  Each page is at most 200 rows / 128 KiB; the host retains at most 16 views /
+  32 MiB, expires cursors after two minutes and permits two history workers.
+- Android retains at most 2,000 rows / 2 MiB of UTF-8 row content. A bounded page
+  is parsed in one batch without creating another visible terminal renderer.
+  Prepending older rows preserves the reading anchor; truncation is visible.
+- Live screen patches continue while history is open. **返回实时终端** shows that
+  already-current screen immediately. An expired cursor displays an error;
+  returning live and reopening history starts a new view.
+
+Clearing a screen no longer makes entry wait for the retained history behind it.
+Initial transfer cost follows the current grid rather than the number of old
+repaints. For device latency measurements, distinguish connection/authentication,
+subscribe, first-screen arrival and renderer commit; a fast local transfer alone
+does not establish end-to-end phone latency.
 
 Live output and Agent status are streamed continuously. Agent snapshots carry
 monotonic per-pane revisions so older polls or replay cannot replace newer status.
@@ -248,9 +260,22 @@ expiry and incorrectly appear idle.
 Observer or renderer failures retain the selected terminal and show an error with
 **Retry loading**, rather than returning to the QR screen or silently changing sessions.
 
-Update both the Android app and desktop daemon for protocol 2. Existing pairing
-credentials and certificate pins remain valid. The phone reconnects while
-foregrounded; this is not a background keep-alive service or push channel.
+Update both the Android app and desktop daemon for protocol 3; mismatches report
+an explicit update requirement, with no protocol-2 replay fallback. Existing
+pairing credentials and certificate pins remain valid.
+
+The first upgrade cannot recover a complete interpreter from a legacy truncated
+ring. Such panes are **not automatically restarted**: their desktop processes
+continue, while mobile entry explicitly reports unavailable authoritative state.
+Finish and reopen those panes manually when appropriate; retrying the same
+legacy pane cannot recreate the missing state. Newly created panes start their
+mirror before the first PTY byte. Subsequent Unix PTY exec handoffs freeze the
+read boundary and preserve both grids, saved cursors, palette/modes, partial
+UTF-8/escape sequences and shell/cursor repair state. This guarantee concerns
+PTY-backed panes, not native SSH cipher sessions that cannot survive exec.
+
+The phone reconnects while foregrounded; this is not a background keep-alive
+service or push channel.
 
 ### Trust and credentials
 
@@ -327,7 +352,7 @@ output and command input, Keystore-persisted reconnect after process restart,
 idle viewport changes, operation with the desktop GUI closed, and live
 revocation followed by authentication refusal.
 
-The Android repair verification also exercised a full 8 MiB native terminal
+The earlier protocol-2 Android repair verification exercised a full 8 MiB native terminal
 replay, newest-snapshot masking, network-loss/recovery masking and automatic
 foreground recovery. On a physical Honor phone, two existing Agent terminals
 passed eight alternating entries and 32 history swipes without returning to
@@ -343,8 +368,46 @@ then 17 rows × 37 columns with the soft keyboard open. Verification also exerci
 unpair confirmation/cancel, the real camera scanner, a fresh OMP showing Working,
 and desktop takeback restoring a requested 120-column × 30-row grid.
 
-A browser viewport smoke reproduced the previously offscreen input target while
-a PTY resize was pending, then verified that it stays onscreen, direct input remains
-intact, and the resized grid paints without horizontal overflow. This final
-focus-anchor change still needs a physical-device recheck: the phone was disconnected
-before the final APK could be installed.
+Protocol-3 verification used a real isolated daemon and encrypted WebSocket
+client after generating 9.6 MB of terminal output: a 46 × 30 current screen
+arrived as one roughly 18 KB frame, without history replay. A real in-place
+daemon exec preserved the daemon, shell and application PIDs and completed a
+UTF-8 character split across the exec without replacement characters. Alternate
+screens, resize epochs and history cursors retaining their old geometry were
+also exercised. The actual browser renderer verified mixed text/emoji widths,
+readable black text, stable history anchors and background live updates.
+Batching a 200-row history page reduced that browser run from about 2.12 seconds
+to 0.13 seconds. These are local transport/browser measurements, not physical
+phone latency results.
+
+Protocol 3 was also exercised on a physical Honor PTP-AN00. After roughly
+9.6 MB of prior output, the first 37 × 36 screen became input-ready in 123 ms;
+eight alternating entries between heavy- and light-history panes took 66–85 ms
+from renderer generation start to parser-acknowledged readiness. Each initial
+screen was about 17 KB and loaded zero history rows. These measurements exclude
+application launch, pairing and opening the drawer.
+
+Twelve physical history swipes and six live-screen swipes caused no input focus;
+the history swipes also kept the Android IME hidden and emitted no PTY input.
+Twelve fresh history pages retained their prepend anchor exactly, reached the
+2,000-row phone cache limit without growing beyond it, and left live updates
+running underneath. Expired history cursors showed an explicit error and
+recovered through Return Live followed by a fresh history request. Intentional
+terminal taps opened the keyboard, the grid changed from 37 × 36 to 37 × 17,
+Compose message input reached the real PTY, and opening the workspace drawer
+hid the keyboard after the navigation transition. Phone screenshots confirmed
+readable dark-colour text and the separate history/return-live controls.
+
+The same phone followed real normal/alternate-screen transitions with changing
+epochs. With snapshot application deliberately delayed by eight seconds,
+four selection changes left the final pane correct and rejected all three
+late snapshots from earlier generations. Foreground recovery and a forced
+Android process restart restored the saved computer without pairing again.
+The original four user panes retained their shell and Agent PIDs throughout
+deployment and regression; only a separate temporary workspace was used.
+
+The final production-signed, non-debuggable Release APK was then installed over
+the diagnostic build without clearing app data. Its actual phone surface
+passed current-screen display, readable colours, history navigation, intentional
+keyboard activation and keyboard dismissal on opening the workspace drawer.
+The temporary workspace, PTY fixtures and diagnostic ADB forwarding were removed.

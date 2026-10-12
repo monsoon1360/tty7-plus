@@ -3844,7 +3844,7 @@ mod tests {
     fn a_regional_indicator_pair_reaches_segment_row_as_two_plain_columns() {
         let mut term = alacritty_terminal::Term::new(
             alacritty_terminal::term::Config::default(),
-            &crate::terminal::size::TermSize::new(80, 24),
+            &tty7_core::terminal::size::TermSize::new(80, 24),
             alacritty_terminal::event::VoidListener,
         );
         let mut parser: alacritty_terminal::vte::ansi::Processor =

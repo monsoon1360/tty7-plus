@@ -172,15 +172,17 @@ class RemoteControllerTest {
         resumed.response(3, listing())
         resumed.subscribed(4, "restored-subscription")
         resumed.output("restored", snapshot = true)
-        resumed.snapshotComplete(1)
+        
         runCurrent()
         val feed = assertNotNull(controller.state.value.terminal)
         assertNotSame(original, feed)
         assertEquals(pane.id, feed.pane.id)
         val snapshot = feed.frames.tryReceive().getOrThrow()
-        assertEquals(TerminalFrame("restored", true, 80, 24, "restored-subscription", 1uL), snapshot)
+        assertEquals("restored", snapshot.lines.first().ansi)
+        assertEquals("restored-subscription", snapshot.subscriptionId)
+        assertEquals(1uL, snapshot.sequence)
         assertFalse(controller.state.value.terminalSynced)
-        resumed.snapshotComplete(0, subscriptionId = "subscription-1")
+        
         runCurrent()
         assertFalse(controller.state.value.terminalSynced)
         feed.acknowledgeParsed(snapshot)
@@ -278,7 +280,7 @@ class RemoteControllerTest {
         val subscription = "33809975-bdf0-4922-98b5-eb2b4b447261"
         platform.socket.subscribed(4, subscription)
         platform.socket.output("after-retry", snapshot = true)
-        platform.socket.snapshotComplete(0, subscriptionId = "subscription-1")
+        
         platform.socket.encrypted(obj("type" to JsonPrimitive("terminal_error"), "pane_id" to JsonPrimitive(pane.id),
             "subscription_id" to JsonPrimitive("subscription-1"), "message" to JsonPrimitive("Late observer error")))
         runCurrent()
@@ -291,10 +293,8 @@ class RemoteControllerTest {
         val snapshot = reopened.frames.tryReceive().getOrThrow()
         assertEquals(subscription, snapshot.subscriptionId)
         assertNotEquals(feed.subscriptionId, reopened.subscriptionId)
-        assertEquals("after-retry", snapshot.data)
+        assertEquals("after-retry", snapshot.lines.first().ansi)
         reopened.acknowledgeParsed(snapshot)
-        assertFalse(controller.state.value.terminalSynced)
-        platform.socket.snapshotComplete(1)
         runCurrent()
         assertTrue(controller.state.value.terminalSynced)
         assertNull(controller.state.value.terminalError)
@@ -318,7 +318,7 @@ class RemoteControllerTest {
         assertSame(feed, controller.state.value.terminal)
         platform.socket.output("live-agent-output")
         runCurrent()
-        assertEquals("live-agent-output", feed.frames.tryReceive().getOrThrow().data)
+        assertEquals("live-agent-output", feed.frames.tryReceive().getOrThrow().lines.first().ansi)
         advanceTimeBy(2_000)
         runCurrent()
         platform.socket.response(4, listing("done", "Renamed", "main"))
@@ -374,7 +374,7 @@ class RemoteControllerTest {
         resumed.agent("working", revision = 2)
         resumed.response(3, listing("done", revision = 1))
         resumed.agent("done", revision = 100, subscription = "subscription-1")
-        resumed.snapshotComplete(0)
+        renderEmpty(controller, resumed)
         runCurrent()
         assertTrue(controller.state.value.connected)
         val current = assertNotNull(controller.state.value.terminal)
@@ -403,7 +403,7 @@ class RemoteControllerTest {
     }
 
     @Test fun unsupportedChallengeCannotAuthenticateOrReplaceSavedCredential() = runTest {
-        for (protocol in listOf(null, JsonPrimitive(1), JsonPrimitive("2"))) {
+        for (protocol in listOf(null, JsonPrimitive(1), JsonPrimitive(2), JsonPrimitive("3"))) {
             val platform = ControlledPlatform(listOf(approved), pending)
             platform.socket.handshake(protocol)
             val controller = controller(platform)
@@ -425,7 +425,7 @@ class RemoteControllerTest {
         runCurrent()
         platform.socket.subscribed(2)
         repeat(4) { platform.socket.output("credit-$it", snapshot = it == 0) }
-        platform.socket.snapshotComplete(4)
+        
         runCurrent()
         val feed = assertNotNull(controller.state.value.terminal)
         val input = assertNotNull(controller.input("still-responsive"))
@@ -442,7 +442,7 @@ class RemoteControllerTest {
         assertNull(controller.state.value.error)
         assertTrue(platform.socket.acknowledgments.isEmpty())
         val first = feed.frames.tryReceive().getOrThrow()
-        assertEquals("credit-0", first.data)
+        assertEquals("credit-0", first.lines.first().ansi)
         assertTrue(platform.socket.acknowledgments.isEmpty())
         feed.acknowledgeParsed(first)
         val ack = platform.socket.acknowledgments.single()
@@ -485,7 +485,7 @@ class RemoteControllerTest {
         val reopened = assertNotNull(controller.state.value.terminal)
         assertNotSame(original, reopened)
         val currentFrame = reopened.frames.tryReceive().getOrThrow()
-        assertEquals("new-frame", currentFrame.data)
+        assertEquals("new-frame", currentFrame.lines.first().ansi)
         assertEquals("new-subscription", currentFrame.subscriptionId)
         assertTrue(reopened.frames.tryReceive().isFailure)
         assertTrue(controller.state.value.connected)
@@ -525,14 +525,14 @@ class RemoteControllerTest {
         runCurrent()
         platform.socket.subscribed(4, "after-observer-error")
         platform.socket.output("reopened", snapshot = true)
-        platform.socket.snapshotComplete(1)
+        
         runCurrent()
         val reopened = assertNotNull(controller.state.value.terminal)
         assertNotEquals(feed.subscriptionId, reopened.subscriptionId)
         assertNull(controller.state.value.terminalError)
         assertFalse(controller.state.value.terminalSynced)
         val frame = reopened.frames.tryReceive().getOrThrow()
-        assertEquals("reopened", frame.data)
+        assertEquals("reopened", frame.lines.first().ansi)
         reopened.acknowledgeParsed(frame)
         assertTrue(controller.state.value.terminalSynced)
         assertTrue(controller.state.value.connected)
@@ -562,7 +562,7 @@ class RemoteControllerTest {
         controller.retryTerminal()
         runCurrent()
         platform.socket.subscribed(4, "retry-after-rejected-subscribe")
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         runCurrent()
         controller.terminalFailed(rejected, "Late callback from rejected feed")
         assertNull(controller.state.value.terminalError)
@@ -605,7 +605,7 @@ class RemoteControllerTest {
         controller.retryTerminal()
         runCurrent()
         rerouted.subscribed(6, "explicit-retry-after-network-change")
-        rerouted.snapshotComplete(0)
+        renderEmpty(controller, rerouted)
         runCurrent()
         assertTrue(controller.state.value.terminalSynced)
         assertNull(controller.state.value.terminalError)
@@ -665,7 +665,7 @@ class RemoteControllerTest {
         platform.socket.encrypted(obj("type" to JsonPrimitive("terminal_error"), "pane_id" to JsonPrimitive(pane.id),
             "subscription_id" to JsonPrimitive(failed.subscriptionId!!), "message" to JsonPrimitive("Late observer failure")))
         platform.socket.subscribed(4, "new-target-generation")
-        platform.socket.snapshotComplete(0, paneId = other.id)
+        renderEmpty(controller, platform.socket, paneId = other.id)
         runCurrent()
         assertEquals("workspace" to other, controller.state.value.terminalSelection)
         assertEquals(other, assertNotNull(controller.state.value.terminal).pane)
@@ -694,12 +694,12 @@ class RemoteControllerTest {
         controller.retryTerminal()
         runCurrent()
         platform.socket.subscribed(4, "fresh-initial-replay")
-        platform.socket.snapshotComplete(0, subscriptionId = "failed-initial-replay")
+        
         runCurrent()
         assertFalse(controller.state.value.terminalSynced)
         controller.terminalFailed(failed, "Canceled startup renderer failed")
         assertNull(controller.state.value.terminalError)
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         runCurrent()
         assertTrue(controller.state.value.terminalSynced)
         assertEquals("fresh-initial-replay", assertNotNull(controller.state.value.terminal).subscriptionId)
@@ -748,13 +748,13 @@ class RemoteControllerTest {
         assertFailsWith<IllegalStateException> { feed.acknowledgeParsed(first) }
         assertEquals(1, platform.socket.acknowledgments.size)
         feed.acknowledgeParsed(second)
-        assertEquals(listOf(1, 2), platform.socket.acknowledgments.map { it.getValue("sequence").jsonPrimitive.int })
+        assertEquals(listOf(2, 3), platform.socket.acknowledgments.map { it.getValue("sequence").jsonPrimitive.int })
         assertTrue(controller.state.value.connected)
         controller.setForeground(false)
     }
 
     @Test fun invalidOrRepeatedOutputSequenceCannotSilentlyCorruptTerminal() = runTest {
-        for (sequence in listOf(0L, 1L, 3L)) {
+        for (sequence in listOf(0L, 2L, 4L)) {
             val platform = ControlledPlatform(listOf(approved), pending)
             val controller = authenticatedController(platform)
             val feed = openTerminal(controller, platform.socket)
@@ -763,7 +763,7 @@ class RemoteControllerTest {
             runCurrent()
             assertFalse(controller.state.value.connected)
             assertEquals("Invalid terminal output sequence", controller.state.value.error)
-            assertEquals("first", feed.frames.tryReceive().getOrThrow().data)
+            assertEquals("first", feed.frames.tryReceive().getOrThrow().lines.first().ansi)
             assertTrue(feed.frames.tryReceive().isFailure)
             assertTrue(platform.socket.acknowledgments.isEmpty())
             controller.setForeground(false)
@@ -771,62 +771,23 @@ class RemoteControllerTest {
         }
     }
 
-    @Test fun snapshotCompletionWaitsForLastParsedReplayFrameNotLaterLiveOutput() = runTest {
-        val platform = ControlledPlatform(listOf(approved), pending)
-        val controller = authenticatedController(platform)
-        controller.selectTerminal("workspace", pane)
-        assertEquals("workspace" to pane, controller.state.value.terminalSelection)
-        assertFalse(controller.state.value.terminalSynced)
-        runCurrent()
-        platform.socket.subscribed(2)
-        repeat(4) { platform.socket.output("snapshot-$it", snapshot = it == 0) }
-        platform.socket.snapshotComplete(4)
-        platform.socket.output("live-after-boundary")
-        runCurrent()
-        val feed = assertNotNull(controller.state.value.terminal)
-        repeat(3) {
-            feed.acknowledgeParsed(feed.frames.tryReceive().getOrThrow())
-            assertFalse(controller.state.value.terminalSynced)
-        }
-        feed.acknowledgeParsed(feed.frames.tryReceive().getOrThrow())
-        assertTrue(controller.state.value.terminalSynced)
-        assertEquals("live-after-boundary", feed.frames.tryReceive().getOrThrow().data)
-        assertEquals(4, platform.socket.acknowledgments.size)
-        controller.setForeground(false)
-    }
-
-    @Test fun replayParsedBeforeCompletionStillStaysHiddenUntilMarker() = runTest {
+    @Test fun fullStateRevealsImmediatelyAfterApplicationWithoutCompletionMarker() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
         controller.selectTerminal("workspace", pane)
         runCurrent()
         platform.socket.subscribed(2)
         platform.socket.output("initial", snapshot = true)
+        platform.socket.output("later")
         runCurrent()
         val feed = assertNotNull(controller.state.value.terminal)
-        feed.acknowledgeParsed(feed.frames.tryReceive().getOrThrow())
         assertFalse(controller.state.value.terminalSynced)
-        platform.socket.snapshotComplete(1)
-        runCurrent()
+        val full = assertNotNull(feed.stage(feed.frames.receive()))
+        assertFalse(controller.state.value.terminalSynced)
+        feed.acknowledgeParsed(full)
         assertTrue(controller.state.value.terminalSynced)
         assertEquals(1, platform.socket.acknowledgments.size)
-        controller.setForeground(false)
-    }
-
-    @Test fun emptyReplayCompletionNeedsNoNativeFrameOrOutputAck() = runTest {
-        val platform = ControlledPlatform(listOf(approved), pending)
-        val controller = authenticatedController(platform)
-        controller.selectTerminal("workspace", pane)
-        runCurrent()
-        platform.socket.snapshotComplete(0, subscriptionId = "unbound-generation")
-        platform.socket.subscribed(2)
-        runCurrent()
-        assertFalse(controller.state.value.terminalSynced)
-        platform.socket.snapshotComplete(0)
-        runCurrent()
-        assertTrue(controller.state.value.terminalSynced)
-        assertTrue(assertNotNull(controller.state.value.terminal).frames.tryReceive().isFailure)
-        assertTrue(platform.socket.acknowledgments.isEmpty())
+        assertEquals("later", feed.frames.receive().lines.first().ansi)
         controller.setForeground(false)
     }
 
@@ -844,54 +805,19 @@ class RemoteControllerTest {
         runCurrent()
         platform.socket.subscribed(4, "new-generation")
         platform.socket.output("new-snapshot", snapshot = true)
-        platform.socket.snapshotComplete(999, subscriptionId = oldFrame.subscriptionId)
-        platform.socket.snapshotComplete(0, paneId = 99)
+        
         runCurrent()
         val current = assertNotNull(controller.state.value.terminal)
         original.acknowledgeParsed(oldFrame)
         current.acknowledgeParsed(current.frames.tryReceive().getOrThrow())
-        assertFalse(controller.state.value.terminalSynced)
         assertTrue(controller.state.value.connected)
-        platform.socket.snapshotComplete(1)
+        
         runCurrent()
         assertTrue(controller.state.value.terminalSynced)
         assertEquals("new-generation", platform.socket.acknowledgments.single().text("subscription_id"))
         controller.setForeground(false)
     }
 
-    @Test fun malformedFuturePastAndDuplicateCompletionRetireSessionRatherThanRevealReplay() = runTest {
-        for (sequence in listOf(JsonPrimitive(0), JsonPrimitive(2), JsonPrimitive(-1), JsonPrimitive("1"),
-            JsonPrimitive("18446744073709551616"))) {
-            val platform = ControlledPlatform(listOf(approved), pending)
-            val controller = authenticatedController(platform)
-            controller.selectTerminal("workspace", pane)
-            runCurrent()
-            platform.socket.subscribed(2)
-            platform.socket.output("initial", snapshot = true)
-            platform.socket.encrypted(obj("type" to JsonPrimitive("snapshot_complete"), "pane_id" to JsonPrimitive(pane.id),
-                "subscription_id" to JsonPrimitive("subscription-1"), "sequence" to sequence))
-            runCurrent()
-            assertFalse(controller.state.value.connected)
-            assertFalse(controller.state.value.terminalSynced)
-            assertEquals("Invalid terminal snapshot completion", controller.state.value.error)
-            assertEquals("workspace" to pane, controller.state.value.terminalSelection)
-            controller.setForeground(false)
-            runCurrent()
-        }
-        val platform = ControlledPlatform(listOf(approved), pending)
-        val controller = authenticatedController(platform)
-        controller.selectTerminal("workspace", pane)
-        runCurrent()
-        platform.socket.subscribed(2)
-        platform.socket.output("initial", snapshot = true)
-        platform.socket.snapshotComplete(1)
-        platform.socket.snapshotComplete(1)
-        runCurrent()
-        assertFalse(controller.state.value.connected)
-        assertFalse(controller.state.value.terminalSynced)
-        assertEquals("Invalid terminal snapshot completion", controller.state.value.error)
-        controller.setForeground(false)
-    }
 
     @Test fun latestSelectionWinsWhileOldUnsubscribeAndCanceledSubscribeResponsesAreQueued() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
@@ -913,7 +839,7 @@ class RemoteControllerTest {
         assertEquals(latest, selected.pane)
         platform.socket.subscribed(5, "latest-generation")
         platform.socket.output("latest-snapshot", snapshot = true, paneId = latest.id)
-        platform.socket.snapshotComplete(1, paneId = latest.id)
+        
         runCurrent()
         assertFalse(controller.state.value.terminalSynced)
         selected.acknowledgeParsed(selected.frames.tryReceive().getOrThrow())
@@ -936,7 +862,7 @@ class RemoteControllerTest {
         assertFalse(controller.state.value.terminalSynced)
         runCurrent()
         platform.socket.subscribed(2, "canceled-generation")
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         platform.socket.response(3, JsonNull)
         runCurrent()
         assertNull(controller.state.value.terminalSelection)
@@ -965,12 +891,6 @@ class RemoteControllerTest {
         val current = assertNotNull(controller.state.value.terminal)
         assertNotSame(original, current)
         current.acknowledgeParsed(current.frames.tryReceive().getOrThrow())
-        assertFalse(controller.state.value.terminalSynced)
-        resumed.snapshotComplete(0, subscriptionId = "subscription-1")
-        runCurrent()
-        assertFalse(controller.state.value.terminalSynced)
-        resumed.snapshotComplete(1)
-        runCurrent()
         assertTrue(controller.state.value.terminalSynced)
         assertEquals("workspace" to pane, controller.state.value.terminalSelection)
         assertTrue(controller.state.value.connected)
@@ -1030,7 +950,7 @@ class RemoteControllerTest {
         platform.socket.response(3, JsonNull)
         runCurrent()
         platform.socket.subscribed(4, "after-canceled-ack")
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         runCurrent()
         assertTrue(controller.state.value.connected)
         assertTrue(controller.state.value.terminalSynced)
@@ -1054,7 +974,7 @@ class RemoteControllerTest {
         controller.selectTerminal("workspace", pane)
         runCurrent()
         platform.socket.subscribed(3, "after-canceled-control")
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         runCurrent()
         assertTrue(controller.state.value.connected)
         assertTrue(controller.state.value.terminalSynced)
@@ -1077,7 +997,7 @@ class RemoteControllerTest {
             .mapNotNull { it.optionalText("op") }.takeLast(2))
         platform.afterEncrypt = {}
         platform.socket.subscribed(2, "canceled-during-encryption")
-        platform.socket.snapshotComplete(0)
+        renderEmpty(controller, platform.socket)
         platform.socket.response(3, JsonNull)
         runCurrent()
         assertNull(controller.state.value.terminalSelection)
@@ -1114,7 +1034,7 @@ class RemoteControllerTest {
         runCurrent()
         resumed.response(3, listing())
         resumed.subscribed(4, "after-retired-encryption-session")
-        resumed.snapshotComplete(0)
+        renderEmpty(controller, resumed)
         runCurrent()
         assertTrue(controller.state.value.connected)
         assertTrue(controller.state.value.terminalSynced)
@@ -1152,7 +1072,7 @@ class RemoteControllerTest {
         restored.response(3, listing())
         restored.subscribed(4, "restored-default-route")
         restored.output("restored-history", snapshot = true)
-        restored.snapshotComplete(1)
+        
         runCurrent()
         val current = assertNotNull(controller.state.value.terminal)
         assertNotSame(original, current)
@@ -1169,7 +1089,7 @@ class RemoteControllerTest {
         replacementRoute.subscribed(6, "replaced-default-route")
         runCurrent()
         assertFalse(controller.state.value.terminalSynced)
-        replacementRoute.snapshotComplete(0)
+        renderEmpty(controller, replacementRoute)
         runCurrent()
         assertEquals(3, platform.connections.size)
         assertTrue(controller.state.value.connected)
@@ -1221,6 +1141,74 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
+    @Test fun prewarmedGeometryIsIncludedBeforeInitialSubscription() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.measuredPhoneGrid(42, 28)
+        controller.selectTerminal("workspace", pane)
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "subscribe" }
+        assertEquals(42, request.getValue("cols").jsonPrimitive.int)
+        assertEquals(28, request.getValue("rows").jsonPrimitive.int)
+        assertTrue(platform.socket.encryptedMessages.none { it.optionalText("op") == "terminal_size" })
+        controller.setForeground(false)
+    }
+
+    @Test fun historyRequestsUseSubscriptionAndCursorWithoutConsumingLiveCredits() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        val history = backgroundScope.async { feed.history(null) }
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "history" }
+        assertEquals("workspace", request.text("workspace_id"))
+        assertEquals(pane.id, request.getValue("pane_id").jsonPrimitive.long)
+        assertEquals(feed.subscriptionId, request.text("subscription_id"))
+        assertEquals(JsonNull, request["cursor"])
+        platform.socket.output("live-while-history-pending")
+        runCurrent()
+        feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive())))
+        assertEquals(1, platform.socket.acknowledgments.size)
+        platform.socket.response(request.getValue("id").jsonPrimitive.long, obj(
+            "lines" to JsonArray(listOf(obj("text" to JsonPrimitive("old"), "ansi" to JsonPrimitive("\u001b[31mold"), "cols" to JsonPrimitive(80)))),
+            "cursor" to JsonPrimitive("opaque-next"), "has_more" to JsonPrimitive(true), "truncated" to JsonPrimitive(false)))
+        runCurrent()
+        val page = history.await()
+        assertEquals("old", page.lines.single().jsonObject.text("text"))
+        val older = backgroundScope.async { runCatching { feed.history(page.cursor) } }
+        runCurrent()
+        val next = platform.socket.encryptedMessages.last { it.optionalText("op") == "history" }
+        assertEquals("opaque-next", next.text("cursor"))
+        platform.socket.encrypted(obj("type" to JsonPrimitive("response"), "id" to next.getValue("id"),
+            "ok" to JsonPrimitive(false), "error" to JsonPrimitive("History cursor expired")))
+        runCurrent()
+        assertEquals("History cursor expired", older.await().exceptionOrNull()?.message)
+        assertTrue(controller.state.value.connected)
+        assertTrue(feed.synced)
+        controller.setForeground(false)
+    }
+
+    @Test fun wrongScreenBaseSchedulesResyncForCurrentSubscription() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        platform.socket.output("wrong-base")
+        runCurrent()
+        val incoming = feed.frames.receive()
+        assertNull(feed.stage(incoming.copy(baseRevision = "0")))
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "resync" }
+        assertEquals(feed.subscriptionId, request.text("subscription_id"))
+        assertEquals(pane.id, request.getValue("pane_id").jsonPrimitive.long)
+        assertEquals(1, platform.socket.acknowledgments.size)
+        platform.socket.response(request.getValue("id").jsonPrimitive.long, JsonNull)
+        platform.socket.output("replacement", snapshot = true)
+        runCurrent()
+        feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive())))
+        assertTrue(feed.synced)
+        controller.setForeground(false)
+    }
+
     private fun listing(status: String = "idle", group: String = "Project", branch: String = "main", revision: Long = 0) = obj(
         "workspaces" to JsonArray(listOf(obj("id" to JsonPrimitive("workspace"), "name" to JsonPrimitive("Workspace"),
             "terminals" to JsonArray(listOf(obj("pane_id" to JsonPrimitive(1), "title" to JsonPrimitive("shell"),
@@ -1238,7 +1226,7 @@ class RemoteControllerTest {
         assertNull(controller.resizeTerminal(feed, 42, 28))
         platform.socket.subscribed(2)
         platform.socket.output("initial", snapshot = true)
-        platform.socket.snapshotComplete(1)
+        
         runCurrent()
         assertNull(controller.resizeTerminal(feed, 42, 28))
         feed.acknowledgeParsed(feed.frames.tryReceive().getOrThrow())
@@ -1330,13 +1318,23 @@ class RemoteControllerTest {
         assertTrue(controller.state.value.connected)
         return controller
     }
-    private fun TestScope.openTerminal(controller: RemoteController, socket: ControlledSocket): TerminalFeed {
+    private suspend fun TestScope.openTerminal(controller: RemoteController, socket: ControlledSocket): TerminalFeed {
         controller.selectTerminal("workspace", pane)
         runCurrent()
         socket.subscribed(2)
-        socket.snapshotComplete(0)
+        renderEmpty(controller, socket)
         runCurrent()
         return assertNotNull(controller.state.value.terminal)
+    }
+    private suspend fun TestScope.renderEmpty(controller: RemoteController, socket: ControlledSocket, paneId: Long = 1) {
+        socket.output("", snapshot = true, paneId = paneId)
+        runCurrent()
+        val feed = controller.state.value.terminal
+        if (feed != null && feed.active && feed.pane.id == paneId) {
+            feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive())))
+        }
+        // Bootstrap is exercised above; subsequent assertions observe new ACKs.
+        socket.observeAcknowledgments()
     }
 
     // Controlled delivery exercises controller transitions and channel ownership;
@@ -1385,8 +1383,10 @@ class RemoteControllerTest {
                 .map { wireJson.parseToJsonElement(it.text("payload")).jsonObject }
                 .filter { it.optionalText("kind") == "encrypted" }
                 .map { wireJson.parseToJsonElement(it.text("plain")).jsonObject }
+        private var ackBaseline = 0
         val acknowledgments: List<JsonObject>
-            get() = encryptedMessages.filter { it.optionalText("type") == "output_ack" }
+            get() = encryptedMessages.filter { it.optionalText("type") == "output_ack" }.drop(ackBaseline)
+        fun observeAcknowledgments() { ackBaseline = encryptedMessages.count { it.optionalText("type") == "output_ack" } }
         var closed = false
         override suspend fun send(message: String) {
             check(!closed)
@@ -1425,14 +1425,19 @@ class RemoteControllerTest {
             "type" to JsonPrimitive("agent"), "pane_id" to JsonPrimitive(1),
             "subscription_id" to JsonPrimitive(subscription), "agent_revision" to JsonPrimitive(revision),
             "agent" to (status?.let { obj("status" to JsonPrimitive(it), "name" to JsonPrimitive("Pi")) } ?: JsonNull)))
-        fun snapshotComplete(
-            sequence: Long, subscriptionId: String = this.subscriptionId, paneId: Long = 1,
-        ) = encrypted(obj("type" to JsonPrimitive("snapshot_complete"), "pane_id" to JsonPrimitive(paneId),
-            "subscription_id" to JsonPrimitive(subscriptionId), "sequence" to JsonPrimitive(sequence)))
         fun output(
             data: String, snapshot: Boolean = false, subscriptionId: String = this.subscriptionId, sequence: Long = nextSequence++, paneId: Long = 1,
-        ) = encrypted(obj("type" to JsonPrimitive("output"), "pane_id" to JsonPrimitive(paneId),
+        ) = encrypted(obj("type" to JsonPrimitive("screen"), "pane_id" to JsonPrimitive(paneId),
             "subscription_id" to JsonPrimitive(subscriptionId), "sequence" to JsonPrimitive(sequence),
-            "data" to JsonPrimitive(data), "snapshot" to JsonPrimitive(snapshot), "cols" to JsonPrimitive(80), "rows" to JsonPrimitive(24)))
+            "revision" to JsonPrimitive(sequence.toString()),
+            "base_revision" to (if (snapshot) JsonNull else JsonPrimitive((sequence - 1).toString())),
+            "epoch" to JsonPrimitive("1"), "cols" to JsonPrimitive(80), "rows" to JsonPrimitive(24),
+            "alternate" to JsonPrimitive(false),
+            "cursor" to obj("row" to JsonPrimitive(0), "col" to JsonPrimitive(0), "shape" to JsonPrimitive("block"),
+                "visible" to JsonPrimitive(true), "blink" to JsonPrimitive(true)),
+            "modes" to obj("app_cursor" to JsonPrimitive(false), "app_keypad" to JsonPrimitive(false), "bracketed_paste" to JsonPrimitive(false)),
+            "lines" to JsonArray((if (snapshot) 0 until 24 else 0..0).map { row ->
+                obj("row" to JsonPrimitive(row), "ansi" to JsonPrimitive(if (row == 0) data else ""))
+            }), "part" to JsonPrimitive(0), "last" to JsonPrimitive(true)))
     }
 }

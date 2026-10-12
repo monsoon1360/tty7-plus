@@ -46,7 +46,7 @@ impl CommandMark {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct CommandCursorStyle {
     /// The style in effect when the running command started.
     before: Option<CursorStyle>,

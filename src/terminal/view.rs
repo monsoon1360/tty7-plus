@@ -13,7 +13,7 @@ use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{ActiveTheme as _, Icon, IconName, WindowExt as _, h_flex};
 
-use super::TermSize;
+use tty7_core::terminal::size::TermSize;
 use super::cmd_editor::CmdEditor;
 use super::completion::{self, CandidateKind, CompletionSession};
 use super::element::{GridSnapshot, RenderCell, TerminalElement};

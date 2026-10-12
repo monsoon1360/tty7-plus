@@ -204,42 +204,41 @@ fun MobileApp(
                     TextButton(onClick = { showPairing = true }, modifier = Modifier.testTag("pairing-management-root")) { Text("扫描与配对管理") }
                 } else {
                     val selection = state.terminalSelection
-                    if (selection == null) {
-                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text("选择一个会话开始", style = MaterialTheme.typography.titleLarge)
-                                Text("会话列表位于左侧抽屉。", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Button(onClick = { scope.launch { drawer.open() } }) { Text("打开会话") }
-                            }
-                        }
-                    } else {
-                        val (workspace, selected) = selection
-                        val pane = state.workspaces.firstOrNull { it.id == workspace }?.panes?.firstOrNull { it.id == selected.id } ?: selected
-                        val feed = state.terminal?.takeIf { it.workspace == workspace && it.pane.id == selected.id }
-                        val syncing = !state.connected || !state.terminalSynced || feed == null
-                        val inputEnabled = !syncing
-                        Column(Modifier.weight(1f).fillMaxWidth()) {
+                    val feed = state.terminal
+                    val selected = selection?.second
+                    val pane = selected?.let { selectedPane ->
+                        state.workspaces.firstOrNull { it.id == selection?.first }?.panes?.firstOrNull { it.id == selectedPane.id } ?: selectedPane
+                    }
+                    val syncing = !state.connected || !state.terminalSynced || feed == null
+                    val inputEnabled = !syncing
+                    Column(Modifier.weight(1f).fillMaxWidth()) {
+                        if (pane != null) {
                             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(pane.title, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 if (pane.agentName != null || pane.agentStatus != null) AgentBadge(pane)
                                 TextButton(onClick = { showCommand = !showCommand }, enabled = inputEnabled, modifier = Modifier.testTag("toggle-command")) { Text(if (showCommand) "收起编辑" else "编辑消息") }
                             }
-                            Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF17171A)).testTag("terminal-surface")) {
-                                if (feed != null) {
-                                    Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
-                                        key(feed) {
-                                            TerminalSurface(feed, inputEnabled, controller::input,
-                                                { cols, rows -> controller.resizeTerminal(feed, cols, rows) },
-                                                { controller.terminalFailed(feed, it) })
-                                        }
+                        }
+                        Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF17171A)).testTag("terminal-surface")) {
+                            Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
+                                TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
+                                    { message -> feed?.let { controller.terminalFailed(it, message) } })
+                            }
+                            if (selection == null) {
+                                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                        Text("选择一个会话开始", style = MaterialTheme.typography.titleLarge)
+                                        Text("会话列表位于左侧抽屉。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Button(onClick = { scope.launch { drawer.open() } }) { Text("打开会话") }
                                     }
                                 }
-                                if (syncing) TerminalSyncOverlay(
-                                    reconnecting = !state.connected,
-                                    error = state.terminalError,
-                                    onRetry = controller::retryTerminal,
-                                )
-                            }
+                            } else if (syncing) TerminalSyncOverlay(
+                                reconnecting = !state.connected,
+                                error = state.terminalError,
+                                onRetry = controller::retryTerminal,
+                            )
+                        }
+                        if (selection != null) {
                             Row(Modifier.horizontalScroll(rememberScrollState())) {
                                 listOf(
                                     Triple("Enter", "回车", "\r"), Triple("Ctrl-C", "中断", "\u0003"),

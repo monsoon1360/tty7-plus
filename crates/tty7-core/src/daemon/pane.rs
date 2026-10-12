@@ -21,6 +21,7 @@ use crate::daemon::protocol::{
     RemoteKind, ShellSpec, WinSize,
 };
 use crate::daemon::shell_integration;
+use crate::daemon::screen::{HistorySnapshot, ScreenMirror, ScreenSnapshot};
 
 #[cfg(windows)]
 fn default_prog() -> CommandBuilder {
@@ -717,6 +718,22 @@ struct Observer {
     gate: Arc<OutputGate>,
 }
 
+struct ScreenObserver {
+    id: u64,
+    wake: mpsc::SyncSender<()>,
+}
+
+fn wake_screens(st: &mut PaneState) {
+    st.screen_observers.retain(|observer| {
+        !matches!(observer.wake.try_send(()), Err(mpsc::TrySendError::Disconnected(())))
+    });
+}
+
+fn has_observer(st: &PaneState, id: u64) -> bool {
+    st.observers.iter().any(|observer| observer.id == id)
+        || st.screen_observers.iter().any(|observer| observer.id == id)
+}
+
 /// An observer showing the pane at its own size — a phone, typically, while
 /// its user is away from the desk.
 ///
@@ -733,6 +750,8 @@ struct SizeLease {
 struct PaneState {
     id: u64,
     ring: ReplayRing,
+    screen: Option<ScreenMirror>,
+    screen_observers: Vec<ScreenObserver>,
     subscriber: Option<Sender<DaemonMsg>>,
     subscriber_epoch: u64,
     allow_remote_clipboard_write: bool,
@@ -891,6 +910,7 @@ fn interrupt_key(bytes: &[u8]) -> Option<InterruptKey> {
 }
 
 fn notify(st: &mut PaneState, msg: DaemonMsg) {
+    wake_screens(st);
     if let Some(sub) = &st.subscriber {
         let _ = sub.send(msg.clone());
     }
@@ -923,8 +943,9 @@ fn send_to_observer(obs: &Observer, msg: &DaemonMsg, len: usize) -> bool {
 /// The controller's `Size` echo has to be sent while the state lock is held —
 /// output is fanned out under the same lock, so the frame lands in the stream
 /// after every byte produced at the old size and before the repaint the PTY
-/// emits once it is actually resized (which happens after the lock is
-/// released). A client that speaks `FEATURE_RESIZE_ECHO` defers its grid
+/// emits once it is actually resized. The state guard stays held through the
+/// ioctl so an exec checkpoint cannot split the two. A client that speaks
+/// `FEATURE_RESIZE_ECHO` defers its grid
 /// reflow to this marker instead of reflowing the moment its window changed:
 /// the channel can hold megabytes of old-width output (the pane gate allows
 /// 16 MiB), and reflowing ahead of it parsed old-width bytes into a new-width
@@ -940,6 +961,8 @@ fn send_to_observer(obs: &Observer, msg: &DaemonMsg, len: usize) -> bool {
 /// resize. The echo exists to close the 16 MiB window, not that one.
 fn resize_state(st: &mut PaneState, size: WinSize) {
     st.ring.resize(size);
+    if let Some(screen) = &mut st.screen { screen.resize(size); }
+    wake_screens(st);
     if let Some(sub) = &st.subscriber {
         let _ = sub.send(DaemonMsg::Size(size));
     }
@@ -951,6 +974,7 @@ fn tell_observer(st: &mut PaneState, observer: u64, msg: DaemonMsg) {
     if let Some(obs) = st.observers.iter().find(|obs| obs.id == observer) {
         let _ = obs.tx.send(msg);
     }
+    wake_screens(st);
 }
 
 fn tell_controller_lease(st: &PaneState) {
@@ -969,7 +993,7 @@ fn tell_controller_lease(st: &PaneState) {
 /// size the desk asked for carries over, so ending the lease still restores
 /// the desk rather than the first observer's size.
 fn lease_take(st: &mut PaneState, observer: u64, size: WinSize, by: String) -> Option<WinSize> {
-    if !st.observers.iter().any(|obs| obs.id == observer) {
+    if !has_observer(st, observer) {
         return None;
     }
     let desk = match st.lease.take() {
@@ -992,6 +1016,8 @@ fn lease_take(st: &mut PaneState, observer: u64, size: WinSize, by: String) -> O
     // client that is told its pane changed size resizes back to fit its
     // window, and the two would take turns.
     st.ring.resize(size);
+    if let Some(screen) = &mut st.screen { screen.resize(size); }
+    wake_screens(st);
     st.observers
         .retain(|obs| obs.tx.send(DaemonMsg::Size(size)).is_ok());
     tell_observer(st, observer, DaemonMsg::Lease(Some(by)));
@@ -1007,7 +1033,7 @@ fn mobile_lease_resize(
     size: WinSize,
     initial: bool,
 ) -> std::io::Result<WinSize> {
-    if !st.observers.iter().any(|obs| obs.id == observer) {
+    if !has_observer(st, observer) {
         return Err(std::io::Error::other("terminal subscription is no longer active"));
     }
     if !initial && !st.lease.as_ref().is_some_and(|lease| lease.observer == observer) {
@@ -1139,6 +1165,7 @@ struct PtyBackend {
     #[cfg_attr(windows, allow(dead_code))]
     shell_pid: Option<u32>,
     integration_dir: Option<PathBuf>,
+    read_boundary: Option<Arc<ReadBoundary>>,
 }
 
 /// The pty half of a pane, before it is wired up: opened and spawned into by
@@ -1150,6 +1177,41 @@ struct PtyParts {
     integration_dir: Option<PathBuf>,
     reader_handle: Box<dyn Read + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+}
+
+/// One read and its dispatch are indivisible with respect to an exec checkpoint.
+struct ReadBoundary {
+    #[cfg(unix)]
+    fd: std::os::fd::RawFd,
+    gate: parking_lot::Mutex<()>,
+}
+
+#[cfg(unix)]
+impl ReadBoundary {
+    fn wait_readable(&self) -> std::io::Result<()> {
+        let mut fd = libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 };
+        loop {
+            let result = unsafe { libc::poll(&mut fd, 1, -1) };
+            if result >= 0 { return Ok(()); }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted { return Err(error); }
+        }
+    }
+}
+
+/// Dropping after a failed exec resumes the exact same stream and state.
+#[cfg(unix)]
+pub(crate) struct PreparedHandoff<'a> {
+    _read: parking_lot::MutexGuard<'a, ()>,
+    _state: std::sync::MutexGuard<'a, PaneState>,
+    carried: Option<Carried>,
+}
+
+#[cfg(unix)]
+impl PreparedHandoff<'_> {
+    pub(crate) fn take_carried(&mut self) -> Carried {
+        self.carried.take().expect("handoff record taken once")
+    }
 }
 
 struct NativeSshBackend {
@@ -1433,6 +1495,8 @@ pub struct Carried {
     pub integration_dir: Option<PathBuf>,
     pub size: WinSize,
     pub ring: Vec<crate::daemon::scrollback::Segment>,
+    /// Complete parser checkpoint; absent in legacy handoffs, never inferred from a ring.
+    pub screen_checkpoint: Option<Vec<u8>>,
     pub cwd: Option<PathBuf>,
     pub osc_title: Option<String>,
     /// What the pane is running. Nothing on the other side of the exec can work
@@ -1857,6 +1921,8 @@ impl DaemonPane {
             PaneState {
                 id,
                 ring,
+                screen: Some(ScreenMirror::new(size, cfg!(windows))),
+                screen_observers: Vec::new(),
                 subscriber: None,
                 subscriber_epoch: 0,
                 allow_remote_clipboard_write,
@@ -1908,6 +1974,12 @@ impl DaemonPane {
             writer,
         } = parts;
 
+        #[cfg(unix)]
+        let read_boundary = master.as_raw_fd().map(|fd| Arc::new(ReadBoundary {
+            fd, gate: parking_lot::Mutex::new(()),
+        }));
+        #[cfg(not(unix))]
+        let read_boundary = None;
         let id = state.id;
         let state = Arc::new(Mutex::new(state));
         let shutting_down = Arc::new(AtomicBool::new(false));
@@ -1922,6 +1994,7 @@ impl DaemonPane {
                 child: child.clone(),
                 shell_pid,
                 integration_dir,
+                read_boundary: read_boundary.clone(),
             }),
             writer: writer.clone(),
             shutting_down: shutting_down.clone(),
@@ -1972,7 +2045,7 @@ impl DaemonPane {
         let remote_master = master.clone();
         let agent_master = master.clone();
         let cwd_master = master.clone();
-        let reader = Self::spawn_reader(
+        let reader = Self::spawn_reader_guarded(
             state,
             shutting_down,
             gate,
@@ -1986,42 +2059,39 @@ impl DaemonPane {
                 cwd: Box::new(move || foreground_cwd(&cwd_master, shell_pid)),
             },
             death,
+            read_boundary,
         );
         *pane.reader.lock().unwrap() = Some(reader);
 
         pane
     }
 
-    /// Reduce a live pane to what can be handed to another program image.
-    ///
-    /// Nothing is taken: the descriptor number is copied out, not the
-    /// descriptor, and the pane keeps serving exactly as before. That is what
-    /// lets the caller stage a whole handoff and then abandon it — an `exec`
-    /// that fails costs a log line, not a machine's worth of shells.
-    ///
-    /// `None` for a native-SSH pane. Its session lives in this process's
-    /// memory, not in a descriptor, and no amount of copying descriptor numbers
-    /// would let the new image speak on the wire the old one had encrypted.
+    /// Freeze the reader and state until exec succeeds or the guard is dropped.
+    /// Native SSH cannot cross an exec and therefore returns `None`.
     #[cfg(unix)]
-    pub fn carry(&self) -> Option<crate::daemon::pane::Carried> {
-        let PaneBackend::Pty(pty) = &self.backend else {
-            return None;
-        };
-        let master_fd = pty
-            .master
-            .lock()
-            .ok()?
-            .as_ref()
-            .and_then(|master| master.as_raw_fd())?;
-        let st = self.state.lock().unwrap();
-        Some(Carried {
+    pub(crate) fn prepare_handoff(&self) -> std::io::Result<Option<PreparedHandoff<'_>>> {
+        let PaneBackend::Pty(pty) = &self.backend else { return Ok(None); };
+        let boundary = pty.read_boundary.as_ref()
+            .ok_or_else(|| std::io::Error::other("PTY has no checkpoint read boundary"))?;
+        let read = boundary.gate.lock();
+        let st = self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?;
+        {
+            // A desktop replay can be midway through a transient redraw nudge.
+            // Normalize its temporary kernel size while both reader and state are frozen.
+            let master = pty.master.lock().map_err(|_| std::io::Error::other("PTY master poisoned"))?;
+            let master = master.as_ref().ok_or_else(|| std::io::Error::other("PTY master closed"))?;
+            master.resize(pty_size(st.ring.tail_size()))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        let carried = Carried {
             id: self.id,
             owner: self.owner.clone(),
-            master_fd,
-            child_pid: pty.shell_pid?,
+            master_fd: boundary.fd,
+            child_pid: pty.shell_pid.ok_or_else(|| std::io::Error::other("PTY has no child pid"))?,
             integration_dir: pty.integration_dir.clone(),
             size: st.ring.tail_size(),
             ring: st.ring.snapshot(),
+            screen_checkpoint: st.screen.as_ref().map(ScreenMirror::checkpoint).transpose()?,
             cwd: st.cwd.clone(),
             osc_title: st.osc_title.clone(),
             shell_spec: st.shell_spec.clone(),
@@ -2032,7 +2102,8 @@ impl DaemonPane {
             agent: st.agent,
             agent_argv: st.agent_argv.clone(),
             agent_session: st.agent_session.clone(),
-        })
+        };
+        Ok(Some(PreparedHandoff { _read: read, _state: st, carried: Some(carried) }))
     }
 
     /// Rebuild a pane around a pty this process already holds.
@@ -2069,6 +2140,18 @@ impl DaemonPane {
         // announce and nothing to reset. The shell below these bytes is the
         // same shell that wrote them.
         ring.resize(size);
+        let screen = carried.screen_checkpoint.as_deref().and_then(|checkpoint| {
+            match ScreenMirror::restore(checkpoint) {
+                Ok(mut screen) => {
+                    screen.resize(size);
+                    Some(screen)
+                }
+                Err(error) => {
+                    log::error!("pane {} has an unreadable terminal checkpoint: {error}", carried.id);
+                    None
+                }
+            }
+        });
 
         Ok(Self::over_pty(
             PtyParts {
@@ -2082,6 +2165,8 @@ impl DaemonPane {
             PaneState {
                 id: carried.id,
                 ring,
+                screen,
+                screen_observers: Vec::new(),
                 subscriber: None,
                 subscriber_epoch: 0,
                 allow_remote_clipboard_write: false,
@@ -2157,6 +2242,8 @@ impl DaemonPane {
         let state = Arc::new(Mutex::new(PaneState {
             id,
             ring: ReplayRing::new(size),
+            screen: Some(ScreenMirror::new(size, false)),
+            screen_observers: Vec::new(),
             subscriber: None,
             subscriber_epoch: 0,
             allow_remote_clipboard_write,
@@ -2266,6 +2353,19 @@ impl DaemonPane {
         state: Arc<Mutex<PaneState>>,
         shutting_down: Arc<AtomicBool>,
         gate: Arc<OutputGate>,
+        reader: Box<dyn Read + Send>,
+        writer: Arc<Mutex<Box<dyn Write + Send>>>,
+        foreground_running: impl Fn() -> bool + Send + 'static,
+        probes: ForegroundProbes,
+        death: Arc<DeathReporter>,
+    ) -> JoinHandle<()> {
+        Self::spawn_reader_guarded(state, shutting_down, gate, reader, writer, foreground_running, probes, death, None)
+    }
+
+    fn spawn_reader_guarded(
+        state: Arc<Mutex<PaneState>>,
+        shutting_down: Arc<AtomicBool>,
+        gate: Arc<OutputGate>,
         mut reader: Box<dyn Read + Send>,
         // The pane's input side, shared so the reader can write kitty-graphics
         // query replies (`\x1b_G…;OK\x1b\\`) straight back to the PTY — see the
@@ -2274,6 +2374,7 @@ impl DaemonPane {
         foreground_running: impl Fn() -> bool + Send + 'static,
         probes: ForegroundProbes,
         death: Arc<DeathReporter>,
+        read_boundary: Option<Arc<ReadBoundary>>,
     ) -> JoinHandle<()> {
         let ForegroundProbes {
             group: foreground_group,
@@ -2333,6 +2434,14 @@ impl DaemonPane {
                         tr_disp_t = std::time::Duration::ZERO;
                     }
                     gate.wait_below_high_water();
+                    #[cfg(unix)]
+                    let _read = if let Some(boundary) = &read_boundary {
+                        // Poll before acquiring the gate: an idle PTY must not block an upgrade.
+                        if boundary.wait_readable().is_err() { break; }
+                        Some(boundary.gate.lock())
+                    } else { None };
+                    #[cfg(not(unix))]
+                    let _ = &read_boundary;
                     let tr0 = trace.then(std::time::Instant::now);
                     match reader.read(&mut buf) {
                         Ok(0) => break,
@@ -2436,6 +2545,7 @@ impl DaemonPane {
                                 signals.shell.iter().any(|s| s.mark_at_prompt);
                             let mut st = state.lock().unwrap();
                             let facts_before = may_change_facts.then(|| observed_facts(&st));
+                            if let Some(screen) = &mut st.screen { screen.feed(raw); }
                             record_output(&mut st, bytes);
                             fan_out_output(&mut st, bytes, frames, &gate);
                             apply_signals(&mut st, signals);
@@ -2531,7 +2641,9 @@ impl DaemonPane {
         let resize: Box<dyn Fn(WinSize) + Send> = match &self.backend {
             PaneBackend::Pty(p) => {
                 let master = Arc::clone(&p.master);
+                let boundary = p.read_boundary.clone();
                 Box::new(move |size| {
+                    let _read = boundary.as_ref().map(|boundary| boundary.gate.lock());
                     if let Ok(master) = master.lock()
                         && let Some(master) = master.as_ref()
                     {
@@ -2597,6 +2709,39 @@ impl DaemonPane {
         id
     }
 
+    /// Register a bounded wake-only observer, without allocating or replaying raw history.
+    pub(crate) fn mobile_screen_observe(&self, wake: mpsc::SyncSender<()>) -> std::io::Result<u64> {
+        let mut st = self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?;
+        if st.screen.is_none() {
+            return Err(std::io::Error::other(crate::daemon::screen::UNAVAILABLE));
+        }
+        st.observer_seq += 1;
+        let id = st.observer_seq;
+        st.screen_observers.push(ScreenObserver { id, wake });
+        Ok(id)
+    }
+
+    pub(crate) fn mobile_screen(&self) -> std::io::Result<Arc<ScreenSnapshot>> {
+        self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?.screen.as_mut()
+            .map(ScreenMirror::snapshot)
+            .ok_or_else(|| std::io::Error::other(crate::daemon::screen::UNAVAILABLE))
+    }
+
+    pub(crate) fn mobile_history(&self) -> std::io::Result<HistorySnapshot> {
+        self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?.screen.as_ref()
+            .map(ScreenMirror::history)
+            .ok_or_else(|| std::io::Error::other(crate::daemon::screen::UNAVAILABLE))
+    }
+
+    pub(crate) fn mobile_lease_held(&self, id: u64) -> bool {
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).lease.as_ref().is_some_and(|lease| lease.observer == id)
+    }
+
+    pub(crate) fn mobile_exit(&self) -> Option<Option<i32>> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        (!state.alive).then_some(state.exit_code)
+    }
+
     /// A message for one observer alone, such as a refusal of what it sent.
     /// False once the pane has let it go.
     pub fn tell_observer(&self, observer_id: u64, msg: DaemonMsg) -> bool {
@@ -2608,12 +2753,10 @@ impl DaemonPane {
     }
 
     pub fn unobserve(&self, observer_id: u64) {
-        let restore = {
-            let mut st = self.state.lock().unwrap();
-            let restore = lease_release(&mut st, observer_id);
-            st.observers.retain(|obs| obs.id != observer_id);
-            restore
-        };
+        let mut st = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let restore = lease_release(&mut st, observer_id);
+        st.observers.retain(|obs| obs.id != observer_id);
+        st.screen_observers.retain(|observer| observer.id != observer_id);
         if let Some(size) = restore {
             self.resize_pty(size);
         }
@@ -2621,13 +2764,11 @@ impl DaemonPane {
 
     /// An observer's [`LeaseRequest`]: take the pane at its size, or let go.
     pub fn observer_lease(&self, observer_id: u64, request: LeaseRequest) {
-        let apply = {
-            let mut st = self.state.lock().unwrap();
-            match request {
-                LeaseRequest::Take { size, by } => lease_take(&mut st, observer_id, size, by),
-                LeaseRequest::Release => lease_release(&mut st, observer_id),
-                LeaseRequest::Watch | LeaseRequest::TakeBack => None,
-            }
+        let mut st = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let apply = match request {
+            LeaseRequest::Take { size, by } => lease_take(&mut st, observer_id, size, by),
+            LeaseRequest::Release => lease_release(&mut st, observer_id),
+            LeaseRequest::Watch | LeaseRequest::TakeBack => None,
         };
         if let Some(size) = apply {
             self.resize_pty(size);
@@ -2650,19 +2791,17 @@ impl DaemonPane {
 
     /// The controller's [`LeaseRequest`]: hear about leases, or end one.
     pub fn controller_lease(&self, request: LeaseRequest) {
-        let apply = {
-            let mut st = self.state.lock().unwrap();
-            match request {
-                LeaseRequest::Watch => {
-                    st.lease_watch = true;
-                    if st.lease.is_some() {
-                        tell_controller_lease(&st);
-                    }
-                    None
+        let mut st = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let apply = match request {
+            LeaseRequest::Watch => {
+                st.lease_watch = true;
+                if st.lease.is_some() {
+                    tell_controller_lease(&st);
                 }
-                LeaseRequest::TakeBack => lease_end(&mut st),
-                LeaseRequest::Take { .. } | LeaseRequest::Release => None,
+                None
             }
+            LeaseRequest::TakeBack => lease_end(&mut st),
+            LeaseRequest::Take { .. } | LeaseRequest::Release => None,
         };
         if let Some(size) = apply {
             self.resize_pty(size);
@@ -2797,7 +2936,8 @@ impl DaemonPane {
     /// The controller's resize; see [`controller_resize`] for what a lease
     /// makes of it.
     pub fn resize(&self, size: WinSize) {
-        if let Some(size) = controller_resize(&mut self.state.lock().unwrap(), size) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(size) = controller_resize(&mut state, size) {
             self.resize_pty(size);
         }
     }
@@ -3370,6 +3510,7 @@ impl ReplayRing {
 fn record_output(st: &mut PaneState, bytes: &[u8]) {
     st.ring.append(bytes);
     st.modes.feed(bytes);
+    wake_screens(st);
 }
 
 /// Everything a client needs to rebuild the pane's screen and status, in the
@@ -6205,6 +6346,8 @@ mod tests {
         PaneState {
             id: 0,
             ring: ReplayRing::new(ws(80, 24)),
+            screen: Some(ScreenMirror::with_config(ws(80, 24), false, &crate::core::config::Config::default())),
+            screen_observers: Vec::new(),
             subscriber: None,
             subscriber_epoch: 0,
             allow_remote_clipboard_write: false,
@@ -6229,6 +6372,54 @@ mod tests {
             exit_code: None,
             last_redraw_nudge: None,
         }
+    }
+
+    #[test]
+    fn screen_observers_coalesce_and_participate_in_size_leases() {
+        let mut state = test_state(true);
+        let (wake, receiver) = mpsc::sync_channel(1);
+        state.screen_observers.push(ScreenObserver { id: 1, wake });
+        for _ in 0..1000 { wake_screens(&mut state); }
+        assert_eq!(receiver.try_iter().count(), 1);
+        assert!(state.observers.is_empty(), "screen observation never creates raw replay subscribers");
+        mobile_lease_resize(&mut state, 1, ws(40, 10), true).unwrap();
+        let screen = state.screen.as_mut().unwrap().snapshot();
+        assert_eq!((screen.cols, screen.rows), (40, 10));
+        assert_eq!(receiver.try_iter().count(), 1);
+        lease_end(&mut state);
+        assert!(mobile_lease_resize(&mut state, 1, ws(50, 12), false).is_err());
+        let screen = state.screen.as_mut().unwrap().snapshot();
+        assert_eq!((screen.cols, screen.rows), (80, 24));
+        receiver.try_iter().for_each(drop);
+        notify(&mut state, DaemonMsg::Exited { code: Some(7) });
+        assert_eq!(receiver.try_iter().count(), 1);
+        drop(receiver);
+        wake_screens(&mut state);
+        assert!(state.screen_observers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_boundary_freeze_keeps_unread_bytes_for_the_next_image() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+        let (mut input, mut output) = UnixStream::pair().unwrap();
+        let boundary = Arc::new(ReadBoundary { fd: input.as_raw_fd(), gate: parking_lot::Mutex::new(()) });
+        let frozen = boundary.gate.lock();
+        let reader_boundary = boundary.clone();
+        let (done, receive) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            reader_boundary.wait_readable().unwrap();
+            let _read = reader_boundary.gate.lock();
+            let mut byte = [0; 1];
+            input.read_exact(&mut byte).unwrap();
+            done.send(byte).unwrap();
+        });
+        output.write_all(b"x").unwrap();
+        assert!(receive.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(frozen);
+        assert_eq!(receive.recv_timeout(Duration::from_secs(1)).unwrap(), *b"x");
+        reader.join().unwrap();
     }
 
     #[test]

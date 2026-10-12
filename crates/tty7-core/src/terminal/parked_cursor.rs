@@ -17,8 +17,8 @@
 //! to anyway.
 //!
 //! Only conhost parks a cursor, so the reader runs this for panes on a ConPTY
-//! alone — see [`crate::terminal::remote::PtySource`], which answers that per
-//! pane rather than per build. Everywhere else the pty is raw and the
+//! alone — the desktop's `PtySource` and the daemon's backend identify this
+//! per pane rather than per build. Everywhere else the pty is raw and the
 //! application's cursor is the real one: a TUI is free to end a repaint on the
 //! text it just wrote and then echo the next keystroke straight after it, with
 //! no positioning of its own — vim opens its `:` command line exactly that way,
@@ -46,7 +46,7 @@ pub enum CursorCut {
 /// Byte scanner over the pty stream, reporting cursor hide/shows as an offset
 /// one past the sequence, so the reader can advance the emulator to exactly
 /// there and act on the state the sequence left behind.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ParkedCursorScanner {
     state: State,
     /// Parameter and intermediate bytes of the CSI being read.
@@ -59,7 +59,7 @@ pub struct ParkedCursorScanner {
     last_was_move: bool,
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum State {
     #[default]
     Text,
@@ -186,14 +186,16 @@ impl ParkedCursorScanner {
 
 /// The other half: keeps the cell the cursor was hidden on, and restores it
 /// when the matching show turns out to be parked.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ParkedCursorRepair {
     hidden: Option<Hidden>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Hidden {
     point: Point,
     input_needs_wrap: bool,
+    #[serde(with = "checkpoint_instant")]
     at: Instant,
 }
 
@@ -240,6 +242,26 @@ impl ParkedCursorRepair {
                 grid.cursor.input_needs_wrap = hidden.input_needs_wrap;
             }
         }
+    }
+}
+
+mod checkpoint_instant {
+    use serde::{Deserialize, Serialize};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    pub fn serialize<S: serde::Serializer>(at: &Instant, serializer: S) -> Result<S::Ok, S::Error> {
+        SystemTime::now()
+            .checked_sub(at.elapsed())
+            .unwrap_or(UNIX_EPOCH)
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Instant, D::Error> {
+        let at = SystemTime::deserialize(deserializer)?;
+        let elapsed = at.elapsed().unwrap_or_default();
+        Instant::now()
+            .checked_sub(elapsed)
+            .ok_or_else(|| serde::de::Error::custom("cursor checkpoint time is out of range"))
     }
 }
 

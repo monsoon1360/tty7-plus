@@ -2,13 +2,22 @@ use base64::Engine as _;
 
 const MAX_PAYLOAD: usize = 8192;
 
+#[derive(serde::Serialize)]
 pub struct OscTokenizer {
+    #[serde(skip)]
     ids: &'static [&'static [u8]],
     buf: Vec<u8>,
     state: State,
 }
 
-#[derive(Default, Clone, Copy)]
+/// Streaming bytes/state only; the caller restores its static OSC selectors.
+#[derive(serde::Deserialize)]
+pub struct OscTokenizerCheckpoint {
+    buf: Vec<u8>,
+    state: State,
+}
+
+#[derive(Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum State {
     #[default]
     Ground,
@@ -25,6 +34,17 @@ impl OscTokenizer {
             ids,
             buf: Vec::new(),
             state: State::Ground,
+        }
+    }
+
+    pub fn from_checkpoint(
+        ids: &'static [&'static [u8]],
+        checkpoint: OscTokenizerCheckpoint,
+    ) -> Self {
+        Self {
+            ids,
+            buf: checkpoint.buf,
+            state: checkpoint.state,
         }
     }
 

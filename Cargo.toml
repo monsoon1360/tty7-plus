@@ -326,12 +326,9 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac10
 # package manifest, so they never reach the Windows/macOS builds.
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "runtime_shaders"] }
 
-# Our fork of Zed's alacritty_terminal fork: the VT parser + grid
-# (`Term`/`ansi::Processor`). Two packages read it and they must agree, hence
-# this being a workspace pin rather than one each — the GUI (`terminal::remote`)
-# to render the live mirror, and tty7-cli to turn a captured pane back into text
-# (`tty7 capture --plain`). The daemon parses nothing; it is a byte pipe, and its
-# PTY is driven by `portable-pty`.
+# Shared parser for desktop, CLI capture, and authoritative daemon mobile state.
+# Vendored from l0ng-ai/alacritty 1276f128fbaa8832cbc66210675cbe8aeb570499
+# with read-only primary-grid access and exact daemon handoff serialization.
 #
 # The `tty7` branch is Zed's `fcf32fe` (the rev Zed pins) plus two commits, both
 # still missing from alacritty master as of 852e971:
@@ -349,9 +346,8 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 #    re-scores the sequence with `UnicodeWidthStr` and widens the cell (issue
 #    #203).
 #
-# Each patch has a guard test in `src/terminal/remote.rs`; drop this fork once
-# both land upstream.
-alacritty_terminal = { git = "https://github.com/l0ng-ai/alacritty", rev = "1276f128fbaa8832cbc66210675cbe8aeb570499" }
+# The original fork patches remain covered by desktop guard tests.
+alacritty_terminal = { path = "vendor/alacritty_terminal" }
 
 anyhow = "1"
 log = "0.4"
@@ -361,6 +357,8 @@ smallvec = "1"
 smol = "2"
 
 [patch.crates-io]
+# Exact in-flight parser checkpoints for daemon exec handoffs.
+vte = { path = "vendor/vte" }
 # Our fork (l0ng-ai/russh, branch `tty7`): ayamir's gssapi-with-mic client auth
 # (0d1d073) plus Eugeny/russh 58886f4d + 24e2c374, which stop zlib from
 # truncating packets that inflate past 2x — without them a host with

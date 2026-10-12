@@ -193,6 +193,9 @@ class RemoteController(
                 sendInner(obj("kind" to JsonPrimitive("hello"), "protocol" to JsonPrimitive(MOBILE_PROTOCOL),
                     "credential_id" to JsonPrimitive(computer.credentialId), "nonce" to JsonPrimitive(clientNonce)))
                 val challenge = withTimeout(handshakeTimeout) { receiveInner(remote) }
+                if (challenge.optionalText("kind") == "error" && challenge.optionalText("code") == "update_required") {
+                    error("Unsupported mobile protocol. Update phone and computer.")
+                }
                 require(challenge.text("kind") == "challenge") { "Invalid host challenge" }
                 val protocol = challenge["protocol"]?.jsonPrimitive
                 require(protocol != null && !protocol.isString && protocol.intOrNull == MOBILE_PROTOCOL) {
@@ -270,33 +273,16 @@ class RemoteController(
                             if (ok) pending.complete(result)
                             else pending.completeExceptionally(IllegalStateException(message.optionalText("error") ?: "Operation failed"))
                         }
-                        "output" -> {
-                            require(authenticated) { "Output before authentication" }
+                        "screen" -> {
+                            require(authenticated) { "Screen before authentication" }
                             val feed = mutable.value.terminal
                             if (feed != null && feed.matches(message.getValue("pane_id").jsonPrimitive.long, message.text("subscription_id"))) {
-                                require(message.getValue("cols").jsonPrimitive.int in 1..1000 && message.getValue("rows").jsonPrimitive.int in 1..1000) { "Invalid terminal dimensions" }
-                                val sequence = message.getValue("sequence").jsonPrimitive
-                                require(!sequence.isString && sequence.content.toULongOrNull()?.let { it > 0uL } == true) {
-                                    "Invalid terminal output sequence"
-                                }
                                 try {
-                                    feed.enqueue(TerminalFrame(message.text("data"), message.getValue("snapshot").jsonPrimitive.boolean,
-                                        message.getValue("cols").jsonPrimitive.int, message.getValue("rows").jsonPrimitive.int,
-                                        message.text("subscription_id"), sequence.content.toULong()))
+                                    feed.enqueue(TerminalFrame.fromJson(message))
                                 } catch (e: Exception) {
                                     currentCoroutineContext().ensureActive()
                                     if (mutable.value.terminal === feed && feed.active) throw e
                                 }
-                            }
-                        }
-                        "snapshot_complete" -> {
-                            require(authenticated) { "Snapshot completion before authentication" }
-                            val feed = mutable.value.terminal
-                            if (feed != null && feed.matches(message.getValue("pane_id").jsonPrimitive.long, message.text("subscription_id"))) {
-                                val sequence = message.getValue("sequence").jsonPrimitive
-                                val target = sequence.content.toULongOrNull()
-                                require(!sequence.isString && target != null) { "Invalid terminal snapshot completion" }
-                                feed.completeSnapshot(target)
                             }
                         }
                         "terminal_lease" -> {
@@ -423,7 +409,7 @@ class RemoteController(
     }
     private suspend fun request(
         op: String, vararg fields: Pair<String, JsonElement>, subscribing: TerminalFeed? = null, input: TerminalFeed? = null,
-        sizing: TerminalFeed? = null,
+        sizing: TerminalFeed? = null, target: TerminalFeed? = null,
     ): JsonElement {
         check(mutable.value.connected) { "Connect to a computer first" }
         val generation = lifetime.generation
@@ -433,7 +419,7 @@ class RemoteController(
         if (subscribing != null) pendingSubscriptions[id] = subscribing
         try {
             sendEncrypted(obj("type" to JsonPrimitive("request"), "id" to JsonPrimitive(id), "op" to JsonPrimitive(op), *fields),
-                feed = subscribing ?: input ?: sizing, input = input != null, sizing = sizing != null)
+                feed = subscribing ?: input ?: sizing ?: target, input = input != null, sizing = sizing != null)
             val response = withTimeout(requestTimeout) { result.await() }
             if (!lifetime.accepts(generation)) throw CancellationException("Connection changed")
             return response
@@ -530,13 +516,36 @@ class RemoteController(
                     if (isCurrent() && mutable.value.terminal === syncedFeed && syncedFeed.active) {
                         mutable.value = mutable.value.copy(terminalSynced = true)
                     }
+                }, onResync = { resyncFeed ->
+                    action {
+                        if (isCurrent() && mutable.value.terminal === resyncFeed && resyncFeed.active) {
+                            try {
+                                request("resync", "workspace_id" to JsonPrimitive(workspace),
+                                    "pane_id" to JsonPrimitive(pane.id),
+                                    "subscription_id" to JsonPrimitive(resyncFeed.subscriptionId!!), target = resyncFeed)
+                            } catch (e: Exception) {
+                                if (e is CancellationException) throw e
+                                if (isCurrent() && mutable.value.terminal === resyncFeed) {
+                                    retainTerminalFailure(e.message ?: "Terminal resynchronization failed")
+                                }
+                            }
+                        }
+                    }
+                }, onHistory = { historyFeed, cursor ->
+                    check(isCurrent() && mutable.value.terminal === historyFeed && historyFeed.active)
+                    HistoryPage.fromJson(request("history", "workspace_id" to JsonPrimitive(workspace),
+                        "pane_id" to JsonPrimitive(pane.id), "subscription_id" to JsonPrimitive(historyFeed.subscriptionId!!),
+                        "cursor" to (cursor?.let(::JsonPrimitive) ?: JsonNull), target = historyFeed).jsonObject)
                 }) { parsedFeed, frame ->
                     acknowledgeParsed(parsedFeed, frame, generation, session, remote)
                 }
                 subscribedPane = pane.id
                 mutable.value = mutable.value.copy(terminal = feed, terminalSynced = false)
                 try {
-                    request("subscribe", "workspace_id" to JsonPrimitive(workspace), "pane_id" to JsonPrimitive(pane.id), subscribing = feed)
+                    val size = phoneGrid
+                    request("subscribe", "workspace_id" to JsonPrimitive(workspace), "pane_id" to JsonPrimitive(pane.id),
+                        "cols" to (size?.first?.let(::JsonPrimitive) ?: JsonNull),
+                        "rows" to (size?.second?.let(::JsonPrimitive) ?: JsonNull), subscribing = feed)
                     currentCoroutineContext().ensureActive()
                     if (!isCurrent()) feed.cancel()
                 } catch (e: Exception) {
@@ -569,6 +578,12 @@ class RemoteController(
                 if (intent == selectionIntent) subscribedPane = null
             }
         }
+    }
+    private var phoneGrid: Pair<Int, Int>? = null
+    fun measuredPhoneGrid(cols: Int, rows: Int) {
+        if (cols !in 20..1000 || rows !in 5..1000) return
+        phoneGrid = cols to rows
+        mutable.value.terminal?.let { resizeTerminal(it, cols, rows) }
     }
     fun resizeTerminal(feed: TerminalFeed, cols: Int, rows: Int): Job? {
         if (mutable.value.terminal !== feed || !feed.active || !feed.synced ||

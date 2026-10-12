@@ -22,6 +22,7 @@ pub mod remote_link;
 pub mod responsibility;
 pub mod router;
 pub mod scrollback;
+pub(crate) mod screen;
 pub mod server;
 pub mod singleton;
 pub mod spawn;

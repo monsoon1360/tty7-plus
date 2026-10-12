@@ -9,16 +9,20 @@ use std::thread::JoinHandle;
 
 use alacritty_terminal::event::{Event as AlacEvent, EventListener};
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{self, CursorShape, CursorStyle};
+use alacritty_terminal::term::{Term, TermMode};
+use alacritty_terminal::vte::ansi;
+#[cfg(test)]
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
 
-use crate::terminal::command_cursor::{CommandCursorStyle, CommandMark};
-use crate::terminal::parked_cursor::{CursorCut, ParkedCursorRepair, ParkedCursorScanner};
-use crate::terminal::prompt_reflow::{PromptBreak, PromptMark};
+use tty7_core::terminal::command_cursor::{CommandCursorStyle, CommandMark};
+use tty7_core::terminal::config::terminal_config_from_user;
+use tty7_core::terminal::parked_cursor::{CursorCut, ParkedCursorRepair, ParkedCursorScanner};
+use tty7_core::terminal::prompt_reflow::{self, PromptBreak, PromptMark};
 
 use std::collections::VecDeque;
 
 use crate::core::cli_agent::{AgentSessionState, AgentStatus, CLIAgent};
+#[cfg(test)]
 use crate::core::config::CursorStyle as ConfigCursorStyle;
 use crate::core::osc::{Note, NoteBudget, OscTokenizer, TitleEffect, TitleLifetime};
 use crate::daemon::protocol::{
@@ -32,7 +36,7 @@ use crate::daemon::transport::{self, Stream};
 use gpui::EntityId;
 use tty7_core::core::term_modes::{COLOR_SCHEME_UPDATES, TerminalModes};
 
-use super::size::TermSize;
+use tty7_core::terminal::size::TermSize;
 
 #[derive(Clone)]
 pub struct EventProxy {
@@ -1499,7 +1503,7 @@ impl RemoteTerminal {
                                     if quit.load(Ordering::SeqCst) {
                                         return;
                                     }
-                                    super::prompt_reflow::resize(
+                                    prompt_reflow::resize(
                                         &mut term,
                                         TermSize::new(ws.cols as usize, ws.rows as usize),
                                         shell_redraws,
@@ -2004,7 +2008,7 @@ impl RemoteTerminal {
         self.synced_cell = cell;
         if !echoed {
             let shell_redraws = !self.is_local_conpty() && self.at_prompt();
-            super::prompt_reflow::resize(&mut self.term.lock(), size, shell_redraws);
+            prompt_reflow::resize(&mut self.term.lock(), size, shell_redraws);
         }
 
         let win = win_size(size, cell_w, cell_h);
@@ -3394,42 +3398,6 @@ fn connect_routed(route: &PaneRoute) -> anyhow::Result<Stream> {
     Ok(stream)
 }
 
-fn terminal_config_from_user(user_config: &crate::core::config::Config) -> Config {
-    Config {
-        scrolling_history: user_config.scrollback_limit,
-        default_cursor_style: alacritty_cursor_style(user_config.cursor_style),
-        semantic_escape_chars: user_config.word_separators.clone(),
-        kitty_keyboard: true,
-        // Every pane on Windows is presented through ConPTY (a shell, wsl.exe,
-        // ssh.exe — conhost mediates them all), which repaints nothing after a
-        // resize and keeps addressing the screen against its own re-anchored
-        // layout: grow keeps rows/cursor pinned and opens blank rows below,
-        // shrink scrolls the last written row to the new bottom. The grid must
-        // resize the same way or every later absolute-CUP paint (PSReadLine
-        // redraws its prompt that way per keystroke) lands rows off, shredding
-        // the screen the first time a maximized pane draws anything.
-        conpty_resize: cfg!(windows),
-        ..Config::default()
-    }
-}
-
-#[cfg(test)]
-mod config_tests {
-    use super::*;
-
-    /// The whole conhost-semantics fix hangs on this one field: it defaults to
-    /// off in `alacritty_terminal`, so dropping the line compiles clean, passes
-    /// every other test, and quietly resurrects the maximize garbling — which
-    /// is exactly how it shipped disabled once (#415 follow-up).
-    #[test]
-    fn windows_panes_opt_into_conpty_resize_semantics() {
-        let config = terminal_config_from_user(&crate::core::config::Config::default());
-        assert_eq!(config.conpty_resize, cfg!(windows));
-        #[cfg(windows)]
-        assert!(config.conpty_resize);
-    }
-}
-
 /// Issue #857 asked whether a read boundary can leave the grid different from
 /// the one the same bytes parse into in one go — a Pi response streamed as
 /// synchronized differential frames (cursor-up, erase-line, rewrite) with
@@ -3701,18 +3669,6 @@ fn feed_grid<T: EventListener>(
     }
     drop(grid);
     Some(waited)
-}
-
-fn alacritty_cursor_style(style: ConfigCursorStyle) -> CursorStyle {
-    let shape = match style {
-        ConfigCursorStyle::Block => CursorShape::Block,
-        ConfigCursorStyle::Bar => CursorShape::Beam,
-        ConfigCursorStyle::Underline => CursorShape::Underline,
-    };
-    CursorStyle {
-        shape,
-        blinking: false,
-    }
 }
 
 fn win_size(size: TermSize, cell_w: u16, cell_h: u16) -> WinSize {
@@ -7312,7 +7268,7 @@ mod osc_tests {
     #[test]
     fn a_burst_of_notes_is_handed_over_as_its_newest_few() {
         use crate::daemon::protocol::DaemonMsg;
-        use crate::terminal::size::TermSize;
+        use tty7_core::terminal::size::TermSize;
 
         crate::core::config::pin_test_config_dir();
         let (client, mut daemon) = crate::terminal::view::test_stream_pair();

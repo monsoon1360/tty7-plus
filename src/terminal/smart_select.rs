@@ -672,7 +672,7 @@ mod tests {
         };
         let mut term = Term::new(
             config,
-            &crate::terminal::size::TermSize::new(cols, rows),
+            &tty7_core::terminal::size::TermSize::new(cols, rows),
             VoidListener,
         );
         let mut parser: alacritty_terminal::vte::ansi::Processor =

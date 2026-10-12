@@ -1,7 +1,6 @@
 mod boxdraw;
 mod cmd_editor;
 mod color_scheme;
-mod command_cursor;
 mod completion;
 mod composer;
 pub mod element;
@@ -20,18 +19,14 @@ mod link_probe;
 mod loopback;
 pub mod palette;
 pub(crate) mod pane_liveness;
-pub(crate) mod parked_cursor;
-pub(crate) mod prompt_reflow;
 mod remote;
 mod reverse_search;
 pub(crate) mod scrollbar;
 pub mod search;
 mod signature;
-mod size;
 mod smart_select;
 mod typeahead;
 pub mod view;
 
 pub(crate) use remote::notify_desktop;
 pub use remote::{PaneRoute, PaneWorkspace, RemoteTerminal, attach_refused, attach_unanswered};
-pub use size::TermSize;

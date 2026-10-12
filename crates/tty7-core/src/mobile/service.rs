@@ -1,8 +1,9 @@
 use super::crypto::{self, Cipher, Envelope};
 use super::store::{Credential, Store};
 use super::{AdminReply, AdminRequest, Device, Pairing, Pending, Status};
-use crate::daemon::pane::{DaemonPane, MobileAgentState, OutputGate};
-use crate::daemon::protocol::{DaemonMsg, WinSize};
+use crate::daemon::pane::{DaemonPane, MobileAgentState};
+use crate::daemon::protocol::WinSize;
+use crate::daemon::screen::{HistorySnapshot, ScreenSnapshot};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
@@ -22,9 +23,17 @@ use tokio_tungstenite::{
 
 const MAX_PEERS: usize = 32;
 const MAX_SUBSCRIPTIONS: usize = 8;
-const MOBILE_PROTOCOL: u64 = 2;
+const MOBILE_PROTOCOL: u64 = 3;
 const OUTPUT_WINDOW: u64 = 4;
-const MAX_OUTPUT_BYTES: usize = 48 * 1024;
+const MAX_SCREEN_FRAME_BYTES: usize = 128 * 1024;
+const MAX_SCREEN_STATE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HISTORY_ROWS: usize = 5000;
+const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HISTORY_PAGE_ROWS: usize = 200;
+const MAX_HISTORY_PAGE_BYTES: usize = 128 * 1024;
+const MAX_HISTORY_VIEWS: usize = 16;
+const MAX_HISTORY_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+const HISTORY_LIFETIME: Duration = Duration::from_secs(120);
 const PAIR_LIFETIME: u64 = 300;
 const HANDSHAKE_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(24 * 3600);
@@ -38,10 +47,7 @@ pub(crate) trait Backend: Send + Sync {
 pub(crate) struct Observation {
     pub pane: Arc<DaemonPane>,
     pub observer_id: u64,
-    pub receiver: mpsc::Receiver<DaemonMsg>,
-    pub gate: Arc<OutputGate>,
-    pub size: WinSize,
-    pub initial: Vec<DaemonMsg>,
+    pub receiver: mpsc::Receiver<()>,
 }
 impl Drop for Observation {
     fn drop(&mut self) {
@@ -151,10 +157,14 @@ struct Subscription {
     observer: Option<(Arc<DaemonPane>, u64)>,
     lease_started: bool,
     credit: Arc<OutputCredit>,
+    resync: Arc<AtomicBool>,
+    history: Arc<Mutex<HistoryStore>>,
+    history_busy: Arc<AtomicBool>,
 }
 impl Drop for Subscription {
     fn drop(&mut self) {
         self.credit.cancel();
+        self.history.lock().remove(&self.id);
     }
 }
 
@@ -230,6 +240,106 @@ impl OutputCredit {
         Ok(())
     }
 }
+struct HistoryView {
+    subscription: String,
+    snapshot: Arc<HistorySnapshot>,
+    sizes: Arc<Vec<usize>>,
+    end: usize,
+    bytes: usize,
+    created: Instant,
+}
+
+#[derive(Default)]
+struct HistoryStore {
+    views: HashMap<String, HistoryView>,
+}
+
+impl HistoryStore {
+    fn remove(&mut self, subscription: &str) {
+        self.views.retain(|_, view| view.subscription != subscription);
+    }
+
+    fn take(&mut self, subscription: &str, cursor: &str) -> io::Result<HistoryView> {
+        self.views.retain(|_, view| view.created.elapsed() < HISTORY_LIFETIME);
+        if !self.views.get(cursor).is_some_and(|view| view.subscription == subscription) {
+            return Err(io::Error::other("history cursor expired or does not belong to this subscription"));
+        }
+        Ok(self.views.remove(cursor).expect("checked history cursor"))
+    }
+
+    fn retain_view(&mut self, view: HistoryView) -> String {
+        self.views.retain(|_, old| old.created.elapsed() < HISTORY_LIFETIME);
+        self.remove(&view.subscription);
+        while self.views.len() >= MAX_HISTORY_VIEWS
+            || self.views.values().map(|old| old.bytes).sum::<usize>() + view.bytes > MAX_HISTORY_TOTAL_BYTES
+        {
+            let oldest = self.views.iter().min_by_key(|(_, old)| old.created)
+                .map(|(key, _)| key.clone()).expect("bounded history view");
+            self.views.remove(&oldest);
+        }
+        let cursor = uuid::Uuid::new_v4().to_string();
+        self.views.insert(cursor.clone(), view);
+        cursor
+    }
+}
+
+fn history_view(subscription: String, mut snapshot: HistorySnapshot) -> HistoryView {
+    let mut sizes = Vec::new();
+    let mut bytes = 0;
+    for line in snapshot.lines.iter().rev().take(MAX_HISTORY_ROWS) {
+        let size = json_string_bytes(&line.text) + json_string_bytes(&line.ansi) + 48;
+        if size > MAX_HISTORY_PAGE_BYTES - 1024 || bytes + size > MAX_HISTORY_BYTES {
+            break;
+        }
+        bytes += size;
+        sizes.push(size);
+    }
+    let end = sizes.len();
+    let discard = snapshot.lines.len() - end;
+    snapshot.truncated |= discard > 0;
+    snapshot.lines.drain(..discard);
+    sizes.reverse();
+    HistoryView {
+        subscription, snapshot: Arc::new(snapshot), sizes: Arc::new(sizes),
+        end, bytes, created: Instant::now(),
+    }
+}
+
+fn history_page(mut view: HistoryView, store: &Mutex<HistoryStore>, credit: &OutputCredit) -> io::Result<Value> {
+    let end = view.end;
+    let mut start = end;
+    let mut bytes = 1024;
+    while start > 0 && end - start < MAX_HISTORY_PAGE_ROWS {
+        let next = view.sizes[start - 1];
+        if bytes + next > MAX_HISTORY_PAGE_BYTES { break; }
+        bytes += next;
+        start -= 1;
+    }
+    let lines = serde_json::to_value(&view.snapshot.lines[start..end]).map_err(io::Error::other)?;
+    let truncated = view.snapshot.truncated;
+    view.end = start;
+    let mut store = store.lock();
+    if !credit.active() {
+        return Err(io::Error::other("terminal subscription is no longer active"));
+    }
+    let cursor = if start > 0 { Some(store.retain_view(view)) } else { None };
+    Ok(json!({"lines":lines, "cursor":cursor, "has_more":start > 0, "truncated":truncated}))
+}
+
+fn active_subscription<'a>(peer: &'a Peer, request: &Value) -> io::Result<&'a Subscription> {
+    let pane = number(request, "pane_id")?;
+    let id = field(request, "subscription_id")?;
+    let workspace = field(request, "workspace_id")?;
+    peer.subscriptions.get(&pane).filter(|subscription| {
+        subscription.id == id && subscription.workspace == workspace && subscription.credit.active()
+    }).ok_or_else(|| io::Error::other("terminal subscription is no longer active"))
+}
+
+struct HistoryJob(Arc<AtomicBool>);
+impl Drop for HistoryJob {
+    fn drop(&mut self) { self.0.store(false, Ordering::Release); }
+}
+
 struct Output {
     client: String,
     pane: u64,
@@ -250,6 +360,8 @@ struct Service {
     replies: async_mpsc::Sender<(String, Value)>,
     reply_receiver: async_mpsc::Receiver<(String, Value)>,
     operation_slots: Arc<tokio::sync::Semaphore>,
+    history: Arc<Mutex<HistoryStore>>,
+    history_slots: Arc<tokio::sync::Semaphore>,
     rate_window: Instant,
     attempts: usize,
 }
@@ -276,6 +388,8 @@ impl Service {
             replies,
             reply_receiver,
             operation_slots: Arc::new(tokio::sync::Semaphore::new(128)),
+            history: Arc::new(Mutex::new(HistoryStore::default())),
+            history_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             rate_window: Instant::now(),
             attempts: 0,
         }
@@ -721,10 +835,14 @@ impl Service {
         }
         if matches!(&peer.phase, Phase::Hello) {
             let hello: Value = serde_json::from_str(payload).map_err(|_| crypto::denied())?;
-            if field(&hello, "kind")? != "hello"
-                || hello.get("protocol").and_then(Value::as_u64) != Some(MOBILE_PROTOCOL)
-            {
+            if field(&hello, "kind")? != "hello" {
                 return Err(crypto::denied());
+            }
+            if hello.get("protocol").and_then(Value::as_u64) != Some(MOBILE_PROTOCOL) {
+                outgoing.push(data(client, json!({"kind":"error", "code":"update_required",
+                    "protocol":MOBILE_PROTOCOL,
+                    "message":"Mobile protocol mismatch; update the app and host to protocol 3."}).to_string()));
+                return Err(io::Error::other("mobile protocol mismatch: update required"));
             }
             let id = field(&hello, "credential_id")?;
             if id.len() > 128 {
@@ -849,6 +967,15 @@ impl Service {
                     .and_then(Value::as_u64)
                     .filter(|id| *id > 0)
                     .ok_or_else(crypto::denied)?;
+                if field(&request, "op")? == "history" {
+                    match self.schedule_history(client, peer, &request, id) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            outgoing.push(encrypted(client, peer, &response(id, Err(error)))?);
+                            return Ok(());
+                        }
+                    }
+                }
                 let result = if matches!(
                     field(&request, "op")?,
                     "list" | "create_workspace" | "create_terminal" | "close_terminal" | "input"
@@ -923,11 +1050,60 @@ impl Service {
             .map_err(|_| io::Error::other("mobile operation queue is full or closed"))?;
         Ok(())
     }
+    fn schedule_history(&self, client: &str, peer: &Peer, request: &Value, id: u64) -> io::Result<()> {
+        let subscription = active_subscription(peer, request)?;
+        let cursor = match request.get("cursor") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(cursor)) if cursor.len() <= 128 => Some(cursor.clone()),
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid history cursor")),
+        };
+        let pane = subscription.observer.as_ref()
+            .ok_or_else(|| io::Error::other("terminal observer is unavailable"))?.0.clone();
+        let permit = self.history_slots.clone().try_acquire_owned()
+            .map_err(|_| io::Error::other("mobile history workers are busy"))?;
+        if subscription.history_busy.swap(true, Ordering::AcqRel) {
+            return Err(io::Error::other("a history request is already pending"));
+        }
+        let job = HistoryJob(subscription.history_busy.clone());
+        let subscription = subscription.id.clone();
+        let credit = active_subscription(peer, request)?.credit.clone();
+        let store = self.history.clone();
+        let replies = self.replies.clone();
+        let alive = peer.alive.clone();
+        let failed = peer.failed.clone();
+        let client = client.to_string();
+        std::thread::Builder::new().name("tty7-mobile-history".into()).spawn(move || {
+            let (_permit, _job) = (permit, job);
+            let result = (|| {
+                if !credit.active() { return Err(io::Error::other("terminal subscription is no longer active")); }
+                let view = match cursor {
+                    Some(cursor) => store.lock().take(&subscription, &cursor)?,
+                    None => {
+                        store.lock().remove(&subscription);
+                        history_view(subscription, pane.mobile_history()?)
+                    }
+                };
+                history_page(view, &store, &credit)
+            })();
+            if alive.load(Ordering::Acquire) && credit.active()
+                && replies.try_send((client, response(id, result))).is_err()
+            {
+                failed.store(true, Ordering::Release);
+            }
+        })?;
+        Ok(())
+    }
+
     async fn operation(&self, client: &str, peer: &mut Peer, request: Value) -> io::Result<Value> {
         match field(&request, "op")? {
             "subscribe" => {
                 let workspace = field(&request, "workspace_id")?.to_string();
                 let pane = number(&request, "pane_id")?;
+                let target = if request.get("cols").is_some() || request.get("rows").is_some() {
+                    Some(terminal_size(&request)?)
+                } else {
+                    None
+                };
                 if peer.subscriptions.len() >= MAX_SUBSCRIPTIONS
                     && !peer.subscriptions.contains_key(&pane)
                 {
@@ -941,16 +1117,23 @@ impl Service {
                     })
                         .await
                         .map_err(|_| io::Error::other("observer failed"))??;
-                let size = observation.size;
                 peer.subscriptions.remove(&pane);
+                if let Some(size) = target {
+                    observation.pane.mobile_observer_resize(observation.observer_id, size, true)?;
+                }
+                let size = observation.pane.mobile_size();
                 let id = uuid::Uuid::new_v4().to_string();
                 let credit = Arc::new(OutputCredit::new());
+                let resync = Arc::new(AtomicBool::new(true));
                 let subscription = Subscription {
                     id: id.clone(),
                     workspace,
                     observer: Some((observation.pane.clone(), observation.observer_id)),
-                    lease_started: false,
+                    lease_started: target.is_some(),
                     credit: credit.clone(),
+                    resync: resync.clone(),
+                    history: self.history.clone(),
+                    history_busy: Arc::new(AtomicBool::new(false)),
                 };
                 let sink = MobileOutput {
                     output: self.output.clone(),
@@ -963,7 +1146,7 @@ impl Service {
                 std::thread::Builder::new()
                     .name("tty7-mobile-output".into())
                     .spawn(move || {
-                        forward_output(observation, sink);
+                        forward_output(observation, sink, resync);
                     })?;
                 peer.subscriptions.insert(pane, subscription);
                 // The actor sends this response before it can dequeue output.
@@ -988,6 +1171,12 @@ impl Service {
                     .await
                     .map_err(|_| io::Error::other("terminal resize failed"))??;
                 subscription.lease_started = true;
+                Ok(Value::Null)
+            }
+            "resync" => {
+                let subscription = active_subscription(peer, &request)?;
+                subscription.resync.store(true, Ordering::Release);
+                subscription.credit.changed.notify_all();
                 Ok(Value::Null)
             }
             "unsubscribe" => {
@@ -1063,39 +1252,40 @@ impl MobileOutput {
             }
         }
     }
-    fn frame(&self, sequence: u64, snapshot: bool, bytes: &[u8], size: WinSize) -> bool {
-        self.send(
-            json!({"type":"output", "pane_id":self.pane, "subscription_id":self.id,
-            "sequence":sequence, "snapshot":snapshot, "data":crypto::encode(bytes),
-            "cols":size.cols, "rows":size.rows}),
-            Some(sequence),
-            false,
-        )
-    }
-    fn chunks(&self, snapshot: bool, bytes: &[u8], size: WinSize) -> bool {
-        if bytes.is_empty() {
-            return self
-                .sequence()
-                .is_some_and(|sequence| self.frame(sequence, snapshot, bytes, size));
+    fn wait_credit(&self, status: &mut impl FnMut() -> bool) -> bool {
+        loop {
+            if !self.credit.active() || !status() { return false; }
+            let mut state = self.credit.state.lock();
+            if !state.active { return false; }
+            if state.reserved - state.acknowledged < OUTPUT_WINDOW { return true; }
+            self.credit.changed.wait_for(&mut state, Duration::from_millis(200));
         }
-        for chunk in bytes.chunks(MAX_OUTPUT_BYTES) {
-            let Some(sequence) = self.sequence() else {
-                return false;
-            };
-            if !self.frame(sequence, snapshot, chunk, size) {
-                return false;
-            }
+    }
+
+    fn screen(&self, screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>,
+        status: &mut impl FnMut() -> bool) -> bool
+    {
+        let parts = match screen_parts(screen, previous) {
+            Ok(parts) => parts,
+            Err(error) => { self.error(&error.to_string()); return false; }
+        };
+        let base = previous.filter(|old| same_screen_epoch(old, screen));
+        for (part, rows) in parts.iter().enumerate() {
+            if !self.wait_credit(status) { return false; }
+            let Some(sequence) = self.sequence() else { return false; };
+            let lines: Vec<_> = rows.iter().map(|&row| json!({
+                "row":row, "ansi":screen.lines[row].as_str()
+            })).collect();
+            if !self.send(json!({
+                "type":"screen", "pane_id":self.pane, "subscription_id":self.id,
+                "sequence":sequence, "revision":screen.revision.to_string(),
+                "base_revision":base.map(|old| old.revision.to_string()),
+                "epoch":screen.epoch.to_string(), "cols":screen.cols, "rows":screen.rows,
+                "alternate":screen.alternate, "cursor":screen.cursor, "modes":screen.modes,
+                "lines":lines, "part":part, "last":part + 1 == parts.len()
+            }), Some(sequence), false) { return false; }
         }
         true
-    }
-    fn snapshot_complete(&self) -> bool {
-        let sequence = self.credit.state.lock().reserved;
-        self.send(
-            json!({"type":"snapshot_complete", "pane_id":self.pane,
-            "subscription_id":self.id, "sequence":sequence}),
-            None,
-            false,
-        )
     }
     fn error(&self, message: &str) {
         // Error strings are runtime data too; keep a failed pane from producing
@@ -1113,164 +1303,99 @@ impl MobileOutput {
     }
 }
 
-fn forward_output(mut observation: Observation, sink: MobileOutput) {
-    // Move replay vectors out while retaining the RAII unobserve guard through
-    // every credit wait. The gate accounts only for messages in the live FIFO.
-    // Status is not held behind terminal replay or its output-credit window.
-    let state = observation.pane.mobile_agent();
-    if !sink.agent(state) {
-        return;
-    }
-    let initial = std::mem::take(&mut observation.initial);
-    forward_observer(
-        &observation.receiver,
-        &observation.gate,
-        observation.size,
-        initial,
-        Some(state),
-        || observation.pane.mobile_agent(),
-        &sink,
-    );
+fn same_screen_epoch(a: &ScreenSnapshot, b: &ScreenSnapshot) -> bool {
+    a.epoch == b.epoch && a.cols == b.cols && a.rows == b.rows && a.alternate == b.alternate
 }
 
-fn forward_observer(
-    receiver: &mpsc::Receiver<DaemonMsg>,
-    gate: &OutputGate,
-    mut size: WinSize,
-    initial: Vec<DaemonMsg>,
-    mut last_agent: Option<MobileAgentState>,
-    agent_state: impl Fn() -> MobileAgentState,
-    sink: &MobileOutput,
+
+// JSON escapes are charged without allocating a serialized copy of every row.
+fn json_string_bytes(text: &str) -> usize {
+    2 + text.bytes().map(|byte| match byte {
+        b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+        0..=31 => 6,
+        _ => 1,
+    }).sum::<usize>()
+}
+
+fn screen_parts(screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>) -> io::Result<Vec<Vec<usize>>> {
+    if screen.lines.len() != usize::from(screen.rows) {
+        return Err(io::Error::other("screen snapshot has an invalid row count"));
+    }
+    let previous = previous.filter(|old| same_screen_epoch(old, screen));
+    let mut parts = vec![Vec::new()];
+    let mut part_bytes = 2048;
+    let mut state_bytes = 2048;
+    for (row, line) in screen.lines.iter().enumerate() {
+        // Includes the row number and line object punctuation.
+        let bytes = json_string_bytes(line) + 96;
+        state_bytes += bytes;
+        if state_bytes > MAX_SCREEN_STATE_BYTES || bytes > MAX_SCREEN_FRAME_BYTES - 2048 {
+            return Err(io::Error::other("screen state exceeds mobile staging limits"));
+        }
+        if previous.is_some_and(|old| old.lines.get(row) == Some(line)) { continue; }
+        if part_bytes + bytes > MAX_SCREEN_FRAME_BYTES {
+            parts.push(Vec::new());
+            part_bytes = 2048;
+        }
+        parts.last_mut().expect("screen part").push(row);
+        part_bytes += bytes;
+    }
+    Ok(parts)
+}
+
+fn forward_output(observation: Observation, sink: MobileOutput, resync: Arc<AtomicBool>) {
+    let mut last_agent = None;
+    let mut last_lease = None;
+    let status = || {
+        let state = observation.pane.mobile_agent();
+        if last_agent != Some(state) {
+            last_agent = Some(state);
+            if !sink.agent(state) { return false; }
+        }
+        let held = observation.pane.mobile_lease_held(observation.observer_id);
+        if last_lease != Some(held) {
+            last_lease = Some(held);
+            if !sink.send(json!({"type":"terminal_lease", "pane_id":sink.pane,
+                "subscription_id":sink.id, "held":held}), None, false) { return false; }
+        }
+        if let Some(code) = observation.pane.mobile_exit() {
+            sink.send(json!({"type":"exited", "pane_id":sink.pane,
+                "subscription_id":sink.id, "code":code}), None, true);
+            return false;
+        }
+        true
+    };
+    forward_screens(&observation.receiver, &sink, &resync,
+        || observation.pane.mobile_screen(), status);
+}
+
+fn forward_screens(
+    receiver: &mpsc::Receiver<()>, sink: &MobileOutput, resync: &AtomicBool,
+    mut snapshot: impl FnMut() -> io::Result<Arc<ScreenSnapshot>>,
+    mut status: impl FnMut() -> bool,
 ) {
-    let mut initial = initial.into_iter();
-    let mut pending = None;
-    let mut staging = Vec::new();
-    if initial.len() == 0 && !sink.snapshot_complete() {
-        return;
-    }
+    let mut previous: Option<Arc<ScreenSnapshot>> = None;
     while sink.credit.active() {
-        let replaying = initial.len() > 0;
-        let message = if let Some(message) = initial.next().or_else(|| pending.take()) {
-            message
-        } else {
-            match receiver.recv_timeout(Duration::from_millis(200)) {
-                Ok(message) => {
-                    gate.sub(mobile_drained_bytes(&message));
-                    message
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    sink.error("terminal observer disconnected unexpectedly");
-                    return;
-                }
-            }
+        // Wait BEFORE sampling: arbitrarily many producer updates collapse into
+        // the latest immutable state, never a queue of historical PTY output.
+        if !sink.wait_credit(&mut status) { return; }
+        let full = resync.swap(false, Ordering::AcqRel);
+        let screen = match snapshot() {
+            Ok(screen) => screen,
+            Err(error) => { sink.error(&error.to_string()); return; }
         };
-        match message {
-            DaemonMsg::Size(new) => {
-                let changed = size != new;
-                size = new;
-                // Geometry is itself ordered output. Even a quiet shell must
-                // resize both the screen mirror and renderer at this boundary.
-                if !replaying && changed && !sink.chunks(false, &[], size) {
-                    return;
-                }
-            }
-            // Replay vectors are chunked directly; never copy the 8 MiB history
-            // into a second buffer. Snapshot and dimension boundaries are exact.
-            DaemonMsg::Snapshot(bytes) => {
-                if !sink.chunks(true, &bytes, size) {
-                    return;
-                }
-            }
-            DaemonMsg::Output(bytes) if bytes.len() >= MAX_OUTPUT_BYTES => {
-                if !sink.chunks(false, &bytes, size) {
-                    return;
-                }
-            }
-            DaemonMsg::Output(bytes) => {
-                // Wait first: tiny PTY writes arriving under credit pressure
-                // can then share one native parser round trip. Reuse this buffer.
-                let Some(sequence) = sink.sequence() else {
-                    return;
-                };
-                staging.clear();
-                if staging.capacity() < MAX_OUTPUT_BYTES {
-                    staging.reserve(MAX_OUTPUT_BYTES);
-                }
-                staging.extend_from_slice(&bytes);
-                // Initial messages must not absorb the first live bytes into
-                // their frame, or completion would no longer name the replay.
-                while !replaying && staging.len() < MAX_OUTPUT_BYTES {
-                    let message = match receiver.try_recv() {
-                        Ok(message) => message,
-                        Err(_) => break,
-                    };
-                    gate.sub(mobile_drained_bytes(&message));
-                    match message {
-                        DaemonMsg::Output(bytes)
-                            if bytes.len() <= MAX_OUTPUT_BYTES - staging.len() =>
-                        {
-                            staging.extend_from_slice(&bytes);
-                        }
-                        boundary => {
-                            pending = Some(boundary);
-                            break;
-                        }
-                    }
-                }
-                if !sink.frame(sequence, false, &staging, size) {
-                    return;
-                }
-            }
-            DaemonMsg::Lease(holder) => {
-                if !sink.send(
-                    json!({"type":"terminal_lease", "pane_id":sink.pane,
-                        "subscription_id":sink.id, "held":holder.is_some()}),
-                    None,
-                    false,
-                ) {
-                    return;
-                }
-            }
-            DaemonMsg::Exited { code } => {
-                sink.send(
-                    json!({"type":"exited", "pane_id":sink.pane,
-                    "subscription_id":sink.id, "code":code}),
-                    None,
-                    true,
-                );
+        if full || previous.as_ref().is_none_or(|old| old.revision != screen.revision || !same_screen_epoch(old, &screen)) {
+            let base = if full { None } else { previous.as_deref() };
+            if !sink.screen(&screen, base, &mut status) { return; }
+            previous = Some(screen);
+        }
+        match receiver.recv_timeout(Duration::from_millis(200)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if status() { sink.error("terminal observer disconnected unexpectedly"); }
                 return;
             }
-            DaemonMsg::Error(message) => {
-                sink.error(&message);
-                return;
-            }
-            DaemonMsg::Agent(_) | DaemonMsg::AgentStatus(_) => {
-                // Replay and queued status frames are wakeups, not current
-                // state. Read the same atomic badge as list and the desktop.
-                let state = agent_state();
-                if last_agent != Some(state) {
-                    last_agent = Some(state);
-                    if !sink.agent(state) {
-                        return;
-                    }
-                }
-            }
-            _ => {}
         }
-        if replaying && initial.len() == 0 && !sink.snapshot_complete() {
-            return;
-        }
-    }
-}
-
-fn mobile_drained_bytes(message: &DaemonMsg) -> usize {
-    match message {
-        DaemonMsg::Output(bytes)
-        | DaemonMsg::Snapshot(bytes)
-        | DaemonMsg::Image(bytes)
-        | DaemonMsg::ClipboardWrite(bytes) => bytes.len(),
-        _ => 0,
     }
 }
 
@@ -1627,65 +1752,6 @@ mod tests {
         assert_eq!(error.to_string(), "terminal subscription is no longer active");
     }
 
-    #[tokio::test]
-    async fn phone_lease_and_restore_keep_output_and_empty_grid_markers_ordered() {
-        let mut service = test_service();
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let (sender, completed, producer) = worker(
-            service.output.clone(), credit, Vec::new(),
-            vec![
-                DaemonMsg::Output(b"desk-before".to_vec()),
-                DaemonMsg::Size(size(42, 28)),
-                DaemonMsg::Lease(Some("phone".into())),
-                DaemonMsg::Output(b"phone".to_vec()),
-                DaemonMsg::Lease(None),
-                DaemonMsg::Size(size(120, 40)),
-                DaemonMsg::Output(b"desk-after".to_vec()),
-                DaemonMsg::Exited { code: Some(0) },
-            ],
-        );
-        receive_completion(&mut service, 0).await;
-        let mut grids = Vec::new();
-        let mut held = Vec::new();
-        let mut sequence = 0;
-        loop {
-            let output = receive_output(&mut service).await;
-            match output.value["type"].as_str().unwrap() {
-                "output" => {
-                    sequence += 1;
-                    assert_eq!(output.sequence, Some(sequence));
-                    grids.push((
-                        output.value["cols"].as_u64().unwrap(),
-                        output.value["rows"].as_u64().unwrap(),
-                        crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
-                    ));
-                    service.output_frame(output, &mut Vec::new());
-                    acknowledge(&mut service, sequence - 1, "feed", sequence).await;
-                }
-                "terminal_lease" => {
-                    assert_eq!(output.value["subscription_id"], "feed");
-                    assert_eq!(output.value["pane_id"], 7);
-                    assert!(output.sequence.is_none() && !output.finished);
-                    held.push((sequence, output.value["held"].as_bool().unwrap()));
-                    service.output_frame(output, &mut Vec::new());
-                }
-                "exited" => { service.output_frame(output, &mut Vec::new()); break; }
-                kind => panic!("unexpected frame {kind}"),
-            }
-        }
-        assert_eq!(grids, vec![
-            (80, 24, b"desk-before".to_vec()),
-            (42, 28, Vec::new()),
-            (42, 28, b"phone".to_vec()),
-            (120, 40, Vec::new()),
-            (120, 40, b"desk-after".to_vec()),
-        ]);
-        assert_eq!(held, vec![(2, true), (3, false)]);
-        completed.await.unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
     fn size(cols: u16, rows: u16) -> WinSize {
         WinSize {
             cols,
@@ -1730,57 +1796,39 @@ mod tests {
                     observer: None,
                     lease_started: false,
                     credit: credit.clone(),
+                    resync: Arc::new(AtomicBool::new(false)),
+                    history: service.history.clone(),
+                    history_busy: Arc::new(AtomicBool::new(false)),
                 },
             );
         credit
     }
 
-    fn worker(
-        output: async_mpsc::Sender<Output>,
-        credit: Arc<OutputCredit>,
-        initial: Vec<DaemonMsg>,
-        messages: Vec<DaemonMsg>,
-    ) -> (
-        mpsc::Sender<DaemonMsg>,
-        tokio::sync::oneshot::Receiver<()>,
-        std::thread::JoinHandle<()>,
-    ) {
-        let (send, receive) = mpsc::channel();
-        let gate = Arc::new(OutputGate::new());
-        for message in messages {
-            gate.add(mobile_drained_bytes(&message));
-            send.send(message).unwrap();
+    fn sink(output: async_mpsc::Sender<Output>, credit: Arc<OutputCredit>) -> MobileOutput {
+        MobileOutput {
+            output, credit, runtime: tokio::runtime::Handle::current(),
+            client: "phone".into(), pane: 7, id: "feed".into(),
         }
-        let (completed, producer) = observer_worker(output, credit, initial, receive, gate);
-        (send, completed, producer)
     }
 
-    fn observer_worker(
-        output: async_mpsc::Sender<Output>,
-        credit: Arc<OutputCredit>,
-        initial: Vec<DaemonMsg>,
-        receive: mpsc::Receiver<DaemonMsg>,
-        gate: Arc<OutputGate>,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        std::thread::JoinHandle<()>,
-    ) {
-        let sink = MobileOutput {
-            output,
-            runtime: tokio::runtime::Handle::current(),
-            client: "phone".into(),
-            pane: 7,
-            id: "feed".into(),
-            credit,
-        };
-        let (finished, completed) = tokio::sync::oneshot::channel();
-        let producer = std::thread::spawn(move || {
-            forward_observer(
-                &receive, &gate, size(80, 24), initial, None, MobileAgentState::default, &sink,
-            );
-            let _ = finished.send(());
-        });
-        (completed, producer)
+    fn screen_fixture(rows: u16, width: usize) -> ScreenSnapshot {
+        use crate::daemon::screen::{ScreenCursor, ScreenModes};
+        ScreenSnapshot {
+            revision: 1, epoch: 1, cols: 80, rows, alternate: false,
+            cursor: ScreenCursor { row: 0, col: 0, shape: "block".into(), visible: true, blink: true },
+            modes: ScreenModes { app_cursor: false, app_keypad: false, bracketed_paste: true },
+            lines: (0..rows).map(|row| Arc::new(format!("\x1b[0;31m{row}界e\u{301}{}\x1b[0m", "x".repeat(width)))).collect(),
+        }
+    }
+
+    fn history_fixture(rows: usize) -> HistorySnapshot {
+        use crate::daemon::screen::HistoryLine;
+        HistorySnapshot {
+            lines: (0..rows).map(|row| HistoryLine {
+                text: format!("row {row}"), ansi: format!("\x1b[0mrow {row}"), cols: 80,
+            }).collect(),
+            truncated: false,
+        }
     }
 
     async fn receive_output(service: &mut Service) -> Output {
@@ -1788,24 +1836,6 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-    }
-
-    async fn receive_completion(service: &mut Service, sequence: u64) {
-        let marker = receive_output(service).await;
-        assert_eq!(
-            marker.value,
-            json!({"type":"snapshot_complete", "pane_id":7,
-            "subscription_id":"feed", "sequence":sequence})
-        );
-        assert_eq!(
-            marker.sequence, None,
-            "completion must not reserve output credit"
-        );
-        assert!(!marker.finished);
-        let mut outgoing = Vec::new();
-        service.output_frame(marker, &mut outgoing);
-        assert_eq!(outgoing.len(), 1);
-        assert!(service.peers["phone"].subscriptions.contains_key(&7));
     }
 
     async fn client_frame(service: &mut Service, seq: u64, value: Value) -> Vec<Message> {
@@ -1836,526 +1866,231 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mobile_agent_events_read_live_state_instead_of_replayed_completion() {
-        use crate::core::cli_agent::{AgentSessionState, AgentStatus, CLIAgent};
+    async fn credit_wait_coalesces_current_state_and_resync_keeps_sequence_order() {
         let mut service = test_service();
         let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let current = Arc::new(Mutex::new(MobileAgentState {
-            revision: 2,
-            agent: Some((CLIAgent::OhMyPi, AgentStatus::Working)),
-        }));
-        let (send, receive) = mpsc::channel();
-        let gate = Arc::new(OutputGate::new());
-        let sink = MobileOutput {
-            output: service.output.clone(),
-            runtime: tokio::runtime::Handle::current(),
-            client: "phone".into(),
-            pane: 7,
-            id: "feed".into(),
-            credit,
-        };
+        let current = Arc::new(Mutex::new(Arc::new(screen_fixture(3, 10))));
+        let resync = Arc::new(AtomicBool::new(true));
+        let (wake, receive) = mpsc::sync_channel(1);
+        let output = sink(service.output.clone(), credit.clone());
         let live = current.clone();
+        let reset = resync.clone();
+        let status_reads = Arc::new(AtomicUsize::new(0));
+        let reads = status_reads.clone();
+        let (done, completed) = tokio::sync::oneshot::channel();
         let producer = std::thread::spawn(move || {
-            forward_observer(
-                &receive,
-                &gate,
-                size(80, 24),
-                vec![
-                    DaemonMsg::Agent(Some(CLIAgent::OhMyPi)),
-                    DaemonMsg::AgentStatus(Some(AgentSessionState {
-                        status: AgentStatus::Done,
-                        ..Default::default()
-                    })),
-                ],
-                None,
-                || *live.lock(),
-                &sink,
-            );
+            forward_screens(&receive, &output, &reset, || Ok(live.lock().clone()), || {
+                reads.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+            let _ = done.send(());
         });
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.value["type"], "agent");
-        assert_eq!(output.value["agent"]["status"], "working");
-        assert_eq!(output.value["agent_revision"], 2);
-        assert_eq!(output.sequence, None, "status consumes no terminal output credit");
-        assert!(!output.finished);
-        let mut outgoing = Vec::new();
-        service.output_frame(output, &mut outgoing);
-        assert_eq!(outgoing.len(), 1, "the consumer receives the live status");
-        receive_completion(&mut service, 0).await;
+        for revision in 1..=4 {
+            if revision > 1 {
+                let mut screen = screen_fixture(3, 10);
+                screen.revision = revision;
+                screen.lines[1] = Arc::new(format!("\x1b[0mrevision {revision}"));
+                *current.lock() = Arc::new(screen);
+                let _ = wake.try_send(());
+            }
+            let frame = receive_output(&mut service).await;
+            assert_eq!(frame.value["revision"], revision.to_string());
+            assert_eq!(frame.sequence, Some(revision));
+            service.output_frame(frame, &mut Vec::new());
+        }
+        for revision in 5..=5000 {
+            let mut screen = screen_fixture(3, 10);
+            screen.revision = revision;
+            screen.lines[1] = Arc::new(format!("\x1b[0mrevision {revision}"));
+            *current.lock() = Arc::new(screen);
+            let _ = wake.try_send(());
+        }
+        let before = status_reads.load(Ordering::Relaxed);
+        assert!(tokio::time::timeout(Duration::from_millis(250), service.outputs.recv()).await.is_err());
+        assert!(status_reads.load(Ordering::Relaxed) > before, "status remains sampled without screen credit");
+        assert_eq!(credit.state.lock().reserved, 4);
+        acknowledge(&mut service, 0, "feed", 4).await;
+        let frame = receive_output(&mut service).await;
+        assert_eq!(frame.sequence, Some(5));
+        assert_eq!(frame.value["revision"], "5000");
+        assert_eq!(frame.value["base_revision"], "4");
+        assert_eq!(frame.value["lines"].as_array().unwrap().len(), 1);
+        service.output_frame(frame, &mut Vec::new());
+        resync.store(true, Ordering::Release);
+        let _ = wake.try_send(());
+        let frame = receive_output(&mut service).await;
+        assert_eq!(frame.sequence, Some(6));
+        assert_eq!(frame.value["revision"], "5000");
+        assert!(frame.value["base_revision"].is_null());
+        assert_eq!(frame.value["lines"].as_array().unwrap().len(), 3);
+        service.peers.remove("phone");
+        tokio::time::timeout(Duration::from_secs(1), completed).await.unwrap().unwrap();
+        producer.join().unwrap();
+    }
 
-        for (revision, status) in [
-            (3, AgentStatus::Waiting),
-            (4, AgentStatus::Working),
-            (5, AgentStatus::Done),
+    #[tokio::test]
+    async fn metadata_only_patch_transmits_cursor_modes_and_revision_without_rows() {
+        let mut service = test_service();
+        let credit = add_subscription(&mut service, "phone", 7, "feed");
+        let output = sink(service.output.clone(), credit);
+        let producer = std::thread::spawn(move || {
+            let before = screen_fixture(3, 10);
+            let mut after = screen_fixture(3, 10);
+            after.revision = u64::MAX - 1;
+            after.cursor.col = 7;
+            after.cursor.visible = false;
+            after.modes.app_cursor = true;
+            after.modes.app_keypad = true;
+            output.screen(&after, Some(&before), &mut || true)
+        });
+        let frame = receive_output(&mut service).await;
+        assert!(producer.join().unwrap());
+        assert_eq!(frame.value["revision"], (u64::MAX - 1).to_string());
+        assert_eq!(frame.value["base_revision"], "1");
+        assert_eq!(frame.value["cursor"]["col"], 7);
+        assert_eq!(frame.value["cursor"]["visible"], false);
+        assert_eq!(frame.value["modes"]["app_cursor"], true);
+        assert_eq!(frame.value["modes"]["app_keypad"], true);
+        assert_eq!(frame.value["lines"], json!([]));
+        assert_eq!(frame.value["last"], true);
+    }
+
+    #[tokio::test]
+    async fn observer_failure_is_bounded_and_only_removes_its_own_subscription() {
+        let mut service = test_service();
+        let credit = add_subscription(&mut service, "phone", 7, "feed");
+        add_subscription(&mut service, "phone", 8, "other");
+        let output = sink(service.output.clone(), credit);
+        let producer = std::thread::spawn(move || output.error(&"界".repeat(crypto::MAX_PLAINTEXT)));
+        let frame = receive_output(&mut service).await;
+        producer.join().unwrap();
+        assert_eq!(frame.value["type"], "terminal_error");
+        assert!(frame.value["message"].as_str().unwrap().len() <= 4096);
+        service.output_frame(frame, &mut Vec::new());
+        assert!(!service.peers["phone"].subscriptions.contains_key(&7));
+        assert!(service.peers["phone"].subscriptions.contains_key(&8));
+    }
+
+    #[test]
+    fn screen_limits_charge_json_escaping_and_reject_unbounded_staging() {
+        let mut screen = screen_fixture(100, 100 * 1024);
+        assert!(screen_parts(&screen, None).is_err());
+        screen.rows = 1;
+        screen.lines.truncate(1);
+        screen.lines[0] = Arc::new("\x1b".repeat(24 * 1024));
+        assert!(screen_parts(&screen, None).is_err());
+        for text in ["界e\u{301}", "\x1b[0m\"\\\n\r\t\u{08}\u{0c}"] {
+            assert_eq!(json_string_bytes(text), serde_json::to_vec(text).unwrap().len());
+        }
+    }
+
+    #[test]
+    fn canonical_mirror_patches_reconstruct_split_ansi_utf8_clear_alt_and_resize_without_history() {
+        use crate::daemon::screen::ScreenMirror;
+        fn apply(previous: &mut Option<Arc<ScreenSnapshot>>, rendered: &mut Vec<Arc<String>>, next: Arc<ScreenSnapshot>) {
+            if previous.as_ref().is_none_or(|old| !same_screen_epoch(old, &next)) {
+                *rendered = vec![Arc::new(String::new()); usize::from(next.rows)];
+            }
+            for row in screen_parts(&next, previous.as_deref()).unwrap().into_iter().flatten() {
+                rendered[row] = next.lines[row].clone();
+            }
+            assert_eq!(*rendered, next.lines);
+            *previous = Some(next);
+        }
+        let mut mirror = ScreenMirror::new(size(20, 5), false);
+        for _ in 0..300 { mirror.feed(b"historical-only\r\n"); }
+        mirror.feed(b"\x1b[2J\x1b[Hcurrent");
+        let first = mirror.snapshot();
+        assert!(mirror.history().lines.len() > 200);
+        assert_eq!(first.lines.len(), 5);
+        assert!(!first.lines.iter().any(|line| line.contains("historical-only")));
+        let mut previous = None;
+        let mut rendered = Vec::new();
+        apply(&mut previous, &mut rendered, first);
+        for byte in "\x1b[2;3H\x1b[38;2;255;16;32m界e\u{301}\x1b[0m\x1b[?1h\x1b[?2004h\x1b[?25l".as_bytes() {
+            mirror.feed(std::slice::from_ref(byte));
+            apply(&mut previous, &mut rendered, mirror.snapshot());
+        }
+        for bytes in [
+            b"\x1b[2J\x1b[Hclear".as_slice(),
+            b"\x1b[?1049h\x1b[Halternate".as_slice(),
+            b"\x1b[?1049l\x1b[3;1Hnormal".as_slice(),
         ] {
-            *current.lock() = MobileAgentState {
-                revision,
-                agent: Some((CLIAgent::OhMyPi, status)),
-            };
-            send.send(DaemonMsg::AgentStatus(Some(AgentSessionState {
-                status,
-                ..Default::default()
-            }))).unwrap();
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.value["agent"]["status"], serde_json::to_value(status).unwrap());
-            assert_eq!(output.value["agent_revision"], revision);
-            assert_eq!(output.sequence, None);
+            mirror.feed(bytes);
+            apply(&mut previous, &mut rendered, mirror.snapshot());
         }
-        *current.lock() = MobileAgentState { revision: 6, agent: None };
-        send.send(DaemonMsg::Agent(None)).unwrap();
-        let output = receive_output(&mut service).await;
-        assert!(output.value["agent"].is_null());
-        assert_eq!(output.value["agent_revision"], 6);
-        send.send(DaemonMsg::Exited { code: Some(0) }).unwrap();
-        assert!(receive_output(&mut service).await.finished);
-        producer.join().unwrap();
+        mirror.resize(size(30, 8));
+        apply(&mut previous, &mut rendered, mirror.snapshot());
+        assert_eq!(rendered.len(), 8);
+    }
+
+    #[test]
+    fn state_diff_preserves_cells_and_full_replaces_geometry_and_buffer_changes() {
+        let before = screen_fixture(4, 20);
+        let mut after = screen_fixture(4, 20);
+        after.revision = 2;
+        after.lines[2] = Arc::new("\x1b[0mcleared\x1b[0m".into());
+        after.cursor.col = 4;
+        after.modes.app_cursor = true;
+        assert_eq!(screen_parts(&after, Some(&before)).unwrap(), vec![vec![2]]);
+        let mut reconstructed = before.lines.clone();
+        for row in screen_parts(&after, Some(&before)).unwrap().into_iter().flatten() {
+            reconstructed[row] = after.lines[row].clone();
+        }
+        assert_eq!(reconstructed, after.lines);
+        for (epoch, alternate, cols) in [(2, false, 80), (1, true, 80), (1, false, 100)] {
+            after.epoch = epoch;
+            after.alternate = alternate;
+            after.cols = cols;
+            assert_eq!(screen_parts(&after, Some(&before)).unwrap(), vec![vec![0, 1, 2, 3]]);
+        }
+        after = screen_fixture(4, 20);
+        after.revision = 3;
+        after.cursor.visible = false;
+        assert_eq!(screen_parts(&after, Some(&before)).unwrap(), vec![Vec::<usize>::new()]);
     }
 
     #[tokio::test]
-    async fn parsed_credit_pauses_replay_and_cumulative_ack_releases_fifo_without_blocking_control()
-    {
+    async fn multipart_screen_obeys_credit_and_preserves_atomic_state_metadata() {
         let mut service = test_service();
         let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let replay: Vec<u8> = (0..7)
-            .flat_map(|index| std::iter::repeat_n(index, MAX_OUTPUT_BYTES))
-            .collect();
-        let (sender, completed, producer) = worker(
-            service.output.clone(),
-            credit,
-            vec![DaemonMsg::Snapshot(replay.clone())],
-            Vec::new(),
-        );
-        let mut bytes = Vec::new();
-        for sequence in 1..=4 {
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.sequence, Some(sequence));
-            bytes.extend(crypto::decode(output.value["data"].as_str().unwrap()).unwrap());
-            let mut outgoing = Vec::new();
-            service.output_frame(output, &mut outgoing);
-            assert_eq!(outgoing.len(), 1);
-        }
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                .await
-                .is_err()
-        );
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                client_frame(
-                    &mut service,
-                    0,
-                    json!({"type":"request", "id":19, "op":"list"})
-                )
-            )
-            .await
-            .unwrap()
-            .is_empty()
-        );
-        let (client, reply) =
-            tokio::time::timeout(Duration::from_secs(1), service.reply_receiver.recv())
-                .await
-                .unwrap()
-                .unwrap();
-        assert_eq!(client, "phone");
-        assert_eq!(reply["id"], 19);
-        assert_eq!(reply["ok"], true);
-        assert!(service.peers.contains_key("phone"));
-        acknowledge(&mut service, 1, "feed", 2).await;
-        for sequence in 5..=6 {
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.sequence, Some(sequence));
-            bytes.extend(crypto::decode(output.value["data"].as_str().unwrap()).unwrap());
-            service.output_frame(output, &mut Vec::new());
-        }
-        acknowledge(&mut service, 2, "feed", 2).await;
-        acknowledge(&mut service, 3, "feed", 1).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                .await
-                .is_err()
-        );
-        acknowledge(&mut service, 4, "feed", 6).await;
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(7));
-        bytes.extend(crypto::decode(output.value["data"].as_str().unwrap()).unwrap());
-        service.output_frame(output, &mut Vec::new());
-        assert_eq!(bytes, replay);
-        receive_completion(&mut service, 7).await;
-        client_frame(
-            &mut service,
-            5,
-            json!({"type":"request", "id":20, "op":"unsubscribe", "pane_id":7}),
-        )
-        .await;
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
-    #[tokio::test]
-    async fn full_owned_replay_preserves_startup_live_fifo_under_blocked_credit() {
-        let mut service = test_service();
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let budget = crate::daemon::pane::OBSERVER_BUDGET as usize;
-        let initial = vec![
-            DaemonMsg::Snapshot(b"\x1b[?1049h".to_vec()),
-            DaemonMsg::Size(size(100, 30)),
-            DaemonMsg::Snapshot(vec![b'x'; budget]),
-            DaemonMsg::Cwd("/work".into()),
-        ];
-        let (sender, receiver) = mpsc::channel();
-        let gate = Arc::new(OutputGate::new());
-        // Simulate PTY metadata and its first output before the worker starts.
-        sender.send(DaemonMsg::Size(size(120, 40))).unwrap();
-        gate.add(b"first live".len());
-        sender
-            .send(DaemonMsg::Output(b"first live".to_vec()))
-            .unwrap();
-        let (completed, producer) = observer_worker(
-            service.output.clone(),
-            credit.clone(),
-            initial,
-            receiver,
-            gate.clone(),
-        );
-        let frames = 1 + budget.div_ceil(MAX_OUTPUT_BYTES) as u64;
-        let mut replay_bytes = 0;
-        let mut envelope = 1;
-        for sequence in 1..=frames {
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.sequence, Some(sequence));
-            assert_eq!(output.value["snapshot"], true);
-            let bytes = crypto::decode(output.value["data"].as_str().unwrap()).unwrap();
-            if sequence == 1 {
-                assert_eq!(bytes, b"\x1b[?1049h");
-                assert_eq!(output.value["cols"], 80);
-                assert_eq!(output.value["rows"], 24);
-            } else {
-                assert_eq!(output.value["cols"], 100);
-                assert_eq!(output.value["rows"], 30);
-                assert!(bytes.iter().all(|byte| *byte == b'x'));
-                replay_bytes += bytes.len();
+        let screen = screen_fixture(14, 64 * 1024);
+        let expected: Vec<_> = screen.lines.iter().map(|line| line.as_str().to_owned()).collect();
+        let output = sink(service.output.clone(), credit.clone());
+        let producer = std::thread::spawn(move || output.screen(&screen, None, &mut || true));
+        let mut staged = Vec::new();
+        let mut envelope = 0;
+        for part in 0..14 {
+            if part == 4 {
+                assert!(tokio::time::timeout(Duration::from_millis(30), service.outputs.recv()).await.is_err());
+                assert!(client_frame(&mut service, envelope, json!({"type":"request","id":19,"op":"list"})).await.is_empty());
+                envelope += 1;
+                let (_, reply) = service.reply_receiver.recv().await.unwrap();
+                assert_eq!(reply["ok"], true);
+                acknowledge(&mut service, envelope, "feed", 4).await;
+                envelope += 1;
             }
-            service.output_frame(output, &mut Vec::new());
-            if sequence == OUTPUT_WINDOW {
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                        .await
-                        .is_err()
-                );
-                assert_eq!(
-                    gate.queued_bytes(),
-                    b"first live".len() as i64,
-                    "replay neither charges nor drains live bytes"
-                );
-                assert!(
-                    client_frame(
-                        &mut service,
-                        0,
-                        json!({"type":"request", "id":19, "op":"list"})
-                    )
-                    .await
-                    .is_empty()
-                );
-                let (_, reply) =
-                    tokio::time::timeout(Duration::from_secs(1), service.reply_receiver.recv())
-                        .await
-                        .unwrap()
-                        .unwrap();
-                assert_eq!(
-                    reply["ok"], true,
-                    "control remains usable with saturated replay credit"
-                );
+            let frame = receive_output(&mut service).await;
+            assert_eq!(frame.value["type"], "screen");
+            assert_eq!(frame.value["part"], part);
+            assert_eq!(frame.value["last"], part == 13);
+            assert_eq!(frame.value["revision"], "1");
+            assert_eq!(frame.value["epoch"], "1");
+            assert!(frame.value["base_revision"].is_null());
+            assert_eq!(frame.value["modes"]["bracketed_paste"], true);
+            assert!(serde_json::to_vec(&frame.value).unwrap().len() < MAX_SCREEN_FRAME_BYTES);
+            for line in frame.value["lines"].as_array().unwrap() {
+                assert_eq!(line["row"], staged.len());
+                staged.push(line["ansi"].as_str().unwrap().to_string());
             }
-            if sequence >= OUTPUT_WINDOW {
-                acknowledge(&mut service, envelope, "feed", sequence).await;
+            service.output_frame(frame, &mut Vec::new());
+            if part >= 4 {
+                acknowledge(&mut service, envelope, "feed", part + 1).await;
                 envelope += 1;
             }
         }
-        assert_eq!(
-            replay_bytes, budget,
-            "all retained history reaches the consumer exactly once"
-        );
-        receive_completion(&mut service, frames).await;
-        let resize = receive_output(&mut service).await;
-        assert_eq!(resize.sequence, Some(frames + 1));
-        assert_eq!(resize.value["cols"], 120);
-        assert_eq!(resize.value["rows"], 40);
-        assert_eq!(resize.value["data"], "");
-        service.output_frame(resize, &mut Vec::new());
-        let live = receive_output(&mut service).await;
-        assert_eq!(live.sequence, Some(frames + 2));
-        assert_eq!(live.value["snapshot"], false);
-        assert_eq!(live.value["cols"], 120);
-        assert_eq!(live.value["rows"], 40);
-        assert_eq!(
-            crypto::decode(live.value["data"].as_str().unwrap()).unwrap(),
-            b"first live"
-        );
-        service.output_frame(live, &mut Vec::new());
-        assert_eq!(gate.queued_bytes(), 0);
-        assert!(service.peers["phone"].subscriptions.contains_key(&7));
-        service.peers.remove("phone");
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
-    #[tokio::test]
-    async fn tiny_live_writes_accumulated_under_credit_pressure_share_one_frame() {
-        let mut service = test_service();
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let (sender, completed, producer) = worker(
-            service.output.clone(),
-            credit,
-            vec![DaemonMsg::Snapshot(vec![b'x'; 4 * MAX_OUTPUT_BYTES])],
-            vec![DaemonMsg::Output(b"a".to_vec())],
-        );
-        for _ in 0..4 {
-            let output = receive_output(&mut service).await;
-            service.output_frame(output, &mut Vec::new());
-        }
-        // Completion bypasses the saturated four-frame parsed-credit window.
-        receive_completion(&mut service, 4).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                .await
-                .is_err()
-        );
-        sender.send(DaemonMsg::Output(b"b".to_vec())).unwrap();
-        sender.send(DaemonMsg::Output(b"c".to_vec())).unwrap();
-        sender.send(DaemonMsg::Size(size(100, 30))).unwrap();
-        sender
-            .send(DaemonMsg::Output(b"next-size".to_vec()))
-            .unwrap();
-        acknowledge(&mut service, 0, "feed", 1).await;
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(5));
-        assert_eq!(output.value["snapshot"], false);
-        assert_eq!(output.value["cols"], 80);
-        assert_eq!(
-            crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
-            b"abc"
-        );
-        service.output_frame(output, &mut Vec::new());
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                .await
-                .is_err()
-        );
-        acknowledge(&mut service, 1, "feed", 2).await;
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(6));
-        assert_eq!(output.value["cols"], 100);
-        assert_eq!(output.value["data"], "");
-        service.output_frame(output, &mut Vec::new());
-        acknowledge(&mut service, 2, "feed", 3).await;
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(7));
-        assert_eq!(output.value["cols"], 100);
-        assert_eq!(
-            crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
-            b"next-size"
-        );
-        service.output_frame(output, &mut Vec::new());
-        service.peers.remove("phone");
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
-    #[tokio::test]
-    async fn owned_replay_preserves_modes_dimensions_empty_tail_and_completion_before_live() {
-        for metadata in [false, true] {
-            let mut service = test_service();
-            let credit = add_subscription(&mut service, "phone", 7, "feed");
-            let history = vec![b'x'; MAX_OUTPUT_BYTES + 1];
-            let mut messages = vec![
-                DaemonMsg::Snapshot(b"\x1b[?1049h".to_vec()),
-                DaemonMsg::Size(size(100, 30)),
-                DaemonMsg::Snapshot(history.clone()),
-                DaemonMsg::Size(size(90, 20)),
-                DaemonMsg::Snapshot(Vec::new()),
-            ];
-            if metadata {
-                messages.push(DaemonMsg::Cwd("/work".into()));
-                messages.push(DaemonMsg::Prompt {
-                    active: true,
-                    at_prompt: false,
-                    last_exit: None,
-                });
-            }
-            let (sender, completed, producer) = worker(
-                service.output.clone(),
-                credit.clone(),
-                messages,
-                vec![
-                    DaemonMsg::Output(b"a".to_vec()),
-                    DaemonMsg::Output(b"b".to_vec()),
-                ],
-            );
-            for (index, (cols, rows, bytes)) in [
-                (80, 24, b"\x1b[?1049h".to_vec()),
-                (100, 30, history[..MAX_OUTPUT_BYTES].to_vec()),
-                (100, 30, history[MAX_OUTPUT_BYTES..].to_vec()),
-                (90, 20, Vec::new()),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let output = receive_output(&mut service).await;
-                assert_eq!(output.sequence, Some(index as u64 + 1));
-                assert_eq!(output.value["snapshot"], true);
-                assert_eq!(output.value["cols"], cols);
-                assert_eq!(output.value["rows"], rows);
-                assert_eq!(
-                    crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
-                    bytes
-                );
-                service.output_frame(output, &mut Vec::new());
-            }
-            receive_completion(&mut service, 4).await;
-            assert_eq!(credit.state.lock().reserved, 4);
-            assert_eq!(credit.state.lock().acknowledged, 0);
-            assert!(
-                tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                    .await
-                    .is_err()
-            );
-            acknowledge(&mut service, 0, "feed", 1).await;
-            let live = receive_output(&mut service).await;
-            assert_eq!(live.sequence, Some(5));
-            assert_eq!(live.value["snapshot"], false);
-            assert_eq!(live.value["cols"], 90);
-            assert_eq!(live.value["rows"], 20);
-            assert_eq!(
-                crypto::decode(live.value["data"].as_str().unwrap()).unwrap(),
-                b"ab"
-            );
-            service.output_frame(live, &mut Vec::new());
-            service.peers.remove("phone");
-            tokio::time::timeout(Duration::from_millis(250), completed)
-                .await
-                .unwrap()
-                .unwrap();
-            producer.join().unwrap();
-            drop(sender);
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_replay_keeps_dimension_reset_frame_before_completion() {
-        let mut service = test_service();
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let (sender, completed, producer) = worker(
-            service.output.clone(),
-            credit,
-            vec![
-                DaemonMsg::Size(size(110, 40)),
-                DaemonMsg::Snapshot(Vec::new()),
-            ],
-            Vec::new(),
-        );
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(1));
-        assert_eq!(output.value["snapshot"], true);
-        assert_eq!(output.value["data"], "");
-        assert_eq!(output.value["cols"], 110);
-        assert_eq!(output.value["rows"], 40);
-        service.output_frame(output, &mut Vec::new());
-        receive_completion(&mut service, 1).await;
-        service.peers.remove("phone");
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
-    #[tokio::test]
-    async fn partial_owned_replay_exit_or_error_never_emits_completion() {
-        for terminal in [
-            DaemonMsg::Exited { code: Some(3) },
-            DaemonMsg::Error("replay failed".into()),
-        ] {
-            let mut service = test_service();
-            let credit = add_subscription(&mut service, "phone", 7, "feed");
-            add_subscription(&mut service, "phone", 8, "other-pane");
-            let mut messages = vec![DaemonMsg::Snapshot(b"partial".to_vec())];
-            let event = if matches!(&terminal, DaemonMsg::Exited { .. }) {
-                "exited"
-            } else {
-                "terminal_error"
-            };
-            messages.push(terminal);
-            let (sender, completed, producer) =
-                worker(service.output.clone(), credit, messages, Vec::new());
-            drop(sender);
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.value["type"], "output");
-            service.output_frame(output, &mut Vec::new());
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.value["type"], event);
-            assert!(output.finished);
-            service.output_frame(output, &mut Vec::new());
-            tokio::time::timeout(Duration::from_millis(250), completed)
-                .await
-                .unwrap()
-                .unwrap();
-            producer.join().unwrap();
-            assert!(service.outputs.try_recv().is_err());
-            assert!(!service.peers["phone"].subscriptions.contains_key(&7));
-            assert!(service.peers["phone"].subscriptions.contains_key(&8));
-        }
-    }
-
-    #[tokio::test]
-    async fn cancelled_workers_stop_while_waiting_for_credit_or_output_queue() {
-        for capacity in [1, 128] {
-            let (output, mut receiver) = async_mpsc::channel(capacity);
-            let credit = Arc::new(OutputCredit::new());
-            let (sender, completed, producer) = worker(
-                output,
-                credit.clone(),
-                vec![DaemonMsg::Snapshot(vec![b'x'; 5 * MAX_OUTPUT_BYTES])],
-                Vec::new(),
-            );
-            let target = if capacity == 1 { 2 } else { OUTPUT_WINDOW };
-            tokio::time::timeout(Duration::from_secs(1), async {
-                while credit.state.lock().reserved < target {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            })
-            .await
-            .unwrap();
-            drop(Subscription {
-                id: "feed".into(),
-                workspace: "workspace".into(),
-                observer: None,
-                lease_started: false,
-                credit,
-            });
-            tokio::time::timeout(Duration::from_millis(250), completed)
-                .await
-                .unwrap()
-                .unwrap();
-            producer.join().unwrap();
-            while let Ok(output) = receiver.try_recv() {
-                assert_ne!(output.value["type"], "snapshot_complete");
-            }
-            drop(sender);
-        }
+        assert_eq!(staged, expected);
+        assert!(producer.join().unwrap());
     }
 
     #[tokio::test]
@@ -2363,58 +2098,116 @@ mod tests {
         let mut service = test_service();
         let old = add_subscription(&mut service, "phone", 7, "old");
         let sequence = old.reserve().unwrap();
-        let stale = Output {
-            client: "phone".into(),
-            pane: 7,
-            subscription: "old".into(),
-            value: json!({"type":"terminal_error", "pane_id":7, "subscription_id":"old", "message":"old failure"}),
-            sequence: Some(sequence),
-            finished: true,
-        };
-        client_frame(
-            &mut service,
-            0,
-            json!({"type":"request", "id":1, "op":"unsubscribe", "pane_id":7}),
-        )
-        .await;
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let (sender, completed, producer) = worker(
-            service.output.clone(),
-            credit.clone(),
-            vec![DaemonMsg::Snapshot(vec![b'y'; 5 * MAX_OUTPUT_BYTES])],
-            Vec::new(),
-        );
-        for sequence in 1..=4 {
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.sequence, Some(sequence));
-            service.output_frame(output, &mut Vec::new());
-        }
+        let current = add_subscription(&mut service, "phone", 7, "feed");
+        assert!(!old.active());
+        current.reserve().unwrap();
+        current.sent(1).unwrap();
         let mut outgoing = Vec::new();
-        service.output_frame(stale, &mut outgoing);
-        service.output_frame(Output { client: "phone".into(), pane: 7, subscription: "old".into(),
-            value: json!({"type":"snapshot_complete", "pane_id":7, "subscription_id":"old", "sequence":sequence}),
-            sequence: None, finished: false }, &mut outgoing);
+        service.output_frame(Output {
+            client:"phone".into(), pane:7, subscription:"old".into(),
+            value:json!({"type":"screen","sequence":sequence}), sequence:Some(sequence), finished:true,
+        }, &mut outgoing);
         assert!(outgoing.is_empty());
-        acknowledge(&mut service, 1, "old", u64::MAX).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), service.outputs.recv())
-                .await
-                .is_err()
-        );
-        assert!(service.peers.contains_key("phone"));
-        acknowledge(&mut service, 2, "feed", 4).await;
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.sequence, Some(5));
-        assert_eq!(output.subscription, "feed");
-        service.output_frame(output, &mut Vec::new());
-        receive_completion(&mut service, 5).await;
-        service.peers.remove("phone");
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
+        acknowledge(&mut service, 0, "old", u64::MAX).await;
+        assert_eq!(current.state.lock().acknowledged, 0);
+        acknowledge(&mut service, 1, "feed", 1).await;
+        assert_eq!(current.state.lock().acknowledged, 1);
+        assert_eq!(service.peers["phone"].subscriptions[&7].id, "feed");
+    }
+
+    #[tokio::test]
+    async fn cancelled_workers_stop_while_waiting_for_credit_or_output_queue() {
+        for capacity in [1, 128] {
+            let (output, _receive) = async_mpsc::channel(capacity);
+            let credit = Arc::new(OutputCredit::new());
+            let output = sink(output, credit.clone());
+            let (done, completed) = tokio::sync::oneshot::channel();
+            let producer = std::thread::spawn(move || {
+                output.screen(&screen_fixture(10, 64 * 1024), None, &mut || true);
+                let _ = done.send(());
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while credit.state.lock().reserved < if capacity == 1 { 2 } else { 4 } {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }).await.unwrap();
+            credit.cancel();
+            tokio::time::timeout(Duration::from_secs(1), completed).await.unwrap().unwrap();
+            producer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn history_is_immutable_bounded_chronological_and_subscription_scoped() {
+        let store = Mutex::new(HistoryStore::default());
+        let credit = OutputCredit::new();
+        let view = history_view("feed".into(), history_fixture(6000));
+        assert_eq!(view.end, MAX_HISTORY_ROWS);
+        assert!(view.snapshot.truncated);
+        let first = history_page(view, &store, &credit).unwrap();
+        assert_eq!(first["lines"][0]["text"], "row 5800");
+        assert_eq!(first["lines"][199]["text"], "row 5999");
+        assert!(serde_json::to_vec(&first).unwrap().len() <= MAX_HISTORY_PAGE_BYTES);
+        let cursor = first["cursor"].as_str().unwrap();
+        assert!(store.lock().take("other-subscription", cursor).is_err());
+        let independent_live_history = history_fixture(7000);
+        assert_eq!(independent_live_history.lines.len(), 7000);
+        let view = store.lock().take("feed", cursor).unwrap();
+        let second = history_page(view, &store, &credit).unwrap();
+        assert_eq!(second["lines"][0]["text"], "row 5600");
+        assert_eq!(second["lines"][199]["text"], "row 5799");
+        assert!(store.lock().take("feed", cursor).is_err());
+        store.lock().remove("feed");
+        assert!(store.lock().take("feed", second["cursor"].as_str().unwrap()).is_err());
+        assert_eq!(credit.state.lock().reserved, 0);
+    }
+
+    #[test]
+    fn history_limits_global_views_bytes_expiry_and_cancelled_insertion() {
+        let store = Mutex::new(HistoryStore::default());
+        let credit = OutputCredit::new();
+        for index in 0..MAX_HISTORY_VIEWS + 2 {
+            history_page(history_view(index.to_string(), history_fixture(201)), &store, &credit).unwrap();
+        }
+        assert_eq!(store.lock().views.len(), MAX_HISTORY_VIEWS);
+        for index in 0..6 {
+            let mut oversized = history_fixture(5000);
+            for line in &mut oversized.lines { line.ansi = "界".repeat(1000); }
+            let view = history_view(format!("large-{index}"), oversized);
+            assert!(view.bytes <= MAX_HISTORY_BYTES);
+            assert!(view.snapshot.truncated);
+            history_page(view, &store, &credit).unwrap();
+        }
+        assert!(store.lock().views.values().map(|view| view.bytes).sum::<usize>() <= MAX_HISTORY_TOTAL_BYTES);
+        assert!(store.lock().views.len() <= 4);
+        let (expired, owner) = store.lock().views.iter().next()
+            .map(|(key, view)| (key.clone(), view.subscription.clone())).unwrap();
+        store.lock().views.get_mut(&expired).unwrap().created = Instant::now() - HISTORY_LIFETIME;
+        assert!(store.lock().take(&owner, &expired).is_err());
+        credit.cancel();
+        assert!(history_page(history_view("cancelled".into(), history_fixture(300)), &store, &credit).is_err());
+        assert!(!store.lock().views.values().any(|view| view.subscription == "cancelled"));
+    }
+
+    #[tokio::test]
+    async fn history_and_resync_reject_wrong_pane_workspace_and_generation() {
+        let mut service = test_service();
+        add_subscription(&mut service, "phone", 7, "feed");
+        let mut peer = service.peers.remove("phone").unwrap();
+        for (pane, id, workspace) in [(8,"feed","workspace"),(7,"old","workspace"),(7,"feed","other")] {
+            let request = json!({"op":"history","pane_id":pane,"subscription_id":id,"workspace_id":workspace});
+            assert_eq!(service.schedule_history("phone", &peer, &request, 1).unwrap_err().to_string(),
+                "terminal subscription is no longer active");
+            let mut request = request;
+            request["op"] = json!("resync");
+            assert!(service.operation("phone", &mut peer, request).await.is_err());
+        }
+        assert!(!peer.subscriptions[&7].resync.load(Ordering::Acquire));
+        service.operation("phone", &mut peer, json!({
+            "op":"resync","pane_id":7,"subscription_id":"feed","workspace_id":"workspace"
+        })).await.unwrap();
+        assert!(peer.subscriptions[&7].resync.load(Ordering::Acquire));
+        assert_eq!(peer.subscriptions[&7].credit.state.lock().reserved, 0);
     }
 
     #[tokio::test]
@@ -2442,121 +2235,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_fragments_coalesce_without_crossing_dimensions_snapshots_or_size_limit() {
-        let mut service = test_service();
-        let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let snapshot = vec![b'z'; MAX_OUTPUT_BYTES + 1];
-        let (sender, completed, producer) = worker(
-            service.output.clone(),
-            credit,
-            Vec::new(),
-            vec![
-                DaemonMsg::Output(vec![0xc3]),
-                DaemonMsg::Output(vec![0xa9, 0x1b, b'[', b'3', b'1']),
-                DaemonMsg::Size(size(100, 30)),
-                DaemonMsg::Output(b"mred".to_vec()),
-                DaemonMsg::Snapshot(snapshot.clone()),
-                DaemonMsg::Output(b"tail".to_vec()),
-                DaemonMsg::Exited { code: Some(0) },
-            ],
-        );
-        receive_completion(&mut service, 0).await;
-        let expected = [
-            (false, 80, 24, vec![0xc3, 0xa9, 0x1b, b'[', b'3', b'1']),
-            (false, 100, 30, Vec::new()),
-            (false, 100, 30, b"mred".to_vec()),
-            (true, 100, 30, snapshot[..MAX_OUTPUT_BYTES].to_vec()),
-            (true, 100, 30, snapshot[MAX_OUTPUT_BYTES..].to_vec()),
-            (false, 100, 30, b"tail".to_vec()),
-        ];
-        for (index, (snapshot, cols, rows, bytes)) in expected.into_iter().enumerate() {
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.value["subscription_id"], "feed");
-            assert_eq!(output.value["snapshot"], snapshot);
-            assert_eq!(output.value["cols"], cols);
-            assert_eq!(output.value["rows"], rows);
-            assert_eq!(
-                crypto::decode(output.value["data"].as_str().unwrap()).unwrap(),
-                bytes
-            );
-            service.output_frame(output, &mut Vec::new());
-            acknowledge(&mut service, index as u64, "feed", index as u64 + 1).await;
-        }
-        let output = receive_output(&mut service).await;
-        assert_eq!(output.value["type"], "exited");
-        assert_eq!(output.value["subscription_id"], "feed");
-        assert_eq!(output.value["code"], 0);
-        service.output_frame(output, &mut Vec::new());
-        assert!(service.peers["phone"].subscriptions.is_empty());
-        assert!(service.peers.contains_key("phone"));
-        tokio::time::timeout(Duration::from_millis(250), completed)
-            .await
-            .unwrap()
-            .unwrap();
-        producer.join().unwrap();
-        drop(sender);
-    }
-
-    #[tokio::test]
-    async fn observer_errors_and_unexpected_disconnect_remove_only_the_failed_subscription() {
-        for message in [
-            Some(DaemonMsg::Error("runtime output failed".into())),
-            Some(DaemonMsg::Error("界".repeat(crypto::MAX_PLAINTEXT))),
-            None,
-        ] {
-            let mut service = test_service();
-            let credit = add_subscription(&mut service, "phone", 7, "feed");
-            add_subscription(&mut service, "phone", 8, "other-pane");
-            add_subscription(&mut service, "other-phone", 9, "other-peer");
-            let (sender, completed, producer) = worker(
-                service.output.clone(),
-                credit,
-                Vec::new(),
-                message.into_iter().collect(),
-            );
-            drop(sender);
-            receive_completion(&mut service, 0).await;
-            let output = receive_output(&mut service).await;
-            assert_eq!(output.value["type"], "terminal_error");
-            assert_eq!(output.value["subscription_id"], "feed");
-            assert!(!output.value["message"].as_str().unwrap().is_empty());
-            assert!(output.value["message"].as_str().unwrap().len() <= 4096);
-            let mut outgoing = Vec::new();
-            service.output_frame(output, &mut outgoing);
-            assert_eq!(outgoing.len(), 1);
-            assert!(!service.peers["phone"].subscriptions.contains_key(&7));
-            assert!(service.peers["phone"].subscriptions.contains_key(&8));
-            assert!(service.peers["other-phone"].subscriptions.contains_key(&9));
-            acknowledge(&mut service, 0, "feed", u64::MAX).await;
-            assert!(
-                client_frame(
-                    &mut service,
-                    1,
-                    json!({"type":"request", "id":42, "op":"list"})
-                )
-                .await
-                .is_empty()
-            );
-            let (_, reply) =
-                tokio::time::timeout(Duration::from_secs(1), service.reply_receiver.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(reply["id"], 42);
-            assert_eq!(reply["ok"], true);
-            tokio::time::timeout(Duration::from_millis(250), completed)
-                .await
-                .unwrap()
-                .unwrap();
-            producer.join().unwrap();
-            assert!(
-                service.outputs.try_recv().is_err(),
-                "failed live observer must not emit more output"
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn legacy_protocol_fails_closed_before_pairing_or_deriving_a_session() {
         let mut service = test_service();
         service.bootstrap = Some(Bootstrap {
@@ -2568,7 +2246,7 @@ mod tests {
             },
             attempts: 0,
         });
-        for protocol in [Value::Null, json!(0), json!(1), json!("2"), json!(2.0)] {
+        for protocol in [Value::Null, json!(0), json!(1), json!(2), json!("3"), json!(3.0)] {
             let mut hello = json!({"kind":"hello", "credential_id":"pair:pair-id", "nonce":crypto::encode(&[2; 32])});
             if !protocol.is_null() {
                 hello["protocol"] = protocol;
@@ -2583,7 +2261,10 @@ mod tests {
             );
             assert!(peer.cipher.is_none());
             assert!(matches!(peer.phase, Phase::Hello));
-            assert!(outgoing.is_empty());
+            let Message::Text(text) = &outgoing[0] else { panic!("expected protocol error"); };
+            let envelope: Value = serde_json::from_str(text).unwrap();
+            let error: Value = serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+            assert_eq!(error["code"], "update_required");
             assert_eq!(service.bootstrap.as_ref().unwrap().attempts, 0);
         }
         let mut peer = Peer::new(Phase::Hello);
@@ -2592,7 +2273,7 @@ mod tests {
             .peer_frame(
                 "phone",
                 &mut peer,
-                &json!({"kind":"hello", "protocol":2,
+                &json!({"kind":"hello", "protocol":3,
             "credential_id":"pair:pair-id", "nonce":crypto::encode(&[2; 32])})
                 .to_string(),
                 &mut outgoing,
@@ -2604,7 +2285,7 @@ mod tests {
         };
         let frame: Value = serde_json::from_str(text).unwrap();
         let challenge: Value = serde_json::from_str(frame["payload"].as_str().unwrap()).unwrap();
-        assert_eq!(challenge["protocol"], 2);
+        assert_eq!(challenge["protocol"], 3);
         assert_eq!(challenge["kind"], "challenge");
         assert!(peer.cipher.is_some());
         assert!(matches!(peer.phase, Phase::AwaitPair));

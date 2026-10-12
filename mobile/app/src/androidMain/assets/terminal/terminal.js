@@ -1,7 +1,8 @@
 'use strict';
 
+let generation = 0;
 function fail(message) {
-    if (window.Tty7) window.Tty7.failed(message);
+    if (window.Tty7) window.Tty7.failed(generation, message);
 }
 window.addEventListener('error', event => fail(event.message || '终端脚本执行失败'));
 window.addEventListener('unhandledrejection', () => fail('终端渲染任务失败'));
@@ -10,7 +11,7 @@ const viewport = document.getElementById('viewport');
 const history = document.getElementById('history');
 const historyText = document.getElementById('history-text');
 const terminal = new Terminal({
-    cols:80, rows:24, fontSize:14, fontFamily:'monospace', scrollback:5000,
+    cols:80, rows:24, fontSize:14, fontFamily:'monospace', scrollback:0,
     convertEol:false, allowProposedApi:false, altClickMovesCursor:false,
     cursorBlink:true, cursorInactiveStyle:'block',
     theme:{background:'#101014', foreground:'#eeeeee', cursor:'#eeeeee', cursorAccent:'#101014'},
@@ -18,6 +19,17 @@ const terminal = new Terminal({
     // Keep their colours where readable, correcting contrast against each cell.
     minimumContrastRatio:4.5
 });
+function installCanonicalWidths(target) {
+    const provider = new window.Tty7ScreenWidths();
+    // xterm exposes Unicode providers through its documented proposed API.
+    target.options.allowProposedApi = true;
+    target.unicode.register(provider);
+    target.unicode.activeVersion = provider.version;
+    provider.bind(target);
+    target.options.allowProposedApi = false;
+    return provider;
+}
+const liveWidths = installCanonicalWidths(terminal);
 terminal.open(document.getElementById('terminal'));
 const screen = terminal.element.querySelector('.xterm-screen');
 const scrollback = terminal.element.querySelector('.xterm-viewport');
@@ -35,7 +47,7 @@ for (const id of [4,10,11,12]) {
 }
 terminal.onData(data => {
     if (data === '\x1b[I' || data === '\x1b[O') return; // Local focus is not desktop focus.
-    if (window.Tty7) window.Tty7.input(data);
+    if (inputReady && window.Tty7) window.Tty7.input(generation, data);
 });
 
 let following = true;
@@ -43,9 +55,10 @@ let inputReady = false;
 let sizeTimer;
 let sentGrid = '';
 function requestPhoneGrid() {
-    clearTimeout(sizeTimer);
+    if (sizeTimer) return;
     sizeTimer = setTimeout(() => {
-        if (!inputReady || !screen.clientWidth || !screen.clientHeight) return;
+        sizeTimer = 0;
+        if (!screen.clientWidth || !screen.clientHeight) return;
         const cellWidth = screen.clientWidth / terminal.cols;
         const cellHeight = screen.clientHeight / terminal.rows;
         // Leave room for the terminal's own vertical scrollbar and page padding.
@@ -57,8 +70,10 @@ function requestPhoneGrid() {
         if (window.Tty7) window.Tty7.resize(cols, rows);
     }, 120);
 }
-window.tty7Synced = function() {
+window.tty7Synced = function(gen) {
+    if (gen !== generation) return;
     inputReady = true;
+    sentGrid = '';
     requestPhoneGrid();
 };
 function sizeSurface() {
@@ -85,21 +100,141 @@ terminal.onRender(() => {
     if (following) returnLive();
 });
 
+const historyStatus = document.getElementById('history-status');
+const historyParser = new Terminal({cols:80, rows:1, scrollback:0, allowProposedApi:false});
+const historyWidths = installCanonicalWidths(historyParser);
+let historyCursor = null;
+let historyMore = true;
+let historyLoading = false;
+let historyLoaded = false;
+let historyBytes = 0;
+// A separate read-only styled cache, at most 2,000 rows / 2 MiB UTF-8.
+const maxHistoryRows = 2000;
+const maxHistoryBytes = 2 * 1024 * 1024;
+function requestHistory() {
+    if (!inputReady || historyLoading || !historyMore) return;
+    historyLoading = true;
+    historyStatus.textContent = '正在加载历史…';
+    if (window.Tty7) window.Tty7.history(generation, historyCursor || '');
+}
 function showHistory() {
-    // Alternate screens intentionally have no scrollback. Present the preserved
-    // normal buffer read-only instead of injecting arrows or changing live modes.
-    const normal = terminal.buffer.normal;
-    const lines = [];
-    for (let i = 0; i < normal.length; ++i) lines.push(normal.getLine(i).translateToString(true));
-    if (!lines.some(line => line.trim())) return false;
-    historyText.textContent = lines.join('\n');
-    historyText.style.minWidth = screen.style.width;
+    following = false;
     history.hidden = false;
-    history.scrollTop = history.scrollHeight;
     history.scrollLeft = viewport.scrollLeft;
     terminal.blur();
+    if (!historyLoaded) { historyMore = true; requestHistory(); }
     return true;
 }
+history.addEventListener('scroll', () => {
+    if (!history.hidden && history.scrollTop < 160) requestHistory();
+});
+const ansiColors = ['#000000','#cd0000','#00cd00','#cdcd00','#0000ee','#cd00cd','#00cdcd','#e5e5e5',
+    '#7f7f7f','#ff0000','#00ff00','#ffff00','#5c5cff','#ff00ff','#00ffff','#ffffff'];
+function color(cell, foreground) {
+    const value = foreground ? cell.getFgColor() : cell.getBgColor();
+    if (foreground ? cell.isFgRGB() : cell.isBgRGB()) return '#' + value.toString(16).padStart(6, '0');
+    if (!(foreground ? cell.isFgPalette() : cell.isBgPalette())) return foreground ? '#eeeeee' : '#101014';
+    if (value < 16) return ansiColors[value];
+    if (value >= 232) { const v = (8 + (value - 232) * 10).toString(16).padStart(2, '0'); return '#' + v.repeat(3); }
+    const index = value - 16, channel = n => (n ? 55 + n * 40 : 0).toString(16).padStart(2, '0');
+    return '#' + channel(Math.floor(index / 36)) + channel(Math.floor(index / 6) % 6) + channel(index % 6);
+}
+function luminance(hex) {
+    const channels = [1,3,5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255)
+        .map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+}
+function readable(fg, bg) {
+    const f = luminance(fg), b = luminance(bg);
+    if ((Math.max(f,b) + 0.05) / (Math.min(f,b) + 0.05) >= 4.5) return fg;
+    return (b + 0.05) / 0.05 >= 4.5 ? '#000000' : '#ffffff';
+}
+function historyRow(line, rowIndex) {
+    const row = document.createElement('div');
+    row.style.minHeight = '1em';
+    row.dataset.bytes = String(new TextEncoder().encode(line.ansi + line.text).length);
+    const cells = historyParser.buffer.active.getLine(rowIndex);
+    let run = null, previous = '';
+    for (let col = 0; col < line.cols; ++col) {
+        const cell = cells.getCell(col);
+        if (!cell || cell.getWidth() === 0) continue;
+        let fg = color(cell, true), bg = color(cell, false);
+        if (cell.isInverse()) [fg, bg] = [bg, fg];
+        const style = `color:${readable(fg,bg)};background:${bg};font-weight:${cell.isBold() ? 'bold' : 'normal'};font-style:${cell.isItalic() ? 'italic' : 'normal'};text-decoration:${cell.isUnderline() ? 'underline' : ''} ${cell.isStrikethrough() ? 'line-through' : ''}`;
+        const chars = cell.isInvisible() ? ' '.repeat(cell.getWidth()) : cell.getChars() || ' ';
+        const positioned = /[^\x20-\x7e]/.test(chars) || cell.getWidth() !== 1;
+        if (positioned || style !== previous || !run) {
+            run = document.createElement('span');
+            run.style.cssText = style;
+            if (positioned) {
+                run.style.display = 'inline-block';
+                run.style.width = `${cell.getWidth()}ch`;
+                run.style.overflow = 'hidden';
+                run.style.verticalAlign = 'top';
+            }
+            row.appendChild(run);
+            previous = style;
+        }
+        run.appendChild(document.createTextNode(chars));
+        if (positioned) run = null;
+    }
+    return row;
+}
+window.tty7History = async function(gen, page) {
+    if (gen !== generation || !historyLoading) return;
+    try {
+        if (page.lines.length) {
+            // Parse a bounded page in one write. Per-row asynchronous writes
+            // otherwise pay WebView timer latency hundreds of times.
+            await new Promise(resolve => historyParser.write('', resolve));
+            if (gen !== generation) return;
+            historyParser.reset();
+            const cols = page.lines.reduce((width, line) => Math.max(width, line.cols), 1);
+            historyParser.resize(cols, page.lines.length);
+            historyWidths.prepare(page.lines, cols);
+            let paint = '\x1b[?7l';
+            for (let index = 0; index < page.lines.length; ++index) {
+                paint += `\x1b[${index + 1};1H\x1b[2K${page.lines[index].ansi}\x1b[0m`;
+            }
+            await new Promise(resolve => historyParser.write(paint, resolve));
+            if (gen !== generation) return;
+        }
+        const fragment = document.createDocumentFragment();
+        for (let index = 0; index < page.lines.length; ++index) {
+            const line = page.lines[index];
+            const row = historyRow(line, index);
+            historyBytes += Number(row.dataset.bytes);
+            fragment.appendChild(row);
+        }
+        const first = historyText.firstElementChild;
+        const anchorTop = first ? first.getBoundingClientRect().top : 0;
+        historyText.prepend(fragment);
+        if (first) history.scrollTop += first.getBoundingClientRect().top - anchorTop;
+        else history.scrollTop = history.scrollHeight;
+        let evicted = false;
+        while (historyText.childElementCount > maxHistoryRows || historyBytes > maxHistoryBytes) {
+            const last = historyText.lastElementChild;
+            historyBytes -= Number(last.dataset.bytes);
+            last.remove();
+            evicted = true;
+        }
+        historyCursor = page.cursor;
+        historyMore = page.has_more;
+        historyLoaded = true;
+        historyLoading = false;
+        historyStatus.textContent = page.truncated || evicted ? '已保留历史（有边界截断）' : historyMore ? '向上滚动加载更多' : '已到历史起点';
+    } catch (error) { window.tty7HistoryError(gen, error.message || '历史加载失败'); }
+};
+window.tty7HistoryError = function(gen, message) {
+    if (gen !== generation) return;
+    historyLoading = false;
+    historyStatus.textContent = message + '；返回实时后重试';
+    historyMore = false;
+    historyCursor = null;
+    historyLoaded = false;
+    historyText.replaceChildren();
+    historyBytes = 0;
+};
 
 function moveScroll(element, amount) {
     const previous = element.scrollTop;
@@ -109,20 +244,14 @@ function moveScroll(element, amount) {
 function scrollLocally(amount) {
     if (!history.hidden) {
         moveScroll(history, amount);
+        if (amount < 0 && history.scrollTop < 160) requestHistory();
         following = false;
         return;
     }
     if (amount < 0) {
         amount = moveScroll(viewport, amount);
-        if (amount < 0) {
-            if (terminal.buffer.active.type === 'alternate') {
-                if (showHistory()) moveScroll(history, amount);
-            } else moveScroll(scrollback, amount);
-        }
-    } else {
-        amount = moveScroll(scrollback, amount);
-        if (amount > 0) moveScroll(viewport, amount);
-    }
+        if (amount < 0 && inputReady) { showHistory(); moveScroll(history, amount); }
+    } else moveScroll(viewport, amount);
     following = isAtLive();
 }
 
@@ -140,7 +269,7 @@ let pendingY = 0;
 let suppressMouseUntil = 0;
 function focusInput() {
     terminal.focus();
-    if (window.Tty7) window.Tty7.focusInput();
+    if (window.Tty7) window.Tty7.focusInput(generation);
 }
 function stopScrolling() {
     cancelAnimationFrame(frame);
@@ -286,39 +415,59 @@ window.addEventListener('resize', () => {
     terminal.refresh(0, terminal.rows - 1);
     if (following) returnLive();
 });
-let initialSnapshot = true;
 let writing = false;
-window.tty7Write = function(data, snapshot, cols, rows, sequence) {
+let appliedRevision = null;
+let appliedEpoch = null;
+window.tty7Begin = function(gen) {
+    generation = gen;
+    inputReady = false;
+    stopScrolling();
+    touch = undefined;
+    activePointers.clear();
+    history.hidden = true;
+    historyText.replaceChildren();
+    historyCursor = null; historyMore = true; historyLoading = false; historyLoaded = false; historyBytes = 0;
+    following = true;
+    appliedRevision = appliedEpoch = null;
+    // Drain at most the previous current-state write, never historical replay.
+    terminal.write('', () => {
+        if (gen !== generation) return;
+        terminal.reset();
+        writing = false;
+        if (window.Tty7) window.Tty7.begun(gen);
+    });
+    return true;
+};
+window.tty7Screen = function(gen, state, sequence) {
+    if (gen !== generation) return false;
     try {
         if (writing) throw new Error('上一个终端画面尚未完成');
-        if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || cols > 1000 || rows < 1 || rows > 1000) {
-            throw new Error('终端尺寸无效');
-        }
+        if (state.base_revision !== null && (state.base_revision !== appliedRevision || state.epoch !== appliedEpoch)) throw new Error('终端画面基线不匹配');
+        if (!Number.isInteger(state.cols) || !Number.isInteger(state.rows) || state.cols < 1 || state.cols > 1000 || state.rows < 1 || state.rows > 1000) throw new Error('终端尺寸无效');
         if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error('终端画面序号无效');
-        const normalized = data.replace(/-/g, '+').replace(/_/g, '/');
-        const raw = atob(normalized);
-        const bytes = new Uint8Array(raw.length);
-        for (let i = 0; i < raw.length; ++i) bytes[i] = raw.charCodeAt(i);
-        // A replay consists of multiple snapshot chunks, including split UTF-8
-        // and ANSI sequences. Reset once, never between replay segments.
-        if (snapshot && initialSnapshot) { terminal.reset(); initialSnapshot = false; }
-        if (terminal.cols !== cols || terminal.rows !== rows) terminal.resize(cols, rows);
+        if (state.base_revision === null) terminal.reset();
+        if (terminal.cols !== state.cols || terminal.rows !== state.rows) terminal.resize(state.cols, state.rows);
+        liveWidths.prepare(state.lines, state.cols);
+        let paint = '\x1b[?7l\x1b[?25l';
+        for (const line of state.lines) paint += `\x1b[${line.row + 1};1H\x1b[2K${line.ansi}\x1b[0m`;
+        const cursor = state.cursor, modes = state.modes;
+        paint += `\x1b[${cursor.row + 1};${cursor.col + 1}H`;
+        paint += modes.app_cursor ? '\x1b[?1h' : '\x1b[?1l';
+        paint += modes.app_keypad ? '\x1b=' : '\x1b>';
+        paint += modes.bracketed_paste ? '\x1b[?2004h' : '\x1b[?2004l';
+        paint += cursor.visible ? '\x1b[?25h' : '\x1b[?25l';
+        terminal.options.cursorStyle = cursor.shape;
+        terminal.options.cursorBlink = cursor.blink;
         writing = true;
-        terminal.write(bytes, () => {
+        terminal.write(paint, () => {
+            if (gen !== generation) return;
             try {
+                appliedRevision = state.revision; appliedEpoch = state.epoch;
                 sizeSurface();
-                if (terminal.buffer.active.type !== 'alternate') history.hidden = true;
-                // Restoring the normal buffer or changing grid can leave xterm's
-                // inner viewport in history even while the outer view follows.
                 if (following) returnLive();
                 writing = false;
-                // Acknowledge parsed data even when offscreen or scrolled back;
-                // animation-frame painting may be throttled by the WebView.
-                if (window.Tty7) window.Tty7.rendered(sequence);
-            } catch (error) {
-                writing = false;
-                fail(error.message || '终端画面更新失败');
-            }
+                if (window.Tty7) window.Tty7.rendered(gen, sequence);
+            } catch (error) { writing = false; fail(error.message || '终端画面更新失败'); }
         });
         return true;
     } catch (error) {
