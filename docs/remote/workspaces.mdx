@@ -163,28 +163,50 @@ foreground while connected.
    interface groups sessions with the desktop's repository grouping rules and
    displays branches and Agent status. A loading overlay hides historical replay
    until the selected terminal's latest snapshot has been parsed.
-   Use the command input and Enter, Ctrl-C, Tab, Esc or arrow controls; create
-   workspaces and terminals, switch between them, or close a terminal after
-   confirming. The terminal retains the desktop's dimensions, with horizontal
-   scrolling rather than resizing the desktop's shell.
-5. Approved saved computers reconnect automatically on cold launch and foreground
+   Synchronization does not focus the keyboard. Tap the terminal without dragging
+   to type at its cursor. **编辑消息** opens an optional message
+   editor; Enter, Ctrl-C, Tab, Esc and arrow controls remain available. Opening
+   the workspace drawer clears input focus and dismisses the keyboard from either
+   input mode. Create workspaces and terminals, switch between them, or close a
+   terminal after confirming.
+   The shared PTY uses the phone's measured grid and adapts when the keyboard changes
+   the available height; it is not a horizontally clipped desktop-width terminal.
+5. Each phone saves exactly one computer. **扫描与配对管理** opens its pairing
+   management screen. Confirm **解除配对** before scanning or opening a pairing link
+   for another computer; canceling keeps the current pairing. Migration from an
+   older multi-computer store keeps the last approved computer, or the latest
+   pending pairing if none is approved.
+6. The approved computer reconnects automatically on cold launch and foreground
    return; pairing does not need to be repeated. A foreground network interruption
    keeps the selected terminal behind a reconnect overlay. After reconnection,
-   the overlay clears only when its new snapshot is completely parsed. Explicit
-   **Disconnect** opts out of automatic reconnect until you connect again.
-   Forgetting a computer on the phone removes its saved credential; **revoke**
-   its device entry on the desktop to withdraw access. Disabling desktop mobile
-   access disconnects live phones and stops relay access.
+   the overlay clears only when its new snapshot is completely parsed. There is
+   no separate Disconnect button. Unpairing removes the phone's saved credential;
+   **revoke** its device entry on the desktop to withdraw access there. Disabling
+   desktop mobile access disconnects live phones and stops relay access.
 
 ### Content synchronization and failure handling
 
 The phone observes the same daemon-owned PTY as the desktop. Synchronization is
 an ANSI snapshot followed by ordered live output, not video frames or a copy of
-the desktop GUI. Desktop terminal dimensions are preserved; each client keeps
-its own selected session and scroll position. Normal-buffer history remains
-readable while an alternate-screen Agent is active, without inventing history
-for the alternate screen. Touch scrolling stays local and does not send mouse
-or terminal-query responses to the shared PTY.
+the desktop GUI. While its size lease is held, the phone controls the shared
+terminal grid; the desktop's previous grid is restored on release. Desktop
+takeback prevents subsequent phone resize requests from reclaiming control;
+explicitly reopen the terminal to use the phone grid again. Each client keeps
+its own selected session and scroll position. Live-follow updates both the outer
+viewport and xterm's inner scrollback position after replay, grid changes and
+normal/alternate-buffer transitions; reading history deliberately suspends following.
+Normal-buffer history remains readable while an alternate-screen Agent is active,
+without inventing history for the alternate screen. Touch scrolling stays local
+and does not send mouse or terminal-query responses to the shared PTY.
+
+Vertical touch scrolling runs at 1.8× finger travel and coasts after a flick;
+a new touch stops the coast. Horizontal panning remains 1:1. Pointer capture on
+the stable viewport keeps gestures intact when xterm replaces rendered rows.
+Drags, cancelled gestures and multi-touch never focus terminal input. An
+intentional tap restores both terminal and native keyboard focus, including
+after closing the message editor. The dark terminal sets explicit light text
+and cursor colours and enforces a 4.5:1 minimum text contrast for ANSI/truecolour
+output, so a desktop application's dark text remains readable on the phone.
 
 Protocol 2 gives each subscription a new generation and monotonically ordered
 output sequence. Android acknowledges output only after its terminal parser
@@ -195,12 +217,36 @@ old subscriptions cannot unmask or acknowledge the new one. Initial history
 is bounded separately from the 8 MiB live-output queue, so a full initial
 replay does not disconnect its observer on the first new byte.
 
-Live output is streamed continuously; workspace, title, branch and Agent
-metadata refresh every two seconds, including while a terminal is open.
-Agent status uses the desktop's state source; agents that need status hooks
-still need those hooks installed. Observer or renderer failures retain the
-selected terminal and show an error with **Retry loading**, rather than
-returning to the QR screen or silently changing sessions.
+A visually blank terminal is not necessarily an empty replay: clearing the
+screen does not discard the daemon's retained ANSI history. Replay chunks are
+at most 48 KiB; a full 8 MiB history needs at least 171 chunks, all parsed before
+the overlay clears. Even an empty snapshot carries the terminal dimensions and
+reset through the renderer. Each selected feed currently creates a new WebView,
+and switching waits for the previous unsubscribe response before subscribing.
+There is no normal 30-second synchronization delay. For slow opening, distinguish
+connection/authentication, unsubscribe/subscribe, WebView startup, received bytes
+and frames, parser callbacks, and snapshot completion before tuning the output
+window. Increasing that window cannot accelerate a single empty output frame.
+
+Optimization priorities are to measure those phases on the device, reuse an
+initialized renderer for short/empty sessions, and replace raw historical repaint
+replay with a canonical current-screen snapshot plus bounded/lazy history for long
+sessions. Preserve subscription generations, ordered geometry and parser-confirmed
+completion; hiding the overlay early would expose stale terminal state. Tune the
+credit window only after distinguishing network/ACK latency from parser work.
+
+Live output and Agent status are streamed continuously. Agent snapshots carry
+monotonic per-pane revisions so older polls or replay cannot replace newer status.
+Workspace, title and branch metadata refresh every two seconds, including while
+a terminal is open. Agent status uses the desktop's state source; agents that need
+status hooks still need those hooks installed. Update the OMP hook and reload it
+or start a new Agent session: a running session retains its previously loaded hook.
+Subagent completion and automatic continuation do not finish the root Agent turn.
+Pi-family hooks also report main-session tool completions: otherwise an active
+long turn with no new start/end event can hit the daemon's 30-minute silent-turn
+expiry and incorrectly appear idle.
+Observer or renderer failures retain the selected terminal and show an error with
+**Retry loading**, rather than returning to the QR screen or silently changing sessions.
 
 Update both the Android app and desktop daemon for protocol 2. Existing pairing
 credentials and certificate pins remain valid. The phone reconnects while
@@ -290,3 +336,15 @@ also recovered to the final target. Cold process restart restored the approved
 computer and its grouped session drawer without scanning again. The updated
 desktop daemon was handed off without changing any of the four existing pane
 IDs or their immediately preceding terminal/Agent process IDs.
+
+The phone-sized terminal update was verified on a physical Honor phone without
+the emulator. Direct terminal input reported `stty size` as 36 rows × 37 columns,
+then 17 rows × 37 columns with the soft keyboard open. Verification also exercised
+unpair confirmation/cancel, the real camera scanner, a fresh OMP showing Working,
+and desktop takeback restoring a requested 120-column × 30-row grid.
+
+A browser viewport smoke reproduced the previously offscreen input target while
+a PTY resize was pending, then verified that it stays onscreen, direct input remains
+intact, and the resized grid paints without horizontal overflow. This final
+focus-anchor change still needs a physical-device recheck: the phone was disconnected
+before the final APK could be installed.

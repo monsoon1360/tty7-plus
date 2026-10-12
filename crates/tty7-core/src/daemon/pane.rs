@@ -2642,6 +2642,8 @@ impl DaemonPane {
     ) -> std::io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let size = mobile_lease_resize(&mut state, observer_id, size, initial)?;
+        // Keep lease ownership locked through the ioctl: desktop takeback
+        // must restore after this resize, never have its restore overwritten.
         self.resize_pty(size);
         Ok(())
     }
@@ -6253,6 +6255,42 @@ mod tests {
         assert_ne!(mobile_agent(&state).unwrap().1, AgentStatus::Working);
         apply_agent(&mut state, None);
         assert_eq!(mobile_agent(&state), None);
+    }
+
+    #[test]
+    fn mobile_agent_revisions_cover_hook_inferred_and_foreground_transitions() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent, parse_agent_event_body};
+        let mut state = test_state(true);
+        apply_agent(&mut state, Some((CLIAgent::OhMyPi, vec!["omp".into()])));
+        let mut revision = state.agent_clock.generation;
+        assert!(revision > 0, "a foreground agent with no session is a new reading");
+        for (event, expected) in [
+            ("prompt-submit", AgentStatus::Working),
+            ("permission-request", AgentStatus::Waiting),
+            ("tool-complete", AgentStatus::Working),
+            ("stop", AgentStatus::Done),
+            ("prompt-submit", AgentStatus::Working),
+        ] {
+            let body = format!(r#"{{"v":1,"agent":"omp","event":"{event}","session_id":"root"}}"#);
+            let event = parse_agent_event_body(body.as_bytes()).unwrap();
+            apply_agent_signals(&mut state, vec![event], None);
+            assert_eq!(mobile_agent(&state), Some((CLIAgent::OhMyPi, expected)));
+            assert!(state.agent_clock.generation > revision);
+            revision = state.agent_clock.generation;
+        }
+        settle_interrupt(&mut state, revision);
+        assert_eq!(mobile_agent(&state), Some((CLIAgent::OhMyPi, AgentStatus::Done)));
+        assert!(state.agent_clock.generation > revision, "inferred completion orders after Working");
+        revision = state.agent_clock.generation;
+        apply_agent(&mut state, None);
+        assert_eq!(mobile_agent(&state), None);
+        assert!(state.agent_clock.generation > revision, "agent removal orders after completion");
+
+        apply_agent(&mut state, Some((CLIAgent::OhMyPi, vec!["omp".into()])));
+        revision = state.agent_clock.generation;
+        apply_agent_signals(&mut state, Vec::new(), Some("needs input".into()));
+        assert_eq!(mobile_agent(&state), Some((CLIAgent::OhMyPi, AgentStatus::Waiting)));
+        assert!(state.agent_clock.generation > revision, "notification-only agents also advance");
     }
 
     #[test]

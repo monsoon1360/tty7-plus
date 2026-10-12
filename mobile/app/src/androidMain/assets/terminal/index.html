@@ -7,6 +7,8 @@ html,body{margin:0;height:100%;background:#101014;color:#eee;overflow:hidden}
 #viewport{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;touch-action:none}
 #terminal{width:max-content;min-width:100%;padding:2px;box-sizing:border-box}
 .xterm-viewport{overscroll-behavior:contain}
+/* Keep the invisible IME target onscreen while the shared PTY resize is pending. */
+#terminal .xterm-helper-textarea{position:fixed!important;top:2px!important;left:2px!important}
 #history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:#101014;z-index:20}
 #history-toolbar{position:sticky;top:0;left:0;background:#202026;padding:8px;font:14px sans-serif}
 #return-live{margin-left:8px;padding:6px 10px;background:#373742;color:#fff;border:0;border-radius:4px}

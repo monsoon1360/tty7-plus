@@ -17,6 +17,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -31,6 +33,8 @@ fun MobileApp(
 ) {
     val scope = rememberCoroutineScope()
     val controller = remember(platform) { RemoteController(platform, scope) }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val state by controller.state.collectAsState()
     var scanning by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(false) }
@@ -47,6 +51,12 @@ fun MobileApp(
         state.terminalSelection?.let { it.first to it.second.id }
     }
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    LaunchedEffect(drawer.targetValue) {
+        if (drawer.targetValue == DrawerValue.Open) {
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+        }
+    }
     LaunchedEffect(pairingLinks) {
         pairingLinks.collect {
             scanning = false
@@ -454,6 +464,8 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "TLS certificate pin is required", "Invalid TLS SHA256 fingerprint" -> "配对链接缺少有效的 TLS 证书指纹，请重新生成配对二维码。"
     "Invalid relay URL", "Relay must use wss", "Unencrypted WebSocket is only allowed for loopback in debug builds" -> "中继地址无效，远程连接必须使用安全的 WSS 地址。"
     UNPAIR_BEFORE_PAIRING -> "请先在「扫描与配对管理」中解除当前电脑的配对，再扫描或使用新的配对链接。"
+    "Desktop took back terminal size control. Reopen the terminal to use the phone grid." -> "电脑已接管终端尺寸。重新打开此会话可再次使用手机尺寸。"
+    "terminal size control was taken back" -> "电脑已接管终端尺寸。重新打开此会话可再次使用手机尺寸。"
     "Could not securely save paired computers" -> "无法安全保存电脑的连接凭据，请检查手机存储空间。"
     "Relay refused connection" -> "中继服务拒绝了连接，请检查电脑与网络后重试。"
     else -> if (error.contains(" timed out; the remote operation may still complete. Refresh to reconcile its outcome.")) {
@@ -462,6 +474,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
             "unsubscribe" -> "返回会话列表"
             "list" -> "刷新会话"
             "input" -> "发送终端输入"
+            "terminal_size" -> "调整终端尺寸"
             "create_workspace" -> "创建工作区"
             "create_terminal" -> "创建终端"
             "close_terminal" -> "关闭终端"

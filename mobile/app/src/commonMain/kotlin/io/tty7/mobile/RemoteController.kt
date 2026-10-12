@@ -46,7 +46,9 @@ class RemoteController(
     private var subscribedPane: Long? = null
     private var failedTerminal: TerminalFeed? = null
     private val refreshing = Mutex()
-    private data class AgentReading(val revision: ULong, val name: String?, val status: String?)
+    private data class AgentReading(val revision: ULong, val name: String?, val status: String?) {
+        fun apply(pane: Pane) = pane.copy(agentName = name, agentStatus = status, agentRevision = revision)
+    }
     private val agentReadings = mutableMapOf<Long, AgentReading>()
     private fun fail(error: Throwable) {
         mutable.value = mutable.value.copy(error = error.message ?: "Remote connection failed")
@@ -95,7 +97,11 @@ class RemoteController(
         action {
             val generation = lifetime.generation
             ensureLoaded()
-            check(mutable.value.computers.isEmpty()) { UNPAIR_BEFORE_PAIRING }
+            if (!lifetime.accepts(generation)) return@action
+            if (mutable.value.computers.isNotEmpty()) {
+                fail(IllegalStateException(UNPAIR_BEFORE_PAIRING))
+                return@action
+            }
             val computer = platform.parseQr(uri)
             remember(computer, newPair = true)
             currentCoroutineContext().ensureActive()
@@ -314,14 +320,14 @@ class RemoteController(
                                 val previous = agentReadings[feed.pane.id]
                                 if (previous == null || reading.revision >= previous.revision) {
                                     agentReadings[feed.pane.id] = reading
-                                    feed.updatePane(reconcileAgent(feed.pane))
+                                    feed.updatePane(reading.apply(feed.pane))
                                     val selected = mutable.value.terminalSelection?.let { (workspace, pane) ->
-                                        workspace to if (pane.id == feed.pane.id) reconcileAgent(pane) else pane
+                                        workspace to if (pane.id == feed.pane.id) reading.apply(pane) else pane
                                     }
                                     mutable.value = mutable.value.copy(
                                         workspaces = mutable.value.workspaces.map { workspace ->
                                             workspace.copy(panes = workspace.panes.map { pane ->
-                                                if (pane.id == feed.pane.id) reconcileAgent(pane) else pane
+                                                if (pane.id == feed.pane.id) reading.apply(pane) else pane
                                             })
                                         },
                                         terminalSelection = selected,
@@ -445,7 +451,7 @@ class RemoteController(
             agentReadings[pane.id] = AgentReading(revision, pane.agentName, pane.agentStatus)
             return pane
         }
-        return previous?.let { pane.copy(agentName = it.name, agentStatus = it.status, agentRevision = it.revision) } ?: pane
+        return previous?.apply(pane) ?: pane
     }
     fun refresh() = action {
         if (!refreshing.tryLock()) return@action

@@ -1861,6 +1861,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mobile_agent_list_serializes_the_live_badge_and_its_revision() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent};
+        use crate::daemon::pane::MobileAgentState;
+        let tab = crate::core::machine::Tab::leaf(7);
+        let info = crate::daemon::protocol::PaneInfo {
+            pane_id: 7,
+            cwd: None,
+            title: "omp".into(),
+            osc_title: None,
+            alive: true,
+            owner: None,
+        };
+        let size = crate::daemon::protocol::WinSize {
+            cols: 80,
+            rows: 24,
+            cell_w: 0,
+            cell_h: 0,
+        };
+        for (revision, status) in [
+            (1, AgentStatus::Working),
+            (2, AgentStatus::Waiting),
+            (3, AgentStatus::Done),
+        ] {
+            let terminal = mobile_terminal(
+                &tab, &info, size,
+                MobileAgentState { revision, agent: Some((CLIAgent::OhMyPi, status)) },
+                None, None,
+            );
+            assert_eq!(terminal["agent"]["status"], serde_json::to_value(status).unwrap());
+            assert_eq!(terminal["agent_revision"], revision);
+            assert_eq!(terminal["agent"]["name"], CLIAgent::OhMyPi.display_name());
+        }
+        let terminal = mobile_terminal(
+            &tab, &info, size, MobileAgentState { revision: 4, agent: None }, None, None,
+        );
+        assert!(terminal["agent"].is_null());
+        assert_eq!(terminal["agent_revision"], 4);
+    }
+
+    #[test]
     fn mobile_repository_metadata_uses_worktree_branch_and_shared_repo_home() {
         let directory = tempfile::tempdir().unwrap();
         let repo = directory.path().join("repo");

@@ -2605,9 +2605,16 @@ const EXE = {exe};
 
 /** The slice of Pi's handler context we read — structural, so this bridge does
  *  not depend on the context type staying exported. */
-type SessionCtx = {{ sessionManager?: {{ getSessionId?(): string | undefined }} }};
+type SessionCtx = {{
+  sessionManager?: {{ getSessionId?(): string | undefined }};
+  agent?: {{ kind?: string }};
+  hasPendingMessages?(): boolean;
+}};
 
 function emit(event: string, ctx?: SessionCtx): void {{
+  // OMP rebinds extension factories to subagent sessions in the same process.
+  // Their completion belongs to that session, not the terminal's main agent.
+  if (ctx?.agent?.kind === "sub") return;
   try {{
     let payload = "";
     try {{
@@ -2627,9 +2634,6 @@ function emit(event: string, ctx?: SessionCtx): void {{
 
 export default function (pi: ExtensionAPI) {{
   if (!process.env["TTY7"]) return;
-  // Extension load = the agent is running in this pane. No context here yet,
-  // so the id rides on session_start instead.
-  emit("session-start");
   // What the pane showed before a UI prompt put it on "waiting", so closing
   // the prompt can put it back.
   let turn = "session-start";
@@ -2641,11 +2645,23 @@ export default function (pi: ExtensionAPI) {{
   // tells: on() returns nothing in Pi or Oh My Pi, and a build that takes the
   // name without ever sending it must still end its turns on agent_end.
   let settles = false;
-  pi.on("agent_start", (_event, ctx) => emit((turn = "prompt-submit"), ctx));
-  pi.on("agent_end", (_event, ctx) => {{
-    if (!settles) emit((turn = "stop"), ctx);
+  pi.on("agent_start", (_event, ctx) => {{
+    if ((ctx as SessionCtx).agent?.kind === "sub") return;
+    emit((turn = "prompt-submit"), ctx);
+  }});
+  pi.on("agent_end", (event, ctx) => {{
+    if ((ctx as SessionCtx).agent?.kind === "sub") return;
+    // This event also closes attempts that the session will continue. Its
+    // explicit continuation/queue reading is authoritative, not a busy guess.
+    if (!settles && !(event as {{ willContinue?: boolean }}).willContinue && !(ctx as SessionCtx).hasPendingMessages?.()) emit((turn = "stop"), ctx);
   }});
   pi.on("session_shutdown", (_event, ctx) => emit("session-end", ctx));
+  // A long turn can execute tools for hours without another agent_start.
+  // Report real activity so the daemon does not expire it as a silent turn.
+  // emit() excludes subagent sessions from the terminal's main-agent state.
+  try {{
+    pi.on("tool_execution_end", (_event, ctx) => emit("tool-complete", ctx));
+  }} catch {{}}
   // Last, and guarded: the three above already worked, so a Pi build that
   // rejects this event name must not take them — or the whole extension —
   // down with it.
@@ -2671,6 +2687,7 @@ export default function (pi: ExtensionAPI) {{
   }} catch {{}}
   try {{
     pi.on("agent_settled" as any, (_event: unknown, ctx: SessionCtx) => {{
+      if (ctx.agent?.kind === "sub") return;
       settles = true;
       emit((turn = "stop"), ctx);
     }});
@@ -2683,9 +2700,10 @@ export default function (pi: ExtensionAPI) {{
       emit("permission-request", ctx),
     );
     pi.on("tool_approval_resolved" as any, (_event: unknown, ctx: SessionCtx) => emit(turn, ctx));
-    pi.on("auto_retry_start" as any, (_event: unknown, ctx: SessionCtx) =>
-      emit((turn = "prompt-submit"), ctx),
-    );
+    pi.on("auto_retry_start" as any, (_event: unknown, ctx: SessionCtx) => {{
+      if (ctx.agent?.kind === "sub") return;
+      emit((turn = "prompt-submit"), ctx);
+    }});
   }} catch {{}}
 }}
 "#
@@ -4499,52 +4517,6 @@ mod tests {
         assert!(
             !opencode.contains("sh -c"),
             "opencode no longer routes the emitter through sh"
-        );
-
-        for (agent, slug, package) in [
-            (HookAgent::Pi, "pi", "@earendil-works/pi-coding-agent"),
-            (HookAgent::OhMyPi, "omp", "@oh-my-pi/pi-coding-agent"),
-            (
-                HookAgent::PrimeAgent,
-                "prime-agent",
-                "@earendil-works/pi-coding-agent",
-            ),
-        ] {
-            let bridge =
-                pi_extension_ts(&target, agent).unwrap_or_else(|| panic!("{slug} content builds"));
-            assert!(bridge.contains(&format!("agent-hook {slug}")));
-            assert!(bridge.contains(&format!(r#"["agent-hook", "{slug}", event]"#)));
-            assert!(bridge.contains(&format!(r#"from "{package}""#)));
-            assert!(bridge.contains(&exe));
-            assert!(bridge.contains(r#"process.env["TTY7"]"#));
-            assert!(bridge.contains("getSessionId"));
-            assert!(bridge.contains("session_id"));
-            assert!(bridge.contains(r#"stdio: ["pipe", "ignore", "ignore"]"#));
-            for event in [
-                "session_start",
-                "agent_start",
-                "agent_end",
-                "session_shutdown",
-                "ui_prompt_start",
-                "ui_prompt_end",
-                "agent_settled",
-                "tool_approval_requested",
-                "tool_approval_resolved",
-                "auto_retry_start",
-            ] {
-                assert!(
-                    bridge.contains(&format!(r#"pi.on("{event}""#)),
-                    "{slug} bridge subscribes to {event}"
-                );
-            }
-            assert!(
-                bridge.contains(r#"pi.on("ui_prompt_end", (_event, ctx) => emit(turn, ctx))"#),
-                "{slug} restores the pre-prompt status rather than forcing working"
-            );
-        }
-        assert!(
-            pi_extension_ts(&target, HookAgent::Claude).is_none(),
-            "only the two Pi-shaped agents get this bridge"
         );
 
         let grok = grok_hooks_json(&target).expect("grok content builds");

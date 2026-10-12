@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Android remote terminals and session management.** A Kotlin Multiplatform
   Compose app pairs through a five-minute QR with code comparison and explicit
-  desktop approval in Settings → Pair Devices. Approved saved computers reconnect
+  desktop approval in Settings → Pair Devices. The approved computer reconnects
   automatically on launch and foreground return; phones stream ANSI terminals, send input, create and switch
   workspaces, and create or close terminals while the desktop GUI is absent.
   Terminal viewport changes preserve existing output, and relay disconnects
@@ -20,13 +20,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remembered device credentials are privately stored and desktop access can
   be disabled or revoked. See [pairing, security, builds and deployment](docs/remote/workspaces.mdx#android-remote-terminals).
 
+### Changed
+
+- **Android connects to one computer.** Removed computer switching, adding another
+  computer, the `tty7` heading and Disconnect action. **扫描与配对管理** opens pairing
+  management; confirmed unpairing is required before scanning a different computer.
+  Existing multi-computer stores retain the last approved computer, or the latest
+  pending pairing when none is approved.
+- **Phone-sized terminals with direct input.** The shared PTY follows the phone's
+  measured terminal grid, including soft-keyboard viewport changes. Touch the
+  terminal to type at its cursor; the message editor remains optional. Desktop
+  takeback stops further phone resizing until the terminal is explicitly reopened,
+  and releasing the phone's size lease restores the desktop grid.
+- **Android keyboard focus stays within the viewport.** The invisible terminal
+  input target is fixed onscreen while waiting for the shared PTY's new grid,
+  rather than leaving the IME focused at an offscreen old cursor position.
+
 ### Fixed
+
+- **Android terminal gestures and contrast.** Gestures now capture pointers on a
+  stable viewport, so xterm replacing a touched row during redraw cannot lose the
+  rest of a swipe or its release. Swipes and synthetic mouse events do not focus
+  input. Synchronization leaves the keyboard unfocused; an intentional tap also
+  reclaims native keyboard focus after the Compose message editor. Vertical drags
+  move at 1.8× finger travel and coast after a flick; a new touch stops momentum.
+  Multi-touch and cancellation cannot become taps. Explicit light foreground/cursor
+  colours and a 4.5:1 minimum contrast keep dark ANSI and truecolour text readable.
+- **Android live output no longer stays on an old screen.** Replay, keyboard/grid
+  changes and buffer restoration now keep xterm's inner viewport at live output
+  when following, not just the outer container. Intentional history scrolling
+  suspends following immediately and remains stable while new output arrives.
+- **Opening the Android workspace drawer dismisses the keyboard.** Both direct
+  terminal input and the Compose message editor clear focus when the drawer opens.
+- **Long Pi-family Agent turns keep their active status.** The hook bridge reports
+  main-session tool completions so ongoing work does not hit the daemon's silent-turn
+  expiry and appear idle on the desktop and phone. Reload the updated hook or start
+  a new Agent session; already-running sessions retain their loaded extension.
 
 - **Android startup, navigation and live terminal synchronization.** Added adaptive
   launcher icons, a Chinese-first interface and a left session drawer using the
   desktop's repository grouping, branch labels and Agent metadata. Foreground
-  reconnect retains the selected terminal; explicit disconnect opts out of automatic
-  reconnect. Terminal entry and network recovery stay masked until the matching
+  reconnect retains the selected terminal and resumes automatically.
+  Terminal entry and network recovery stay masked until the matching
   latest snapshot has been parsed, preventing visible historical replay.
 - **Active Agent history replay no longer drops the observer.** Initial bounded
   history is separate from the bounded live-output queue. Protocol 2 adds
@@ -37,6 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current terminal visible behind an error/retry overlay instead of returning to
   pairing or the session drawer. Existing pairing credentials remain valid; update
   both Android and the desktop daemon.
+- **Live Agent status no longer becomes Done on child completion.** OMP hooks ignore
+  subagent extension reloads/events and preserve Working through automatic
+  continuation and pending messages. Mobile receives revisioned Agent snapshots;
+  delayed polling or replay cannot overwrite newer live status. Update the hook
+  and reload it or start a new Agent session to apply it to an already-running Agent.
 - **Deployment identity stays out of source and examples.** Relay examples and
   defaults use a reserved hostname, with no preconfigured certificate pin.
   New mobile credential stores remain disabled until configured; existing

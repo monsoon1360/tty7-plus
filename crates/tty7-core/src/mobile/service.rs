@@ -1042,6 +1042,16 @@ impl MobileOutput {
             }
         })
     }
+    fn agent(&self, state: MobileAgentState) -> bool {
+        self.send(
+            json!({"type":"agent", "pane_id":self.pane,
+            "subscription_id":self.id, "agent_revision":state.revision,
+            "agent":state.agent.map(|(name, status)| json!({
+                "name":name.display_name(), "status":status}))}),
+            None,
+            false,
+        )
+    }
     fn sequence(&self) -> Option<u64> {
         match self.credit.reserve() {
             Ok(sequence) => Some(sequence),
@@ -1106,12 +1116,18 @@ impl MobileOutput {
 fn forward_output(mut observation: Observation, sink: MobileOutput) {
     // Move replay vectors out while retaining the RAII unobserve guard through
     // every credit wait. The gate accounts only for messages in the live FIFO.
+    // Status is not held behind terminal replay or its output-credit window.
+    let state = observation.pane.mobile_agent();
+    if !sink.agent(state) {
+        return;
+    }
     let initial = std::mem::take(&mut observation.initial);
     forward_observer(
         &observation.receiver,
         &observation.gate,
         observation.size,
         initial,
+        Some(state),
         || observation.pane.mobile_agent(),
         &sink,
     );
@@ -1122,13 +1138,13 @@ fn forward_observer(
     gate: &OutputGate,
     mut size: WinSize,
     initial: Vec<DaemonMsg>,
+    mut last_agent: Option<MobileAgentState>,
     agent_state: impl Fn() -> MobileAgentState,
     sink: &MobileOutput,
 ) {
     let mut initial = initial.into_iter();
     let mut pending = None;
     let mut staging = Vec::new();
-    let mut last_agent = None;
     if initial.len() == 0 && !sink.snapshot_complete() {
         return;
     }
@@ -1235,14 +1251,7 @@ fn forward_observer(
                 let state = agent_state();
                 if last_agent != Some(state) {
                     last_agent = Some(state);
-                    if !sink.send(
-                        json!({"type":"agent", "pane_id":sink.pane,
-                        "subscription_id":sink.id, "agent_revision":state.revision,
-                        "agent":state.agent.map(|(name, status)| json!({
-                            "name":name.display_name(), "status":status}))}),
-                        None,
-                        false,
-                    ) {
+                    if !sink.agent(state) {
                         return;
                     }
                 }
@@ -1767,7 +1776,7 @@ mod tests {
         let (finished, completed) = tokio::sync::oneshot::channel();
         let producer = std::thread::spawn(move || {
             forward_observer(
-                &receive, &gate, size(80, 24), initial, MobileAgentState::default, &sink,
+                &receive, &gate, size(80, 24), initial, None, MobileAgentState::default, &sink,
             );
             let _ = finished.send(());
         });
@@ -1824,6 +1833,82 @@ mod tests {
             .await
             .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn mobile_agent_events_read_live_state_instead_of_replayed_completion() {
+        use crate::core::cli_agent::{AgentSessionState, AgentStatus, CLIAgent};
+        let mut service = test_service();
+        let credit = add_subscription(&mut service, "phone", 7, "feed");
+        let current = Arc::new(Mutex::new(MobileAgentState {
+            revision: 2,
+            agent: Some((CLIAgent::OhMyPi, AgentStatus::Working)),
+        }));
+        let (send, receive) = mpsc::channel();
+        let gate = Arc::new(OutputGate::new());
+        let sink = MobileOutput {
+            output: service.output.clone(),
+            runtime: tokio::runtime::Handle::current(),
+            client: "phone".into(),
+            pane: 7,
+            id: "feed".into(),
+            credit,
+        };
+        let live = current.clone();
+        let producer = std::thread::spawn(move || {
+            forward_observer(
+                &receive,
+                &gate,
+                size(80, 24),
+                vec![
+                    DaemonMsg::Agent(Some(CLIAgent::OhMyPi)),
+                    DaemonMsg::AgentStatus(Some(AgentSessionState {
+                        status: AgentStatus::Done,
+                        ..Default::default()
+                    })),
+                ],
+                None,
+                || *live.lock(),
+                &sink,
+            );
+        });
+        let output = receive_output(&mut service).await;
+        assert_eq!(output.value["type"], "agent");
+        assert_eq!(output.value["agent"]["status"], "working");
+        assert_eq!(output.value["agent_revision"], 2);
+        assert_eq!(output.sequence, None, "status consumes no terminal output credit");
+        assert!(!output.finished);
+        let mut outgoing = Vec::new();
+        service.output_frame(output, &mut outgoing);
+        assert_eq!(outgoing.len(), 1, "the consumer receives the live status");
+        receive_completion(&mut service, 0).await;
+
+        for (revision, status) in [
+            (3, AgentStatus::Waiting),
+            (4, AgentStatus::Working),
+            (5, AgentStatus::Done),
+        ] {
+            *current.lock() = MobileAgentState {
+                revision,
+                agent: Some((CLIAgent::OhMyPi, status)),
+            };
+            send.send(DaemonMsg::AgentStatus(Some(AgentSessionState {
+                status,
+                ..Default::default()
+            }))).unwrap();
+            let output = receive_output(&mut service).await;
+            assert_eq!(output.value["agent"]["status"], serde_json::to_value(status).unwrap());
+            assert_eq!(output.value["agent_revision"], revision);
+            assert_eq!(output.sequence, None);
+        }
+        *current.lock() = MobileAgentState { revision: 6, agent: None };
+        send.send(DaemonMsg::Agent(None)).unwrap();
+        let output = receive_output(&mut service).await;
+        assert!(output.value["agent"].is_null());
+        assert_eq!(output.value["agent_revision"], 6);
+        send.send(DaemonMsg::Exited { code: Some(0) }).unwrap();
+        assert!(receive_output(&mut service).await.finished);
+        producer.join().unwrap();
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ package io.tty7.mobile
 import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
+import android.view.inputmethod.InputMethodManager
 import android.webkit.*
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,6 +11,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.channels.Channel
@@ -28,6 +30,7 @@ private sealed interface TerminalRenderEvent {
 private class TerminalBridge(
     private val onInput: (String) -> Unit,
     private val onResize: (Int, Int) -> Unit,
+    private val onFocusInput: () -> Unit,
     private val events: Channel<TerminalRenderEvent>,
 ) {
     private val main = Handler(Looper.getMainLooper())
@@ -38,6 +41,9 @@ private class TerminalBridge(
     @JavascriptInterface fun resize(cols: Int, rows: Int) {
         if (!disposed && cols in 20..1000 && rows in 5..1000) main.post { if (!disposed) onResize(cols, rows) }
     }
+    @JavascriptInterface fun focusInput() {
+        if (!disposed) main.post { if (!disposed) onFocusInput() }
+    }
     @JavascriptInterface fun ready() { if (!disposed) events.trySend(TerminalRenderEvent.Ready) }
     @JavascriptInterface fun rendered(sequence: Long) { if (!disposed) events.trySend(TerminalRenderEvent.Rendered(sequence)) }
     @JavascriptInterface fun failed(message: String) { if (!disposed) events.trySend(TerminalRenderEvent.Failed(message.take(1024))) }
@@ -47,16 +53,19 @@ private class TerminalBridge(
 @Composable
 actual fun TerminalSurface(feed: TerminalFeed, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val currentInput by rememberUpdatedState(onInput)
     val currentResize by rememberUpdatedState(onResize)
     val events = remember(feed) { Channel<TerminalRenderEvent>(Channel.UNLIMITED) }
     val feedFailure = remember(feed) { onFailure }
     var error by remember(feed) { mutableStateOf<String?>(null) }
     var pageReady by remember(feed) { mutableStateOf(false) }
+    var focusRequest by remember(feed) { mutableIntStateOf(0) }
     val bridge = remember(feed) {
         TerminalBridge(
             { if (feed.synced) currentInput(it) },
             { cols, rows -> if (feed.synced) currentResize(cols, rows) },
+            { if (feed.synced) focusRequest++ },
             events,
         )
     }
@@ -111,8 +120,17 @@ actual fun TerminalSurface(feed: TerminalFeed, synced: Boolean, onInput: (String
     }
     LaunchedEffect(synced, pageReady, web) {
         if (synced && pageReady) {
-            web.requestFocus()
             web.evaluateJavascript("window.tty7Synced()", null)
+        }
+    }
+    LaunchedEffect(focusRequest, web) {
+        if (focusRequest > 0 && feed.synced) {
+            // DOM focus alone cannot reclaim the IME after the Compose editor.
+            // Only the terminal's classified tap/click requests native focus.
+            focusManager.clearFocus(force = true)
+            web.requestFocus()
+            context.getSystemService(InputMethodManager::class.java)
+                .showSoftInput(web, InputMethodManager.SHOW_IMPLICIT)
         }
     }
     LaunchedEffect(feed, web) {

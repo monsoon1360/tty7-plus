@@ -22,6 +22,12 @@ the row grows a second **Uninstall** button beside the first, which itself
 becomes **Reinstall** — or **Update**, against an **Outdated** state, when tty7
 ships a newer hook.
 
+The OMP bridge only tracks the main Agent. Subagent extension loads and completion
+events cannot reset its session or mark it Done. Automatic continuation and queued
+messages keep it Working until the root turn actually settles. After updating the
+hook, reload it or start a new Agent session; a running session keeps the hook it
+already loaded.
+
 <Note>
   Crush ships only a `PreToolUse` hook today. It is enough to remember the
   session for resume, but there is no turn boundary behind it, so a Crush pane
