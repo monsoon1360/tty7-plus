@@ -12,7 +12,7 @@ html,body{margin:0;height:100%;background:#101014;color:#eee;overflow:hidden}
 #history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:#101014;z-index:20}
 #history-toolbar{position:sticky;top:0;left:0;background:#202026;padding:8px;font:14px sans-serif}
 #return-live{margin-left:8px;padding:6px 10px;background:#373742;color:#fff;border:0;border-radius:4px}
-#history-text{margin:0;padding:2px;font:14px monospace;white-space:pre}
+#history-text,#history-screen{margin:0;padding:2px;font:14px monospace;white-space:pre}
 </style>
 </head><body>
 <div id="viewport" aria-label="远程终端，上下滑动查看历史，左右滑动查看宽屏内容">
@@ -20,6 +20,7 @@ html,body{margin:0;height:100%;background:#101014;color:#eee;overflow:hidden}
 <section id="history" aria-label="已保留的主屏幕历史" hidden>
 <div id="history-toolbar"><span id="history-status">主屏幕历史（只读）</span><button id="return-live" type="button">返回实时终端</button></div>
 <pre id="history-text"></pre>
+<pre id="history-screen" aria-label="进入历史时的终端画面"></pre>
 </section>
 </div>
 <script src="xterm.js"></script><script src="screen-widths.js"></script><script src="terminal.js"></script></body></html>

@@ -10,6 +10,7 @@ window.addEventListener('unhandledrejection', () => fail('终端渲染任务失�
 const viewport = document.getElementById('viewport');
 const history = document.getElementById('history');
 const historyText = document.getElementById('history-text');
+const historyScreen = document.getElementById('history-screen');
 const terminal = new Terminal({
     cols:80, rows:24, fontSize:14, fontFamily:'monospace', scrollback:0,
     convertEol:false, allowProposedApi:false, altClickMovesCursor:false,
@@ -33,6 +34,14 @@ const liveWidths = installCanonicalWidths(terminal);
 terminal.open(document.getElementById('terminal'));
 const screen = terminal.element.querySelector('.xterm-screen');
 const scrollback = terminal.element.querySelector('.xterm-viewport');
+const input = terminal.element.querySelector('.xterm-helper-textarea');
+// Android can reopen the IME when a gesture lands on a still-focused textarea.
+// Keep it read-only until the gesture has ended as an intentional tap.
+input.readOnly = true;
+function blurInput() {
+    input.readOnly = true;
+    terminal.blur();
+}
 
 // This is an observer: the desktop terminal, not a replay on the phone, owns
 // protocol replies. Keep keyboard/IME/paste input, but never answer PTY queries.
@@ -118,10 +127,19 @@ function requestHistory() {
     if (window.Tty7) window.Tty7.history(generation, historyCursor || '');
 }
 function showHistory() {
+    if (historyLoaded && !historyMore && !historyText.childElementCount) return false;
     following = false;
+    // Retained history excludes the current screen. Preserve that screen while
+    // loading and at the bottom of history, rather than displaying an empty layer.
+    historyScreen.replaceChildren();
+    for (let row = 0; row < terminal.rows; ++row) {
+        const text = terminal.buffer.active.getLine(row).translateToString(false);
+        historyScreen.appendChild(historyRow({cols:terminal.cols, ansi:'', text}, row, terminal));
+    }
     history.hidden = false;
     history.scrollLeft = viewport.scrollLeft;
-    terminal.blur();
+    history.scrollTop = history.scrollHeight;
+    blurInput();
     if (!historyLoaded) { historyMore = true; requestHistory(); }
     return true;
 }
@@ -149,11 +167,11 @@ function readable(fg, bg) {
     if ((Math.max(f,b) + 0.05) / (Math.min(f,b) + 0.05) >= 4.5) return fg;
     return (b + 0.05) / 0.05 >= 4.5 ? '#000000' : '#ffffff';
 }
-function historyRow(line, rowIndex) {
+function historyRow(line, rowIndex, source = historyParser) {
     const row = document.createElement('div');
     row.style.minHeight = '1em';
     row.dataset.bytes = String(new TextEncoder().encode(line.ansi + line.text).length);
-    const cells = historyParser.buffer.active.getLine(rowIndex);
+    const cells = source.buffer.active.getLine(rowIndex);
     let run = null, previous = '';
     for (let col = 0; col < line.cols; ++col) {
         const cell = cells.getCell(col);
@@ -223,6 +241,7 @@ window.tty7History = async function(gen, page) {
         historyLoaded = true;
         historyLoading = false;
         historyStatus.textContent = page.truncated || evicted ? '已保留历史（有边界截断）' : historyMore ? '向上滚动加载更多' : '已到历史起点';
+        if (!historyMore && !historyText.childElementCount) returnLive();
     } catch (error) { window.tty7HistoryError(gen, error.message || '历史加载失败'); }
 };
 window.tty7HistoryError = function(gen, message) {
@@ -250,7 +269,7 @@ function scrollLocally(amount) {
     }
     if (amount < 0) {
         amount = moveScroll(viewport, amount);
-        if (amount < 0 && inputReady) { showHistory(); moveScroll(history, amount); }
+        if (amount < 0 && inputReady && showHistory()) moveScroll(history, amount);
     } else moveScroll(viewport, amount);
     following = isAtLive();
 }
@@ -268,6 +287,7 @@ let pendingX = 0;
 let pendingY = 0;
 let suppressMouseUntil = 0;
 function focusInput() {
+    input.readOnly = false;
     terminal.focus();
     if (window.Tty7) window.Tty7.focusInput(generation);
 }
@@ -340,6 +360,7 @@ viewport.addEventListener('pointerdown', event => {
     }
     // The history toolbar keeps its native click, but cannot start a fling.
     if (event.target.closest('button')) { touch = undefined; return; }
+    blurInput();
     viewport.setPointerCapture(event.pointerId);
     event.preventDefault();
     touch = {
@@ -426,6 +447,8 @@ window.tty7Begin = function(gen) {
     activePointers.clear();
     history.hidden = true;
     historyText.replaceChildren();
+    historyScreen.replaceChildren();
+    blurInput();
     historyCursor = null; historyMore = true; historyLoading = false; historyLoaded = false; historyBytes = 0;
     following = true;
     appliedRevision = appliedEpoch = null;
@@ -462,6 +485,12 @@ window.tty7Screen = function(gen, state, sequence) {
         terminal.write(paint, () => {
             if (gen !== generation) return;
             try {
+                // An empty history is final only for this screen revision.
+                // New output may have pushed rows into retained history.
+                if (state.revision !== appliedRevision && historyLoaded && !historyMore && !historyText.childElementCount) {
+                    historyLoaded = false;
+                    historyMore = true;
+                }
                 appliedRevision = state.revision; appliedEpoch = state.epoch;
                 sizeSurface();
                 if (following) returnLive();

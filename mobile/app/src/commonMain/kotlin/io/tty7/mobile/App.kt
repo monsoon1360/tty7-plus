@@ -45,8 +45,6 @@ fun MobileApp(
     var createWorkspace by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf<Pair<Workspace, Pane>?>(null) }
     var forgetting by remember { mutableStateOf<Computer?>(null) }
-    var command by remember { mutableStateOf("") }
-    var showCommand by remember { mutableStateOf(false) }
     val selectedPane = remember(state.terminalSelection) {
         state.terminalSelection?.let { it.first to it.second.id }
     }
@@ -216,7 +214,6 @@ fun MobileApp(
                             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text(pane.title, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 if (pane.agentName != null || pane.agentStatus != null) AgentBadge(pane)
-                                TextButton(onClick = { showCommand = !showCommand }, enabled = inputEnabled, modifier = Modifier.testTag("toggle-command")) { Text(if (showCommand) "收起编辑" else "编辑消息") }
                             }
                         }
                         Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF17171A)).testTag("terminal-surface")) {
@@ -248,11 +245,6 @@ fun MobileApp(
                                 ).forEach { (tag, label, input) ->
                                     TextButton(onClick = { controller.input(input) }, enabled = inputEnabled, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp), modifier = Modifier.height(36.dp).testTag("key-$tag")) { Text(label, style = MaterialTheme.typography.labelMedium) }
                                 }
-                            }
-                            if (showCommand) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                OutlinedTextField(command, { command = it }, enabled = inputEnabled, label = { Text("终端输入") }, modifier = Modifier.weight(1f).testTag("terminal-input"), maxLines = 3)
-                                TextButton(onClick = { controller.input(command); command = "" }, enabled = inputEnabled && command.isNotEmpty(), modifier = Modifier.testTag("send-input")) { Text("发送") }
-                                TextButton(onClick = { controller.input(command + "\r"); command = "" }, enabled = inputEnabled, modifier = Modifier.testTag("run-command")) { Text("执行") }
                             }
                         }
                     }
@@ -343,15 +335,13 @@ private fun SessionList(
                     visible.forEachIndexed { index, section ->
                         val branches = section.panes.mapNotNull { it.gitBranch }.distinct()
                         val sharedBranch = if (section.name != null && branches.size == 1) branches.single() else null
-                        section.name?.let { name ->
-                            item(key = "group-${workspace.id}-$index") {
-                                Row(
-                                    Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp, start = 12.dp, end = 12.dp).testTag("session-group-${workspace.id}-$index"),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(if (name == "Ungrouped") "未分组" else name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                    sharedBranch?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 160.dp)) }
-                                }
+                        item(key = "group-${workspace.id}-$index") {
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp, start = 12.dp, end = 12.dp).testTag("session-group-${workspace.id}-$index"),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(section.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                sharedBranch?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 160.dp)) }
                             }
                         }
                         items(section.panes, key = { "pane-${workspace.id}-${it.id}" }) { pane ->
@@ -407,11 +397,13 @@ private fun AgentBadge(pane: Pane) {
     }
 }
 
-private data class PaneSection(val name: String?, val panes: List<Pane>)
+internal data class PaneSection(val name: String?, val panes: List<Pane>) {
+    val title: String get() = if (name == null || name == "Ungrouped") "未分组" else name
+}
 
 // The desktop supplies sections in visual order, including pinned groups.
 // Do not infer groups from cwd or sort labels: both lose user-defined grouping.
-private fun paneSections(panes: List<Pane>): List<PaneSection> {
+internal fun paneSections(panes: List<Pane>): List<PaneSection> {
     val sections = mutableListOf<PaneSection>()
     var start = 0
     while (start < panes.size) {
