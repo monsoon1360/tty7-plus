@@ -423,7 +423,7 @@ list a retry needs.
 | Command | Effect |
 |---|---|
 | `server status` | Same as `tty7 status` |
-| `server logs` | Tail the server log; prints the path, and says so when logging was never enabled (`TTY7_LOG=info` before the server starts) |
+| `server logs` | Tail the server log and print its path; info logging is enabled by default (`TTY7_LOG=off` disables it) |
 | `server start` | Bring up a server on this machine |
 | `server stop` | Stop it — **every pane on the machine dies** |
 | `server restart` | Stop, then start — same consequence |

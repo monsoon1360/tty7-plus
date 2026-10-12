@@ -708,7 +708,10 @@ impl RemoteTerminal {
         let retry_restore = restore.clone();
         match Self::spawn_once(route, size, cell_w, cell_h, cwd, shell, owner, restore) {
             Ok(term) => Ok(term),
-            Err(first_err) if daemon_not_listening(&first_err) => {
+            Err(first_err) if route.is_local() && daemon_not_listening(&first_err) => {
+                log::warn!(
+                    "local daemon unavailable during spawn; attempting recovery: {first_err:#}"
+                );
                 if let Err(start_err) = crate::daemon::spawn::ensure_running() {
                     return Err(anyhow::anyhow!(
                         "daemon not running ({first_err}); starting one failed: {start_err}"
@@ -724,14 +727,17 @@ impl RemoteTerminal {
             Err(first_err)
                 if route.is_local() && daemon_disconnected_before_spawn_reply(&first_err) =>
             {
-                if let Err(restart_err) = crate::daemon::spawn::restart() {
+                log::warn!(
+                    "spawn connection ended before reply; probing daemon without forcing a restart: {first_err:#}"
+                );
+                if let Err(restart_err) = crate::daemon::spawn::ensure_running() {
                     return Err(anyhow::anyhow!(
-                        "daemon disconnected before Spawn reply ({first_err}); restart failed: {restart_err}"
+                        "daemon disconnected before Spawn reply ({first_err}); recovery failed: {restart_err}"
                     ));
                 }
                 Self::spawn_once(route, size, cell_w, cell_h, retry_cwd, retry_shell, retry_owner, retry_restore).map_err(|second_err| {
                     anyhow::anyhow!(
-                        "daemon disconnected before Spawn reply ({first_err}); restarted daemon but Spawn still failed: {second_err}"
+                        "daemon disconnected before Spawn reply ({first_err}); recovery attempted but Spawn still failed: {second_err}"
                     )
                 })
             }
@@ -2212,14 +2218,17 @@ impl RemoteTerminal {
             spec.clone(),
         ) {
             Err(first_err) if daemon_disconnected_before_spawn_reply(&first_err) => {
-                if let Err(restart_err) = crate::daemon::spawn::restart() {
+                log::warn!(
+                    "spawn connection ended before reply; probing daemon without forcing a restart: {first_err:#}"
+                );
+                if let Err(restart_err) = crate::daemon::spawn::ensure_running() {
                     return Err(anyhow::anyhow!(
-                        "daemon disconnected before SpawnNativeSsh reply ({first_err}); restart failed: {restart_err}"
+                        "daemon disconnected before SpawnNativeSsh reply ({first_err}); recovery failed: {restart_err}"
                     ));
                 }
                 Self::spawn_native_ssh_once(size, cell_w, cell_h, remote_start_dir, spec).map_err(|second_err| {
                     anyhow::anyhow!(
-                        "daemon disconnected before SpawnNativeSsh reply ({first_err}); restarted daemon but it still failed: {second_err}"
+                        "daemon disconnected before SpawnNativeSsh reply ({first_err}); recovery attempted but it still failed: {second_err}"
                     )
                 })
             }
@@ -2630,7 +2639,10 @@ fn spawn_reply(
     let _ = stream.set_read_timeout(None);
     match reply {
         Ok(msg) => Ok(msg),
-        Err(e) if would_block(&e) => Err(anyhow::anyhow!("no answer to {what} within {wait:?}")),
+        Err(e) if would_block(&e) => {
+            log::warn!("daemon request timed out; request={what} timeout={wait:?}");
+            Err(anyhow::anyhow!("no answer to {what} within {wait:?}"))
+        }
         Err(e) => {
             Err(anyhow::Error::new(e).context(format!("reading the daemon's answer to {what}")))
         }

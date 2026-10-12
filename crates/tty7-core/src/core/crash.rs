@@ -31,20 +31,7 @@ fn record(role: &str, info: &std::panic::PanicHookInfo<'_>) {
 }
 
 fn append(path: &PathBuf, record: &str) {
-    use std::io::Write as _;
-    let truncate = std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_BYTES);
-    let mut file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(!truncate)
-        .write(true)
-        .truncate(truncate)
-        .open(path)
-    {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    let _ = file.write_all(record.as_bytes());
-    let _ = file.flush();
+    let _ = super::logfile::append_rotating(path, record.as_bytes(), MAX_BYTES);
 }
 
 fn log_path() -> Option<PathBuf> {
@@ -66,7 +53,7 @@ fn utc_timestamp() -> String {
     )
 }
 
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

@@ -706,6 +706,7 @@ fn main() {
         }
         if let Err(e) = crate::daemon::server::run_daemon() {
             log::error!("daemon exited with error: {e}");
+            std::process::exit(1);
         }
         return;
     }

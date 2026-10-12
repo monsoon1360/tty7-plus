@@ -40,9 +40,32 @@ changes what their GUI attaches to.
 For logs:
 
 ```bash
-TTY7_LOG=info   # must be set before the server starts
 tty7 server logs
 ```
+
+Logging defaults to `info`; no environment variable is needed. `tty7.log`
+records UTC dates, process roles/PIDs, versions, daemon lifecycle and recovery
+attempts, pane lifecycle, and persistence failures. Consecutive identical messages
+are limited to five per 30 seconds; the next different message or time window
+reports the suppressed count. `crash.log` retains Rust panic backtraces, and
+`daemon-stderr.log` captures background-server stderr in bounded chunks.
+
+Each log keeps three numbered archives (`.1` is newest). Runtime and stderr
+logs rotate at 4 MiB, panic logs at 256 KiB. New log files are private to the
+user on Unix. Files live under the active config directory (normally
+`~/.config/tty7`). Include the archives when investigating a restart.
+
+Set `TTY7_LOG=debug` or `trace` **before launching the app/server** for more
+verbose diagnostics; `TTY7_LOG=off` disables runtime/stderr logging (panic
+reports remain enabled). `RUST_LOG` is the fallback and accepts the same simple
+levels, not module-filter expressions. Invalid or empty values use `info`.
+Terminal input/output and environment dumps are not added to the diagnostic
+log. Error messages, paths, and library stderr can still contain private
+information; review logs before sharing them.
+
+A failed handshake no longer automatically kills a daemon that still holds its
+server lock. It reports that the server was left running; retry after a moment.
+An explicit background-server restart still ends its sessions.
 
 ## Panes came back empty
 

@@ -3865,7 +3865,7 @@ impl Tty7App {
         let before = self.tabs.len();
         self.new_tab_with_cwd(Some(cwd), None, window, cx);
         if self.tabs.len() == before {
-            log::warn!("no tab opened for {command:?}; not writing it to another pane");
+            log::warn!("no tab opened for requested command; not writing it to another pane");
             return;
         }
         if let Some(terminal) = self

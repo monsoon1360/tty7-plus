@@ -1315,6 +1315,10 @@ impl DeathReporter {
         st.alive = false;
         st.exit_code = code;
         let pane = st.id;
+        log::info!(
+            "pane {pane} exited; exit_code={code:?} shutdown_requested={}",
+            shutting_down.load(Ordering::SeqCst)
+        );
         if shutting_down.load(Ordering::SeqCst) {
             drop(st);
             crate::core::machine::observe_pane(pane, |p| p.live = false);
@@ -1930,6 +1934,7 @@ impl DaemonPane {
 
         let child = pair.slave.spawn_command(spawn.cmd)?;
         let shell_pid = child.process_id();
+        log::info!("pane {id} child started; child_pid={shell_pid:?}");
         let child = Arc::new(Mutex::new(child));
 
         drop(pair.slave);
@@ -3274,7 +3279,14 @@ impl Drop for DaemonPane {
         self.hangup();
         if let PaneBackend::Pty(p) = &self.backend {
             if let Ok(mut child) = p.child.lock() {
-                let _ = child.wait();
+                match child.wait() {
+                    Ok(status) => log::info!(
+                        "pane {} child exited; child_pid={:?} status={status}",
+                        self.id,
+                        p.shell_pid
+                    ),
+                    Err(e) => log::warn!("pane {} child wait failed: {e}", self.id),
+                }
             }
         }
         if let Some(handle) = self.reader.lock().unwrap().take() {

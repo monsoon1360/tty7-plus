@@ -400,34 +400,44 @@ fn land_probe(generation: u64, verdict: ProbeVerdict) {
 }
 
 pub fn ensure_running() -> anyhow::Result<()> {
-    // A dead recorded daemon is the cheap, certain signal that the endpoint
-    // files are stale: skip the connect entirely and let the cleanup below
-    // clear them before the fresh daemon is spawned — the spawn poll would
-    // otherwise keep paying the OS's refusal delay on the dead port.
+    // Skip a probe of a dead recorded process. The replacement owns endpoint
+    // cleanup only after it acquires the singleton lock.
     let mut stale = recorded_daemon_is_dead();
+    if stale {
+        log::warn!(
+            "recorded daemon is dead; recorded_pid={:?}",
+            pidfile::read()
+        );
+    }
     if !stale {
         // Stamped before the connect, so a daemon replaced while the two
         // handshakes are in flight takes this verdict down with it.
         let generation = daemon_generation();
-        if let Ok(mut stream) = transport::connect() {
+        let connection = transport::connect();
+        if let Ok(mut stream) = connection {
             match judge_probe(query_daemon_version(&mut stream), control_dialect_answer) {
                 Some(verdict) => {
                     land_probe(generation, verdict);
                     return Ok(());
                 }
                 None => {
-                    log::info!("daemon did not answer the version handshake; restarting it");
+                    log::warn!(
+                        "daemon version handshake failed; recorded_pid={:?} timeout={HANDSHAKE_TIMEOUT:?}",
+                        pidfile::read()
+                    );
                     note_local_daemon(None);
                     drop(stream);
-                    // A graceful stop is wasted on a daemon that will not answer:
-                    // `stop` polls the still-connectable endpoint for its whole
-                    // SHUTDOWN_TIMEOUT before giving up. Reap the recorded process
-                    // instead — bounded on every platform — and clear the stale
-                    // endpoint below, exactly like a refused connect.
+                    // Check the singleton seat below before touching this process;
+                    // silence alone must not cost every pane its session.
                     stale = true;
                 }
             }
         } else {
+            log::warn!(
+                "daemon connection failed; recorded_pid={:?}: {}",
+                pidfile::read(),
+                connection.err().expect("failed connect")
+            );
             // A refused connect is the other stale signal, and it is the only
             // one left when the pidfile cannot answer: it is missing (the
             // daemon died between `bind` and `write_current`, or never managed
@@ -441,7 +451,17 @@ pub fn ensure_running() -> anyhow::Result<()> {
     }
 
     if stale {
-        reap_stranded();
+        // A failed connection is not evidence that the process died. In
+        // particular, an exec handoff or an overloaded daemon still owns its
+        // sessions. Only an explicit restart may terminate a live seat holder.
+        preserve_live_daemon(live_daemon_pid())?;
+        log::info!(
+            "recovering stale daemon endpoint; recorded_pid={:?}",
+            pidfile::read()
+        );
+        // The new server clears stale endpoints only after claiming its
+        // singleton lock. Do not call reap_stranded here: another server can
+        // claim the seat between the check above and that destructive reap.
     }
 
     // While an installer is replacing the installation, spawning a daemon
@@ -487,13 +507,25 @@ pub fn ensure_running() -> anyhow::Result<()> {
             // daemon answering this connect is already answering that one.
             match judge_probe(query_daemon_version(&mut stream), control_dialect_answer) {
                 Some(verdict) => land_probe(generation, verdict),
-                // It listens but will not say what it is. Nothing to remember
-                // and nothing to put to the user.
-                None => note_local_daemon(None),
+                // A listening socket alone is not a successful startup.
+                None => {
+                    note_local_daemon(None);
+                    log::warn!(
+                        "spawned daemon is listening but its handshake failed; recorded_pid={:?}",
+                        pidfile::read()
+                    );
+                    anyhow::bail!(
+                        "daemon is listening but did not answer its startup handshake; left running"
+                    );
+                }
             }
             return Ok(());
         }
         if Instant::now() >= deadline {
+            log::error!(
+                "daemon startup timed out; recorded_pid={:?} timeout={STARTUP_TIMEOUT:?}",
+                pidfile::read()
+            );
             anyhow::bail!(
                 "daemon did not start listening at {} within {:?}{}",
                 transport::endpoint_display(),
@@ -604,12 +636,16 @@ pub fn seat_holder_note() -> String {
 fn query_daemon_version(stream: &mut transport::Stream) -> VersionProbe {
     use std::io::Write as _;
 
+    let started = Instant::now();
     let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
-    if ClientMsg::Version
+    if let Err(e) = ClientMsg::Version
         .encode(stream)
         .and_then(|()| stream.flush())
-        .is_err()
     {
+        log::warn!(
+            "daemon version request failed after {:?}: {e}",
+            started.elapsed()
+        );
         return VersionProbe::Unresponsive;
     }
     match DaemonMsg::read(stream) {
@@ -620,6 +656,10 @@ fn query_daemon_version(stream: &mut transport::Stream) -> VersionProbe {
                 io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
             ) =>
         {
+            log::warn!(
+                "daemon version reply timed out after {:?}: {e}",
+                started.elapsed()
+            );
             VersionProbe::Unresponsive
         }
         _ => VersionProbe::Legacy,
@@ -705,9 +745,98 @@ fn dialect_of<S: io::Read + io::Write>(mut link: S) -> DialectAnswer {
     }
 }
 
+fn live_daemon_pid() -> Option<u32> {
+    let holder = crate::daemon::singleton::holder_pid();
+    #[cfg(windows)]
+    let holder = holder.or_else(|| {
+        // Windows holds the singleton file with share_mode(0), so its pid
+        // cannot be read while held. Use the live recorded process instead.
+        let pid = pidfile::read()?;
+        if !daemon_process_alive(pid) {
+            return None;
+        }
+        let ours = pid == std::process::id()
+            || crate::daemon::winproc::snapshot()
+                .iter()
+                .any(|p| p.pid == pid && is_reapable_daemon_name(&p.name));
+        ours.then_some(pid)
+    });
+    holder
+}
+
+fn preserve_live_daemon(holder: Option<u32>) -> anyhow::Result<()> {
+    if let Some(pid) = holder {
+        log::warn!(
+            "automatic recovery refused to terminate live daemon pid={pid}; keeping sessions"
+        );
+        anyhow::bail!(
+            "daemon pid {pid} is still running but not answering; its sessions were left intact. Retry, or explicitly restart the background server if it remains unresponsive"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn automatic_recovery_preserves_a_live_unresponsive_daemon() {
+    const VAR: &str = "TTY7_TEST_UNRESPONSIVE_DIR";
+    if let Some(dir) = std::env::var_os(VAR) {
+        crate::core::config::set_config_dir(PathBuf::from(dir));
+        let _seat = match crate::daemon::singleton::claim() {
+            crate::daemon::singleton::Claim::Held(seat) => seat,
+            other => panic!("could not claim test seat: {other:?}"),
+        };
+        crate::daemon::pidfile::write_current();
+        // A live holder without a serving endpoint is enough to reproduce the
+        // dangerous recovery path; ensure_running must not unlink its records.
+        let error = ensure_running().unwrap_err().to_string();
+        assert!(error.contains("left intact"), "{error}");
+        assert_eq!(pidfile::read(), Some(std::process::id()));
+        assert!(live_daemon_pid().is_some());
+        // Also exercise an accepting listener that stalls during the handshake.
+        let listener = transport::bind().unwrap();
+        let peer = std::thread::spawn(move || {
+            let _stream = listener.incoming().next().unwrap().unwrap();
+            std::thread::sleep(HANDSHAKE_TIMEOUT + Duration::from_millis(250));
+        });
+        let error = ensure_running().unwrap_err().to_string();
+        assert!(error.contains("left intact"), "{error}");
+        assert_eq!(pidfile::read(), Some(std::process::id()));
+        assert!(transport::endpoint_exists());
+        peer.join().unwrap();
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "daemon::spawn::automatic_recovery_preserves_a_live_unresponsive_daemon",
+            "--nocapture",
+        ])
+        .env(VAR, dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(preserve_live_daemon(None).is_ok());
+}
+
+#[track_caller]
 pub fn restart() -> anyhow::Result<()> {
+    let caller = std::panic::Location::caller();
+    log::warn!(
+        "daemon restart requested; recorded_pid={:?} caller={caller}; sessions will end",
+        pidfile::read()
+    );
     stop();
-    ensure_running()
+    let result = ensure_running();
+    match &result {
+        Ok(()) => log::info!(
+            "daemon restart completed; recorded_pid={:?}",
+            pidfile::read()
+        ),
+        Err(e) => log::error!("daemon restart failed: {e:#}"),
+    }
+    result
 }
 
 /// What the daemon listening again after a handoff turned out to be.
@@ -1045,9 +1174,8 @@ fn signal_and_await_exit(pid: libc::pid_t, sig: libc::c_int, timeout: Duration) 
 /// count. A zombie answers `kill(pid, 0)` like the living, but it holds no
 /// lock, no endpoint and no image, and no signal can end it: counting it
 /// alive made the reap SIGTERM-then-SIGKILL a corpse for the full eight
-/// seconds of both timeouts before giving up on it. The GUI never waits on
-/// the daemons it spawns, so a crashed daemon *is* a zombie of a long-lived
-/// GUI, not a rare state.
+/// seconds of both timeouts before giving up on it. Older GUI builds did
+/// not wait on their daemon children, so those can remain zombies.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn process_alive(pid: libc::pid_t) -> bool {
     let exists = unsafe { libc::kill(pid, 0) == 0 };
@@ -1261,7 +1389,27 @@ fn spawn_detached() -> anyhow::Result<()> {
     detach(&mut cmd);
 
     match cmd.spawn() {
-        Ok(_child) => Ok(()),
+        Ok(mut child) => {
+            let pid = child.id();
+            log::info!("daemon child spawned; child_pid={pid}");
+            // Reap our child and preserve signal/exit status while this launcher
+            // is alive. The daemon remains independent when the GUI quits.
+            if let Err(e) = std::thread::Builder::new()
+                .name("tty7-daemon-exit".into())
+                .spawn(move || match child.wait() {
+                    Ok(status) if status.success() => {
+                        log::info!("daemon child exited; child_pid={pid} status={status}")
+                    }
+                    Ok(status) => log::error!(
+                        "daemon child exited abnormally; child_pid={pid} status={status}"
+                    ),
+                    Err(e) => log::warn!("daemon child wait failed; child_pid={pid}: {e}"),
+                })
+            {
+                log::warn!("could not monitor daemon child pid={pid}: {e}");
+            }
+            Ok(())
+        }
         Err(e) => Err(anyhow::anyhow!("failed to spawn daemon process: {e}")),
     }
 }

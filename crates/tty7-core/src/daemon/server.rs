@@ -780,10 +780,23 @@ macro_rules! startup_note {
 }
 
 pub fn run_daemon() -> anyhow::Result<()> {
+    let result = run_daemon_inner();
+    if let Err(e) = &result {
+        log::error!("daemon exited with error: {e:#}");
+    }
+    result
+}
+
+fn run_daemon_inner() -> anyhow::Result<()> {
     // First, before a handoff is adopted: the re-exec keeps every inherited
     // descriptor open, and adopting one marks it close-on-exec again.
     #[cfg(target_os = "macos")]
     crate::daemon::responsibility::disclaim_inherited();
+
+    if let Err(e) = crate::core::logfile::capture_stderr() {
+        log::warn!("could not capture daemon stderr: {e}");
+    }
+    log::info!("daemon starting; version={}", env!("CARGO_PKG_VERSION"));
 
     #[cfg(unix)]
     if let Some(inheritance) = crate::daemon::handoff::requested() {
@@ -802,10 +815,12 @@ pub fn run_daemon() -> anyhow::Result<()> {
     let _seat = match crate::daemon::singleton::claim() {
         crate::daemon::singleton::Claim::Held(seat) => Some(seat),
         crate::daemon::singleton::Claim::Taken => {
+            log::info!("another server already serves this config dir; exiting");
             startup_note!("tty7-server: another server already serves this config dir; exiting");
             return Ok(());
         }
         crate::daemon::singleton::Claim::Unavailable(why) => {
+            log::warn!("starting without the single-server lock: {why}");
             startup_note!("tty7-server: starting without the single-server lock ({why})");
             None
         }
@@ -1180,6 +1195,7 @@ fn on_shutdown() {
 /// held (#653). Everything that must reach disk is flushed explicitly in
 /// `on_shutdown`, so nothing is owed to the handlers being skipped.
 fn exit_now() -> ! {
+    log::info!("daemon exiting; code=0");
     log::logger().flush();
     #[cfg(unix)]
     unsafe {
@@ -1224,13 +1240,19 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                 // predecessor's commands behind that name.
                 crate::daemon::history::carry(dead, id);
             }
+            let predecessor = restore.as_ref().map(|r| r.pane_id);
             let restore = restore.and_then(restored_screen);
+            log::info!(
+                "pane {id} spawn requested; restore_from={predecessor:?} screen_restored={}",
+                restore.is_some()
+            );
             let on_dead = {
                 let registry = registry.clone();
                 move || {
                     std::thread::Builder::new()
                         .name("tty7-daemon-pane-reap".to_string())
                         .spawn(move || {
+                            log::info!("pane {id} ended; removing from registry");
                             registry.remove(id);
                         })
                         .ok();
@@ -1250,6 +1272,7 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                 Ok(p) => p,
                 Err(e) => {
                     let mut w = write_stream;
+                    log::error!("pane {id} spawn failed: {e}");
                     // The daemon's own error is already a sentence; a second
                     // "spawn failed:" in front of it only pads the one the
                     // window ends up showing.
@@ -1257,6 +1280,7 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                     return Err(e);
                 }
             };
+            log::info!("pane {id} spawned");
             registry.insert(pane.clone());
 
             {
@@ -1287,6 +1311,7 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                     std::thread::Builder::new()
                         .name("tty7-daemon-pane-reap".to_string())
                         .spawn(move || {
+                            log::info!("pane {id} ended; removing from registry");
                             registry.remove(id);
                         })
                         .ok();
@@ -1297,11 +1322,13 @@ fn handle_conn(stream: Stream, registry: Arc<Registry>) -> anyhow::Result<()> {
                 Ok(p) => p,
                 Err(e) => {
                     let mut w = write_stream;
+                    log::error!("pane {id} native SSH spawn failed: {e}");
                     let _ =
                         DaemonMsg::Error(format!("native ssh spawn failed: {e}")).encode(&mut w);
                     return Err(e);
                 }
             };
+            log::info!("pane {id} spawned");
             registry.insert(pane.clone());
             {
                 let mut w = &write_stream;

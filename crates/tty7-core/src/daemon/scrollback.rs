@@ -182,17 +182,17 @@ pub fn save(pane_id: u64, segments: &[Segment], title: Option<&str>) {
         return;
     };
     if let Err(e) = std::fs::create_dir_all(&parent) {
-        log::debug!("no scrollback directory ({e}); pane {pane_id} is not persisted");
+        log::warn!("no scrollback directory ({e}); pane {pane_id} is not persisted");
         return;
     }
     let temp = parent.join(format!("{pane_id}.{}.tmp", std::process::id()));
     if let Err(e) = write_private(&temp, &encode(segments, title)) {
-        log::debug!("could not stage pane {pane_id}'s scrollback: {e}");
+        log::warn!("could not stage pane {pane_id}'s scrollback: {e}");
         let _ = std::fs::remove_file(&temp);
         return;
     }
     if let Err(e) = std::fs::rename(&temp, &path) {
-        log::debug!("could not store pane {pane_id}'s scrollback: {e}");
+        log::warn!("could not store pane {pane_id}'s scrollback: {e}");
         let _ = std::fs::remove_file(&temp);
     }
 }

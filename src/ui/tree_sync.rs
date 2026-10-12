@@ -2932,6 +2932,11 @@ fn settle_rebuild(
             not_rebuilt.len()
         );
     }
+    log::info!(
+        "workspace {client_ws} rebuild complete; requested={wanted} restored={} failed={}",
+        wanted.saturating_sub(not_rebuilt.len()),
+        not_rebuilt.len()
+    );
     let rebuilt = !showing.is_empty();
     cx.default_global::<TreeSync>()
         .windows

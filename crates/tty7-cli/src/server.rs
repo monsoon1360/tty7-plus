@@ -268,7 +268,7 @@ pub fn logs() -> Result<Outcome> {
             }
         }
         Err(_) => {
-            human.push_str("no log file yet — set TTY7_LOG=info before starting the server\n");
+            human.push_str("no log file yet — logging defaults to info; check the config directory, permissions, or TTY7_LOG=off\n");
         }
     }
     report(
