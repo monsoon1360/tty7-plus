@@ -11,15 +11,57 @@ const viewport = document.getElementById('viewport');
 const history = document.getElementById('history');
 const historyText = document.getElementById('history-text');
 const historyScreen = document.getElementById('history-screen');
+const terminalFontFamily = getComputedStyle(document.documentElement).getPropertyValue('--terminal-font').trim();
+// Finish loading both weights and symbol fallbacks before reporting ready or
+// measuring the phone grid. The first fallback measurement otherwise persists.
+const terminalFontsReady = Promise.all([
+    ['14px "JetBrainsMono Nerd Font Mono"', 'M\ue0b0\uf07b\udb80\udc01'],
+    ['bold 14px "JetBrainsMono Nerd Font Mono"', 'M\ue0b0'],
+    ['14px "Noto Sans Symbols"', '\u23bf'],
+    ['14px "Noto Sans Symbols 2"', '\u23fa'],
+    ['14px "Noto Emoji"', '\u2705'],
+].map(async ([font, sample]) => {
+    if (!(await document.fonts.load(font, sample)).length) throw new Error('终端字体加载失败');
+}));
+const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+let nativeDark = null;
+const ansiPalettes = {
+    light:['#24292e','#d1242f','#1a7f37','#9a6700','#0969da','#8250df','#1b7c83','#6e7781',
+        '#57606a','#cf222e','#1f883d','#bf8700','#218bff','#a475f9','#3192aa','#8c959f'],
+    dark:['#616161','#ff8272','#b4fa72','#fefdc2','#a5d5fe','#ff8ffd','#d0d1fe','#f1f1f1',
+        '#8e8e8e','#ffc4bd','#d6fcb9','#fefdd5','#c1e3fe','#ffb1fe','#e5e6fe','#feffff']
+};
+function ansiPalette() { return ansiPalettes[(nativeDark ?? systemTheme.matches) ? 'dark' : 'light']; }
+function terminalTheme() {
+    const dark = nativeDark ?? systemTheme.matches;
+    const theme = dark
+        ? {background:'#1e1e20', foreground:'#ececed', cursor:'#ececed', cursorAccent:'#1e1e20'}
+        : {background:'#fcfcfb', foreground:'#1c1c1e', cursor:'#1c1c1e', cursorAccent:'#fcfcfb'};
+    const names = ['black','red','green','yellow','blue','magenta','cyan','white'];
+    const palette = ansiPalette();
+    names.forEach((name, index) => {
+        theme[name] = palette[index];
+        theme['bright' + name[0].toUpperCase() + name.slice(1)] = palette[index + 8];
+    });
+    return theme;
+}
 const terminal = new Terminal({
     cols:80, rows:24, fontSize:14, fontFamily:'monospace', scrollback:0,
     convertEol:false, allowProposedApi:false, altClickMovesCursor:false,
     cursorBlink:true, cursorInactiveStyle:'block',
-    theme:{background:'#101014', foreground:'#eeeeee', cursor:'#eeeeee', cursorAccent:'#101014'},
+    theme:terminalTheme(),
     // Desktop applications can emit dark ANSI/truecolour text for a light theme.
     // Keep their colours where readable, correcting contrast against each cell.
     minimumContrastRatio:4.5
 });
+systemTheme.addEventListener('change', () => { terminal.options.theme = terminalTheme(); });
+// Android WebView's media query can follow the Activity theme instead of the
+// Compose system appearance. The native surface supplies the definitive value.
+window.tty7Appearance = function(dark) {
+    nativeDark = dark;
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    terminal.options.theme = terminalTheme();
+};
 function installCanonicalWidths(target) {
     const provider = new window.Tty7ScreenWidths();
     // xterm exposes Unicode providers through its documented proposed API.
@@ -61,13 +103,14 @@ terminal.onData(data => {
 
 let following = true;
 let inputReady = false;
+let fontsReady = false;
 let sizeTimer;
 let sentGrid = '';
 function requestPhoneGrid() {
-    if (sizeTimer) return;
+    if (!fontsReady || sizeTimer) return;
     sizeTimer = setTimeout(() => {
         sizeTimer = 0;
-        if (!screen.clientWidth || !screen.clientHeight) return;
+        if (!fontsReady || !screen.clientWidth || !screen.clientHeight) return;
         const cellWidth = screen.clientWidth / terminal.cols;
         const cellHeight = screen.clientHeight / terminal.rows;
         // Leave room for the terminal's own vertical scrollbar and page padding.
@@ -146,13 +189,11 @@ function showHistory() {
 history.addEventListener('scroll', () => {
     if (!history.hidden && history.scrollTop < 160) requestHistory();
 });
-const ansiColors = ['#000000','#cd0000','#00cd00','#cdcd00','#0000ee','#cd00cd','#00cdcd','#e5e5e5',
-    '#7f7f7f','#ff0000','#00ff00','#ffff00','#5c5cff','#ff00ff','#00ffff','#ffffff'];
 function color(cell, foreground) {
     const value = foreground ? cell.getFgColor() : cell.getBgColor();
     if (foreground ? cell.isFgRGB() : cell.isBgRGB()) return '#' + value.toString(16).padStart(6, '0');
-    if (!(foreground ? cell.isFgPalette() : cell.isBgPalette())) return foreground ? '#eeeeee' : '#101014';
-    if (value < 16) return ansiColors[value];
+    if (!(foreground ? cell.isFgPalette() : cell.isBgPalette())) return foreground ? terminalTheme().foreground : terminalTheme().background;
+    if (value < 16) return ansiPalette()[value];
     if (value >= 232) { const v = (8 + (value - 232) * 10).toString(16).padStart(2, '0'); return '#' + v.repeat(3); }
     const index = value - 16, channel = n => (n ? 55 + n * 40 : 0).toString(16).padStart(2, '0');
     return '#' + channel(Math.floor(index / 36)) + channel(Math.floor(index / 6) % 6) + channel(index % 6);
@@ -442,6 +483,7 @@ let appliedEpoch = null;
 window.tty7Begin = function(gen) {
     generation = gen;
     inputReady = false;
+    sentGrid = '';
     stopScrolling();
     touch = undefined;
     activePointers.clear();
@@ -453,12 +495,13 @@ window.tty7Begin = function(gen) {
     following = true;
     appliedRevision = appliedEpoch = null;
     // Drain at most the previous current-state write, never historical replay.
-    terminal.write('', () => {
+    terminalFontsReady.then(() => terminal.write('', () => {
         if (gen !== generation) return;
         terminal.reset();
         writing = false;
+        sizeSurface();
         if (window.Tty7) window.Tty7.begun(gen);
-    });
+    })).catch(error => fail(error.message));
     return true;
 };
 window.tty7Screen = function(gen, state, sequence) {
@@ -505,5 +548,9 @@ window.tty7Screen = function(gen, state, sequence) {
         return false;
     }
 };
-sizeSurface();
-if (window.Tty7) window.Tty7.ready();
+terminalFontsReady.then(() => {
+    terminal.options.fontFamily = terminalFontFamily;
+    fontsReady = true;
+    sizeSurface();
+    if (window.Tty7) window.Tty7.ready();
+}).catch(error => fail(error.message));

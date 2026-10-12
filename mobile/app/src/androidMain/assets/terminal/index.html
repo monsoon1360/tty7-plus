@@ -2,17 +2,22 @@
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'none'; img-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <link rel="stylesheet" href="xterm.css">
+<link rel="stylesheet" href="fonts.css">
 <style>
-html,body{margin:0;height:100%;background:#101014;color:#eee;overflow:hidden}
+:root{color-scheme:light dark;--background:#fcfcfb;--foreground:#1c1c1e;--toolbar:#f3f3f1;--fill:#ecece9}
+@media(prefers-color-scheme:dark){:root{--background:#1e1e20;--foreground:#ececed;--toolbar:#17171a;--fill:#29292c}}
+:root[data-theme="light"]{--background:#fcfcfb;--foreground:#1c1c1e;--toolbar:#f3f3f1;--fill:#ecece9}
+:root[data-theme="dark"]{--background:#1e1e20;--foreground:#ececed;--toolbar:#17171a;--fill:#29292c}
+html,body{margin:0;height:100%;background:var(--background);color:var(--foreground);overflow:hidden}
 #viewport{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;touch-action:none}
 #terminal{width:max-content;min-width:100%;padding:2px;box-sizing:border-box}
 .xterm-viewport{overscroll-behavior:contain}
 /* Keep the invisible IME target onscreen while the shared PTY resize is pending. */
 #terminal .xterm-helper-textarea{position:fixed!important;top:2px!important;left:2px!important}
-#history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:#101014;z-index:20}
-#history-toolbar{position:sticky;top:0;left:0;background:#202026;padding:8px;font:14px sans-serif}
-#return-live{margin-left:8px;padding:6px 10px;background:#373742;color:#fff;border:0;border-radius:4px}
-#history-text,#history-screen{margin:0;padding:2px;font:14px monospace;white-space:pre}
+#history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:var(--background);z-index:20}
+#history-toolbar{position:sticky;top:0;left:0;background:var(--toolbar);padding:8px;font:14px sans-serif}
+#return-live{margin-left:8px;min-height:44px;padding:6px 10px;background:var(--fill);color:var(--foreground);border:0;border-radius:4px}
+#history-text,#history-screen{margin:0;padding:2px;font:14px var(--terminal-font);white-space:pre}
 </style>
 </head><body>
 <div id="viewport" aria-label="远程终端，上下滑动查看历史，左右滑动查看宽屏内容">

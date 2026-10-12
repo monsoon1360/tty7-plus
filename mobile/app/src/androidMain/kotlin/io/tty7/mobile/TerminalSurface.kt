@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.inputmethod.InputMethodManager
 import android.webkit.*
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
@@ -51,6 +52,10 @@ private class TerminalBridge(
     @JavascriptInterface fun failed(generation: Long, message: String) { if (!disposed) events.trySend(TerminalRenderEvent.Failed(generation, message.take(1024))) }
     fun dispose() { disposed = true; main.removeCallbacksAndMessages(null) }
 }
+private fun WebView.addTerminalBridge(bridge: TerminalBridge) {
+    addJavascriptInterface(bridge, "Tty7")
+}
+
 @Composable
 actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit) {
     var rendererVersion by remember { mutableIntStateOf(0) }
@@ -63,6 +68,7 @@ actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (Strin
 private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit,
     onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, onRendererGone: () -> Unit) {
     val context = LocalContext.current
+    val dark = isSystemInDarkTheme()
     val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     val currentFeed by rememberUpdatedState(feed)
@@ -77,7 +83,7 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
     var webRef by remember { mutableStateOf<WebView?>(null) }
     var historyBusy by remember { mutableStateOf(false) }
     var historyJob by remember { mutableStateOf<Job?>(null) }
-    val bridge = remember {
+    val bridge: TerminalBridge = remember {
         TerminalBridge(
             { gen, text -> if (gen == generation && currentFeed?.synced == true) currentInput(text) },
             { cols, rows -> currentResize(cols, rows) },
@@ -121,7 +127,7 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
             settings.safeBrowsingEnabled = true
             isHorizontalScrollBarEnabled = true
             isFocusableInTouchMode = true
-            setBackgroundColor(android.graphics.Color.rgb(16, 16, 20))
+            setBackgroundColor(if (dark) android.graphics.Color.rgb(30, 30, 32) else android.graphics.Color.rgb(252, 252, 251))
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse =
@@ -141,11 +147,15 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
                     return true
                 }
             }
-            addJavascriptInterface(bridge, "Tty7")
+            addTerminalBridge(bridge)
             loadUrl(TERMINAL_URL)
         }
     }
     SideEffect { webRef = web }
+    LaunchedEffect(pageReady, dark) {
+        web.setBackgroundColor(if (dark) android.graphics.Color.rgb(30, 30, 32) else android.graphics.Color.rgb(252, 252, 251))
+        if (pageReady) web.evaluateJavascript("window.tty7Appearance($dark)", null)
+    }
     DisposableEffect(web) {
         onDispose { bridge.dispose(); web.stopLoading(); web.removeJavascriptInterface("Tty7"); web.destroy(); events.close() }
     }

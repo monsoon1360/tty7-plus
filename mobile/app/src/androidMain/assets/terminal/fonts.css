@@ -1,0 +1,32 @@
+/* JetBrains Mono Nerd Font 3.4.0 (Mono variant), bundled for offline WebViews.
+   See fonts/LICENSE-JetBrainsMono and fonts/LICENSE-NotoSansSymbols. */
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+    font-weight: 400;
+    font-display: block;
+}
+@font-face {
+    font-family: "JetBrainsMono Nerd Font Mono";
+    src: url("fonts/JetBrainsMonoNerdFontMono-Bold.ttf") format("truetype");
+    font-weight: 700;
+    font-display: block;
+}
+@font-face {
+    font-family: "Noto Sans Symbols";
+    src: url("fonts/NotoSansSymbols-subset.woff2") format("woff2");
+    font-display: block;
+}
+@font-face {
+    font-family: "Noto Sans Symbols 2";
+    src: url("fonts/NotoSansSymbols2-subset.woff2") format("woff2");
+    font-display: block;
+}
+@font-face {
+    font-family: "Noto Emoji";
+    src: url("fonts/NotoEmoji-subset.woff2") format("woff2");
+    font-display: block;
+}
+:root {
+    --terminal-font: "JetBrainsMono Nerd Font Mono", "Noto Sans Symbols", "Noto Sans Symbols 2", "Noto Emoji", monospace;
+}

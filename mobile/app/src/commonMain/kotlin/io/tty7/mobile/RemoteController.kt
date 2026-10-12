@@ -542,10 +542,12 @@ class RemoteController(
                 subscribedPane = pane.id
                 mutable.value = mutable.value.copy(terminal = feed, terminalSynced = false)
                 try {
-                    val size = phoneGrid
+                    // A cold renderer may still be loading its bundled fonts.
+                    // Subscribe at a valid grid, then apply its measured size.
+                    val size = phoneGrid ?: (currentPane.cols.coerceIn(20, 1000) to currentPane.rows.coerceIn(5, 1000))
                     request("subscribe", "workspace_id" to JsonPrimitive(workspace), "pane_id" to JsonPrimitive(pane.id),
-                        "cols" to (size?.first?.let(::JsonPrimitive) ?: JsonNull),
-                        "rows" to (size?.second?.let(::JsonPrimitive) ?: JsonNull), subscribing = feed)
+                        "cols" to JsonPrimitive(size.first),
+                        "rows" to JsonPrimitive(size.second), subscribing = feed)
                     currentCoroutineContext().ensureActive()
                     if (!isCurrent()) feed.cancel()
                 } catch (e: Exception) {

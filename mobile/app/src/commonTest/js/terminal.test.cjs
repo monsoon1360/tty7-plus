@@ -77,8 +77,38 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await call('Emulation.setTouchEmulationEnabled', {enabled:true});
   await call('Page.bringToFront');
   await wait('typeof window.tty7Begin === "function"');
-  await evaluate(`window.calls={focus:0,history:0,input:[],rendered:0,begun:false}; window.Tty7={ready(){},resize(){},begun(){calls.begun=true},rendered(){calls.rendered++},failed(g,m){throw new Error(m)},history(){calls.history++},focusInput(){calls.focus++},input(g,t){calls.input.push(t)}}; window.tty7Begin(1)`);
+  await evaluate(`window.calls={focus:0,history:0,input:[],grids:[],rendered:0,begun:false}; window.Tty7={ready(){},resize(cols,rows){calls.grids.push([cols,rows])},begun(){calls.begun=true},rendered(){calls.rendered++},failed(g,m){throw new Error(m)},history(){calls.history++},focusInput(){calls.focus++},input(g,t){calls.input.push(t)}}; window.tty7Begin(1)`);
   await wait('calls.begun');
+  await wait('calls.grids.length > 0');
+  assert.equal(await evaluate('inputReady'), false, 'Initial phone grid is measured before subscription sync');
+  assert.ok(await evaluate('calls.grids.every(([cols,rows]) => cols >= 20 && cols <= 1000 && rows >= 5 && rows <= 1000)'));
+  assert.match(await evaluate('terminal.options.fontFamily'), /JetBrainsMono Nerd Font Mono/);
+  assert.deepEqual(await evaluate(`Array.from(document.fonts).map(font => font.status)`), Array(5).fill('loaded'));
+  // Check real canvas glyphs, not only CSS font declarations. Compare prompt
+  // icons and agent symbols to the missing-glyph box with the same font stack.
+  const glyphs = ['\ue0b0', '\ue0a0', '\uf07b', '\udb80\udc01', '⏺', '⎿', '✔', '⚠', '⠋', '✅'];
+  const missing = await evaluate(`(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 64;
+    const ctx = canvas.getContext('2d'); ctx.font = '32px ' + terminal.options.fontFamily;
+    const pixels = glyph => {ctx.clearRect(0,0,96,64);ctx.fillText(glyph,4,44);return Array.from(ctx.getImageData(0,0,96,64).data).join(',')};
+    const tofu = pixels(String.fromCodePoint(0x10ffff));
+    return ${JSON.stringify(glyphs)}.filter(glyph => pixels(glyph) === tofu);
+  })()`);
+  assert.deepEqual(missing, [], 'Bundled fonts render Nerd Font icons and agent symbols without tofu');
+  assert.equal(await evaluate('getComputedStyle(historyText).fontFamily'), await evaluate('terminal.options.fontFamily'));
+  await call('Emulation.setEmulatedMedia', {features:[{name:'prefers-color-scheme',value:'dark'}]});
+  await wait('terminal.options.theme.background === "#1e1e20"');
+  assert.equal(await evaluate('getComputedStyle(document.body).backgroundColor'), 'rgb(30, 30, 32)');
+  await call('Emulation.setEmulatedMedia', {features:[{name:'prefers-color-scheme',value:'light'}]});
+  await wait('terminal.options.theme.background === "#fcfcfb"');
+  assert.equal(await evaluate('getComputedStyle(document.body).backgroundColor'), 'rgb(252, 252, 251)');
+  await evaluate('window.tty7Appearance(true)');
+  assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20');
+  assert.equal(await evaluate('getComputedStyle(document.body).backgroundColor'), 'rgb(30, 30, 32)');
+  await evaluate('window.tty7Appearance(false)');
+  assert.equal(await evaluate('terminal.options.theme.background'), '#fcfcfb');
+  assert.equal(await evaluate('terminal.options.theme.green'), '#1a7f37');
+  t.diagnostic('PASS: offline fonts render prompt/agent glyphs; terminal and history share fonts and system appearance');
   const paint = text => Array.from(text.padEnd(40)).map((c,i)=>`\x1b[${i+1}G${c}`).join('');
   const state = {cols:40,rows:24,epoch:'1',revision:'1',base_revision:null,cursor:{row:1,col:0,shape:'block',visible:true,blink:false},modes:{app_cursor:false,app_keypad:false,bracketed_paste:false},lines:[{row:0,ansi:paint('Current screen')},{row:1,ansi:paint('prompt >')}]};
   await evaluate(`window.tty7Screen(1,${JSON.stringify(state)},1)`);

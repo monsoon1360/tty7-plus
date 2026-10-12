@@ -30,4 +30,21 @@ class PaneSectionsTest {
             sections.map { section -> section.panes.map { it.id } })
         assertEquals(listOf("project", "project", "project", "未分组"), sections.map { it.title })
     }
+
+    @Test fun terminalHeaderFollowsGroupAndLiveAgentLifecycle() {
+        val shell = pane(1, "tty7-plus", "auto:tty7-plus")
+        assertEquals("tty7-plus", terminalTitle(shell))
+        val agent = shell.copy(agentName = "Codex", agentStatus = "working")
+        assertEquals("Codex", terminalTitle(agent))
+        assertEquals("Codex", terminalTitle(agent.copy(agentStatus = "waiting")))
+        assertEquals("Codex", terminalTitle(agent.copy(agentStatus = "done")))
+        assertEquals("tty7-plus", terminalTitle(agent.copy(agentName = null, agentStatus = null)))
+        assertEquals("renamed", terminalTitle(shell.copy(group = "renamed")))
+    }
+
+    @Test fun terminalHeaderNormalizesEmptyAndUngroupedNames() {
+        for (group in listOf(null, "", " ", "Ungrouped")) {
+            assertEquals("未分组", terminalTitle(pane(1, group).copy(agentName = " ")))
+        }
+    }
 }

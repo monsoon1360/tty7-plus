@@ -8,13 +8,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
@@ -41,13 +42,20 @@ fun MobileApp(
     var pairingSubmitted by remember { mutableStateOf(false) }
     var search by remember { mutableStateOf("") }
     var qrText by remember { mutableStateOf("") }
-    var workspaceName by remember { mutableStateOf("") }
-    var createWorkspace by remember { mutableStateOf(false) }
+    var drawerWorkspaceId by remember { mutableStateOf<String?>(null) }
+    var workspaceMenu by remember { mutableStateOf(false) }
     var closing by remember { mutableStateOf<Pair<Workspace, Pane>?>(null) }
     var forgetting by remember { mutableStateOf<Computer?>(null) }
     val selectedPane = remember(state.terminalSelection) {
         state.terminalSelection?.let { it.first to it.second.id }
     }
+    val selectedWorkspace = state.workspaces.firstOrNull { it.id == state.terminalSelection?.first }
+    val currentPane = state.terminalSelection?.second?.let { selected ->
+        selectedWorkspace?.panes?.firstOrNull { it.id == selected.id } ?: selected
+    }
+    val drawerWorkspace = state.workspaces.firstOrNull { it.id == drawerWorkspaceId }
+        ?: selectedWorkspace ?: state.workspaces.firstOrNull()
+    LaunchedEffect(state.terminalSelection?.first) { drawerWorkspaceId = state.terminalSelection?.first }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     LaunchedEffect(drawer.targetValue) {
         if (drawer.targetValue == DrawerValue.Open) {
@@ -87,13 +95,23 @@ fun MobileApp(
         onDispose { registerLifecycle(null); registerNetwork(null); controller.setForeground(false) }
     }
     val colors = if (isSystemInDarkTheme()) darkColorScheme(
-        primary = Color(0xFF6BE5A2), primaryContainer = Color(0xFF244A36), onPrimaryContainer = Color(0xFFB0F1CC),
-        secondaryContainer = Color(0xFF244A36), surfaceContainerHighest = Color(0xFF343936),
-        background = Color(0xFF17171A), surface = Color(0xFF202023),
+        primary = Color(0xFFECECED), onPrimary = Color(0xFF18181A),
+        primaryContainer = Color(0xFF29292C), onPrimaryContainer = Color(0xFFECECED),
+        secondaryContainer = Color(0xFF29292C), onSecondaryContainer = Color(0xFFECECED),
+        surfaceContainerHighest = Color(0xFF242427), surfaceContainerHigh = Color(0xFF242427),
+        surfaceContainer = Color(0xFF1E1E20), surfaceContainerLow = Color(0xFF17171A),
+        background = Color(0xFF17171A), surface = Color(0xFF1E1E20),
+        onBackground = Color(0xFFECECED), onSurface = Color(0xFFECECED), onSurfaceVariant = Color(0xFF969698),
+        outline = Color(0xFF555558), outlineVariant = Color(0xFF323235),
     ) else lightColorScheme(
-        primary = Color(0xFF176B43), primaryContainer = Color(0xFFDCF1E3), onPrimaryContainer = Color(0xFF134A31),
-        secondaryContainer = Color(0xFFDCF1E3), surfaceContainerHighest = Color(0xFFE7E9E4),
-        background = Color(0xFFF6F5F1), surface = Color(0xFFF6F5F1),
+        primary = Color(0xFF1C1C1E), onPrimary = Color(0xFFFCFCFB),
+        primaryContainer = Color(0xFFECECE9), onPrimaryContainer = Color(0xFF1C1C1E),
+        secondaryContainer = Color(0xFFECECE9), onSecondaryContainer = Color(0xFF1C1C1E),
+        surfaceContainerHighest = Color(0xFFF3F3F1), surfaceContainerHigh = Color(0xFFF3F3F1),
+        surfaceContainer = Color(0xFFFCFCFB), surfaceContainerLow = Color(0xFFFCFCFB),
+        background = Color(0xFFFCFCFB), surface = Color(0xFFFCFCFB),
+        onBackground = Color(0xFF1C1C1E), onSurface = Color(0xFF1C1C1E), onSurfaceVariant = Color(0xFF777779),
+        outline = Color(0xFFB7B7B5), outlineVariant = Color(0xFFE4E4E1),
     )
     MaterialTheme(colorScheme = colors) {
         Surface(Modifier.fillMaxSize()) {
@@ -106,27 +124,35 @@ fun MobileApp(
                 // The terminal owns horizontal panning; opening is explicit.
                 gesturesEnabled = drawer.isOpen,
                 drawerContent = {
-                    ModalDrawerSheet(Modifier.width(drawerWidth).fillMaxHeight()) {
-                        Column(Modifier.fillMaxSize().padding(16.dp).testTag("sessions-drawer")) {
+                    ModalDrawerSheet(Modifier.width(drawerWidth).fillMaxHeight(), drawerShape = RoundedCornerShape(0.dp), drawerContainerColor = MaterialTheme.colorScheme.surface) {
+                        Column(Modifier.fillMaxSize().padding(horizontal = 12.dp).testTag("sessions-drawer")) {
                             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("工作区与会话", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                                IconButton(onClick = { scope.launch { drawer.close() } }, modifier = Modifier.testTag("close-sessions").semantics { contentDescription = "收起会话抽屉" }) { Text("×") }
-                            }
-                            Text(state.computer?.hostName ?: "尚未连接电脑", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                TextButton(onClick = controller::refresh, enabled = state.connected, modifier = Modifier.testTag("refresh-sessions")) { Text("刷新") }
-                                TextButton(onClick = { createWorkspace = true }, enabled = state.connected, modifier = Modifier.testTag("create-workspace")) { Text("新建工作区") }
+                                Box(Modifier.weight(1f)) {
+                                    Row(
+                                        Modifier.heightIn(min = 48.dp).clickable(enabled = state.workspaces.size > 1) { workspaceMenu = true }.padding(start = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Text(drawerWorkspace?.name ?: "工作区", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).testTag("workspace-title"))
+                                        if (state.workspaces.size > 1) LineIcon("down")
+                                    }
+                                    DropdownMenu(expanded = workspaceMenu, onDismissRequest = { workspaceMenu = false }) {
+                                        state.workspaces.forEach { workspace ->
+                                            DropdownMenuItem(text = { Text(workspace.name) }, onClick = { drawerWorkspaceId = workspace.id; search = ""; workspaceMenu = false })
+                                        }
+                                    }
+                                }
+                                IconButton(onClick = { drawerWorkspace?.let { controller.createTerminal(it.id) } }, enabled = state.connected && drawerWorkspace != null, modifier = Modifier.testTag("create-terminal-${drawerWorkspace?.id}").semantics { contentDescription = "新建终端" }) { LineIcon("plus") }
+                                IconButton(onClick = { scope.launch { drawer.close() } }, modifier = Modifier.testTag("close-sessions").semantics { contentDescription = "收起会话抽屉" }) { LineIcon("close") }
                             }
                             Box(Modifier.weight(1f)) {
                                 SessionList(
-                                    state.workspaces, selectedPane, search, { search = it },
+                                    listOfNotNull(drawerWorkspace), selectedPane, search, { search = it }, state.connected,
                                     onSelect = { workspace, pane ->
                                         if (state.connected) {
                                             controller.selectTerminal(workspace.id, pane)
                                             scope.launch { drawer.close() }
                                         }
                                     },
-                                    onCreate = { if (state.connected) controller.createTerminal(it) },
                                     onClose = { workspace, pane -> if (state.connected) closing = workspace to pane },
                                 )
                             }
@@ -140,19 +166,21 @@ fun MobileApp(
                     }
                 },
             ) {
-                Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(12.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("toggle-sessions").semantics { contentDescription = "打开会话抽屉" }) { Text("☰", style = MaterialTheme.typography.titleLarge) }
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("●", color = if (state.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
-                            Text(
-                                listOfNotNull(state.computer?.hostName, connectionStatus(state.status)).joinToString(" · "),
-                                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("connection-status"),
-                            )
+                Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(horizontal = if (currentPane == null || showPairing) 12.dp else 0.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("toggle-sessions").semantics { contentDescription = "打开会话抽屉" }) { LineIcon("menu") }
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            if (showPairing) "配对管理" else currentPane?.let(::terminalTitle) ?: drawerWorkspace?.name ?: "tty7",
+                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false).testTag("terminal-title"),
+                        )
+                        if (!showPairing) currentPane?.agentStatus?.let { status ->
+                            AgentStatusDot(status)
+                            Text(agentStatus(status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.testTag("agent-status-${currentPane.id}"))
                         }
                     }
+                    if (!state.connected || state.status.startsWith("Terminal exited (")) Text(connectionStatus(state.status), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp).testTag("connection-status"))
                 }
                 state.verificationCode?.takeIf { state.computer?.pending == true }?.let {
                     Text("验证码：$it", style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Monospace, modifier = Modifier.testTag("verification-code"))
@@ -203,20 +231,10 @@ fun MobileApp(
                 } else {
                     val selection = state.terminalSelection
                     val feed = state.terminal
-                    val selected = selection?.second
-                    val pane = selected?.let { selectedPane ->
-                        state.workspaces.firstOrNull { it.id == selection?.first }?.panes?.firstOrNull { it.id == selectedPane.id } ?: selectedPane
-                    }
                     val syncing = !state.connected || !state.terminalSynced || feed == null
                     val inputEnabled = !syncing
                     Column(Modifier.weight(1f).fillMaxWidth()) {
-                        if (pane != null) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(pane.title, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                if (pane.agentName != null || pane.agentStatus != null) AgentBadge(pane)
-                            }
-                        }
-                        Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFF17171A)).testTag("terminal-surface")) {
+                        Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface).testTag("terminal-surface")) {
                             Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
                                     { message -> feed?.let { controller.terminalFailed(it, message) } })
@@ -243,7 +261,7 @@ fun MobileApp(
                                     Triple("↑", "↑", "\u001b[A"), Triple("↓", "↓", "\u001b[B"),
                                     Triple("←", "←", "\u001b[D"), Triple("→", "→", "\u001b[C"),
                                 ).forEach { (tag, label, input) ->
-                                    TextButton(onClick = { controller.input(input) }, enabled = inputEnabled, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp), modifier = Modifier.height(36.dp).testTag("key-$tag")) { Text(label, style = MaterialTheme.typography.labelMedium) }
+                                    TextButton(onClick = { controller.input(input) }, enabled = inputEnabled, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp), modifier = Modifier.height(48.dp).testTag("key-$tag")) { Text(label, style = MaterialTheme.typography.labelMedium) }
                                 }
                             }
                         }
@@ -252,9 +270,6 @@ fun MobileApp(
                 }
             }
             }
-            if (createWorkspace) AlertDialog(onDismissRequest = { createWorkspace = false }, title = { Text("新建工作区") }, text = {
-                OutlinedTextField(workspaceName, { workspaceName = it }, label = { Text("名称（可选）") }, modifier = Modifier.testTag("workspace-name"))
-            }, confirmButton = { TextButton(onClick = { controller.createWorkspace(workspaceName); workspaceName = ""; createWorkspace = false }) { Text("创建") } }, dismissButton = { TextButton(onClick = { createWorkspace = false }) { Text("取消") } })
             closing?.let { (workspace, pane) -> AlertDialog(onDismissRequest = { closing = null }, title = { Text("关闭终端？") }, text = { Text("确定关闭「${pane.title}」？电脑上此终端的 Shell 和正在运行的程序都将被终止。") }, confirmButton = { TextButton(onClick = { controller.closeTerminal(workspace.id, pane); closing = null }, modifier = Modifier.testTag("confirm-close-terminal")) { Text("关闭终端") } }, dismissButton = { TextButton(onClick = { closing = null }) { Text("取消") } }) }
             forgetting?.let { computer -> AlertDialog(onDismissRequest = { forgetting = null }, title = { Text("解除与「${computer.hostName}」的配对？") }, text = { Text("这会关闭手机上的连接并删除连接凭据，之后才能扫描二维码配对电脑。若要彻底撤销访问权限，请在电脑的「配对设备」设置中移除此设备。") }, confirmButton = { TextButton(onClick = { controller.forget(computer); forgetting = null; pairingSubmitted = false; qrText = ""; showPairing = true }, modifier = Modifier.testTag("confirm-unpair-computer")) { Text("解除配对") } }, dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } }) }
         }
@@ -301,14 +316,15 @@ private fun TerminalSyncOverlay(reconnecting: Boolean, error: String?, onRetry: 
 
 @Composable
 private fun SessionList(
-    workspaces: List<Workspace>, selectedPane: Pair<String, Long>?, search: String, onSearch: (String) -> Unit,
-    onSelect: (Workspace, Pane) -> Unit, onCreate: (String) -> Unit, onClose: (Workspace, Pane) -> Unit,
+    workspaces: List<Workspace>, selectedPane: Pair<String, Long>?, search: String, onSearch: (String) -> Unit, connected: Boolean,
+    onSelect: (Workspace, Pane) -> Unit, onClose: (Workspace, Pane) -> Unit,
 ) {
     val query = search.trim()
     Column(Modifier.fillMaxSize()) {
         TextField(
-            search, onSearch, placeholder = { Text("搜索会话、目录、分组或分支") }, singleLine = true,
-            shape = RoundedCornerShape(16.dp),
+            search, onSearch, placeholder = { Text("搜索会话") }, singleLine = true,
+            shape = RoundedCornerShape(8.dp),
+            leadingIcon = { LineIcon("search") },
             colors = TextFieldDefaults.colors(
                 focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
                 focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -317,7 +333,7 @@ private fun SessionList(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("search-sessions"),
         )
         LazyColumn(Modifier.weight(1f).testTag("session-list")) {
-            if (workspaces.isEmpty()) item { Text("暂无会话，请新建工作区。", modifier = Modifier.padding(vertical = 16.dp)) }
+            if (workspaces.isEmpty()) item { Text(if (connected) "暂无工作区，请在电脑端创建。" else "连接电脑后显示工作区。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp)) }
             workspaces.forEach { workspace ->
                 val sections = paneSections(workspace.panes)
                 val visible = sections.map { section ->
@@ -326,11 +342,8 @@ private fun SessionList(
                     })
                 }.filter { it.panes.isNotEmpty() }
                 if (query.isEmpty() || visible.isNotEmpty()) {
-                    item(key = "workspace-${workspace.id}") {
-                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(workspace.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { onCreate(workspace.id) }, modifier = Modifier.testTag("create-terminal-${workspace.id}")) { Text("新建终端") }
-                        }
+                    if (workspace.panes.isEmpty()) item(key = "empty-${workspace.id}") {
+                        Text("暂无终端，点击右上角 + 新建。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp))
                     }
                     visible.forEachIndexed { index, section ->
                         val branches = section.panes.mapNotNull { it.gitBranch }.distinct()
@@ -341,24 +354,19 @@ private fun SessionList(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(section.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                sharedBranch?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 160.dp)) }
+                                sharedBranch?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp)) }
                             }
                         }
                         items(section.panes, key = { "pane-${workspace.id}-${it.id}" }) { pane ->
                             val selected = selectedPane == (workspace.id to pane.id)
                             Row(
-                                Modifier.fillMaxWidth().padding(vertical = 2.dp).background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp)),
+                                Modifier.fillMaxWidth().padding(vertical = 2.dp).background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent, RoundedCornerShape(6.dp)),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                TextButton(onClick = { onSelect(workspace, pane) }, contentPadding = PaddingValues(12.dp), modifier = Modifier.weight(1f).testTag("terminal-${pane.id}")) {
+                                TextButton(onClick = { onSelect(workspace, pane) }, enabled = connected, shape = RoundedCornerShape(6.dp), contentPadding = PaddingValues(12.dp), modifier = Modifier.weight(1f).testTag("terminal-${pane.id}")) {
                                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         val agent = pane.agentName != null || pane.agentStatus != null
-                                        Box(
-                                            Modifier.size(32.dp).background(if (agent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest, CircleShape),
-                                            contentAlignment = Alignment.Center,
-                                        ) {
-                                            Text(if (agent) "π" else "›_", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelLarge, color = if (agent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
+                                        LineIcon("terminal", MaterialTheme.colorScheme.onSurfaceVariant)
                                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                             Text(pane.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             if (agent) AgentBadge(pane)
@@ -369,8 +377,9 @@ private fun SessionList(
                                 }
                                 IconButton(
                                     onClick = { onClose(workspace, pane) },
+                                    enabled = connected,
                                     modifier = Modifier.testTag("close-terminal-${pane.id}").semantics { contentDescription = "关闭终端：${pane.title}" },
-                                ) { Text("×", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                ) { LineIcon("close", MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
                     }
@@ -385,17 +394,53 @@ private fun SessionList(
 
 @Composable
 private fun AgentBadge(pane: Pane) {
-    val working = pane.agentStatus.equals("working", ignoreCase = true)
-    val color = if (working) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(color = color.copy(alpha = 0.09f), shape = RoundedCornerShape(6.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        pane.agentStatus?.let { AgentStatusDot(it) }
         Text(
             listOfNotNull(pane.agentName, pane.agentStatus?.let(::agentStatus)).joinToString(" · "),
-            style = MaterialTheme.typography.labelSmall, color = color,
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 164.dp).padding(horizontal = 6.dp, vertical = 3.dp).testTag("agent-status-${pane.id}"),
+            modifier = Modifier.testTag("agent-status-${pane.id}"),
         )
     }
 }
+
+@Composable
+private fun AgentStatusDot(status: String) {
+    val color = when (status.lowercase()) {
+        "working", "running" -> Color(0xFF3B82F6)
+        "waiting" -> Color(0xFFF59E0B)
+        "done" -> Color(0xFF22C55E)
+        else -> return
+    }
+    Canvas(Modifier.size(8.dp)) {
+        if (status.equals("waiting", ignoreCase = true)) drawCircle(color, style = Stroke(width = 1.5.dp.toPx()))
+        else drawCircle(color)
+    }
+}
+
+/** Draw controls independently of platform glyph coverage. The button owns its label. */
+@Composable
+private fun LineIcon(name: String, color: Color = LocalContentColor.current) {
+    Canvas(Modifier.size(20.dp)) {
+        val unit = size.width / 24f
+        fun line(x1: Float, y1: Float, x2: Float, y2: Float) = drawLine(
+            color, Offset(x1 * unit, y1 * unit), Offset(x2 * unit, y2 * unit),
+            strokeWidth = 1.8f * unit, cap = StrokeCap.Round,
+        )
+        when (name) {
+            "menu" -> { line(4f, 6f, 20f, 6f); line(4f, 12f, 20f, 12f); line(4f, 18f, 20f, 18f) }
+            "close" -> { line(6f, 6f, 18f, 18f); line(18f, 6f, 6f, 18f) }
+            "plus" -> { line(12f, 5f, 12f, 19f); line(5f, 12f, 19f, 12f) }
+            "down" -> { line(7f, 10f, 12f, 15f); line(12f, 15f, 17f, 10f) }
+            "search" -> { drawCircle(color, radius = 6f * unit, center = Offset(10f * unit, 10f * unit), style = Stroke(1.8f * unit)); line(15f, 15f, 20f, 20f) }
+            "terminal" -> { line(5f, 7f, 10f, 12f); line(10f, 12f, 5f, 17f); line(13f, 17f, 20f, 17f) }
+        }
+    }
+}
+
+internal fun terminalTitle(pane: Pane): String = pane.agentName?.takeIf { it.isNotBlank() }
+    ?: pane.group?.takeIf { it.isNotBlank() && it != "Ungrouped" } ?: "未分组"
 
 internal data class PaneSection(val name: String?, val panes: List<Pane>) {
     val title: String get() = if (name == null || name == "Ungrouped") "未分组" else name
@@ -418,8 +463,8 @@ internal fun paneSections(panes: List<Pane>): List<PaneSection> {
 }
 
 private fun agentStatus(status: String): String = when (status.lowercase()) {
-    "working", "running" -> "● 正在运行"
-    "waiting" -> "○ 等待操作"
+    "working", "running" -> "正在运行"
+    "waiting" -> "等待操作"
     "done" -> "已完成"
     "idle" -> "空闲"
     else -> "状态：$status"
@@ -444,7 +489,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "Pairing expired", "Pairing QR expired. Scan a new QR on the computer.", "Pairing QR expired or invalid. Generate a new QR on desktop." -> "配对已过期或无效，请在电脑端生成新的二维码。"
     "Pairing rejected" -> "电脑已拒绝配对。"
     "Authentication failed" -> "身份验证失败，请检查电脑端的设备授权。"
-    "Terminal not found" -> "找不到此终端，请刷新会话列表。"
+    "Terminal not found" -> "找不到此终端，请从会话列表重新选择。"
     "terminal observer disconnected unexpectedly" -> "终端输出订阅意外中断，请重试加载当前终端。"
     "Connection timed out. Reconnect or scan a new pairing QR." -> "连接超时，请重试连接。若尚未完成配对，请扫描电脑端的新二维码。"
     "Expected tty7://pair URI", "Missing pairing data", "Invalid pairing identity", "Invalid host identity", "Invalid base64url" -> "配对链接无效，请扫描电脑端的二维码或粘贴完整的 tty7://pair 链接。"
@@ -471,6 +516,6 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
             "close_terminal" -> "关闭终端"
             else -> "远程操作"
         }
-        "$operation 超时，但电脑可能仍会完成操作。请刷新会话列表确认结果。"
+        "$operation 超时，但电脑可能仍会完成操作。会话列表会自动更新，请确认结果。"
     } else "连接或操作失败：$error"
 }

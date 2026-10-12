@@ -1154,6 +1154,17 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
+    @Test fun coldRendererSubscribesWithValidGridBeforeFontMeasurement() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.selectTerminal("workspace", pane)
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "subscribe" }
+        assertEquals(pane.cols, request.getValue("cols").jsonPrimitive.int)
+        assertEquals(pane.rows, request.getValue("rows").jsonPrimitive.int)
+        controller.setForeground(false)
+    }
+
     @Test fun historyRequestsUseSubscriptionAndCursorWithoutConsumingLiveCredits() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
