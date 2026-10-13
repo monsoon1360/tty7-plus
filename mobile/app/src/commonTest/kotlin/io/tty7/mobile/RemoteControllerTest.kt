@@ -1359,6 +1359,8 @@ class RemoteControllerTest {
         val socket = ControlledSocket()
         private val sockets = mutableListOf(socket)
         fun nextSocket() = ControlledSocket().also { sockets.add(it) }
+        override fun loadTheme(): MobileTheme? = null
+        override fun saveTheme(theme: MobileTheme) = Unit
         override val deviceName = "Phone"
         override fun parseQr(uri: String) = qr
         override suspend fun loadComputers(): List<Computer> { loadRelease?.await(); return disk }

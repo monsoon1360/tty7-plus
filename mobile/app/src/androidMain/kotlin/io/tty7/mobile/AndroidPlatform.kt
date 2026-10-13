@@ -53,6 +53,9 @@ private fun validateRelay(url: String, pin: String?) {
 }
 class AndroidPlatform(context: Context) : MobilePlatform {
     private val app = context.applicationContext
+    private val appearance = app.getSharedPreferences("appearance", Context.MODE_PRIVATE)
+    override fun loadTheme(): MobileTheme? = MobileTheme.fromId(appearance.getString("theme", null))
+    override fun saveTheme(theme: MobileTheme) { appearance.edit().putString("theme", theme.id).apply() }
     private val random = SecureRandom()
     override val deviceName: String get() = "${Build.MANUFACTURER} ${Build.MODEL}".take(128)
     override fun nowSeconds() = System.currentTimeMillis() / 1000

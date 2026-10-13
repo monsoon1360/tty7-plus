@@ -128,8 +128,14 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.equal(await evaluate('calls.focus'),1);
   assert.equal(await evaluate('input.readOnly'),false);
   assert.equal(await evaluate('document.activeElement === input'),true);
+  await evaluate('window.tty7Appearance(true)');
   await call('Input.insertText', {text:'test input'});
   assert.deepEqual(await evaluate('calls.input'), ['test input']);
+  assert.equal(await evaluate('terminal.options.theme.cursorAccent'), '#1e1e20');
+  await call('Emulation.setEmulatedMedia', {features:[{name:'prefers-color-scheme',value:'light'}]});
+  assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Manual black theme overrides the light system');
+  assert.equal(await evaluate('getComputedStyle(document.documentElement).colorScheme'), 'dark');
+  await evaluate('window.tty7Appearance(false)');
   await evaluate('calls.input = []');
   for (const [from,to] of [[200,400],[400,200]]) {
     await touch('touchStart',100,from);
@@ -156,9 +162,90 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate('returnLive()');
   assert.equal(await evaluate('history.hidden'),true);
   t.diagnostic('PASS: retained history and error recovery keep the current screen available');
+
+  // Use a shared desktop grid taller than the phone, so leaving history must
+  // also restore the outer live viewport to its actual lower boundary.
+  state.revision = '3';
+  state.rows = 70;
+  await evaluate(`window.tty7Screen(1,${JSON.stringify(state)},3)`);
+  await wait('calls.rendered === 3');
+  await evaluate('showHistory()');
+  const lines = Array.from({length:250}, (_,index) => ({
+    cols:40,ansi:paint(`History row ${index}`),text:`History row ${index}`,
+  }));
+  await evaluate(`window.tty7History(1,{lines:${JSON.stringify(lines)},cursor:'oldest',has_more:true,truncated:false})`);
+  const retainedText = await evaluate('historyText.textContent + historyScreen.textContent');
+  const retainedRequests = await evaluate('calls.history');
+  for (const dark of [true, false]) {
+    await evaluate(`window.tty7Appearance(${dark})`);
+    assert.equal(await evaluate('history.hidden'), false, 'Theme changes keep history open');
+    assert.equal(await evaluate('historyText.textContent + historyScreen.textContent'), retainedText);
+    assert.equal(await evaluate('calls.history'), retainedRequests, 'Theme changes reuse cached history');
+    assert.equal(await evaluate(`(() => {
+      const hex = rgb => '#' + rgb.match(/\\d+/g).slice(0,3).map(n => Number(n).toString(16).padStart(2,'0')).join('');
+      return [...historyText.querySelectorAll('span'), ...historyScreen.querySelectorAll('span')].every(span => {
+        const style = getComputedStyle(span);
+        const fg = luminance(hex(style.color)), bg = luminance(hex(style.backgroundColor));
+        return (Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05) >= 4.5;
+      });
+    })()`), true, 'Both themes maintain readable history text');
+    assert.equal(await evaluate('getComputedStyle(historyText.firstElementChild.firstElementChild).backgroundColor'),
+      dark ? 'rgb(30, 30, 32)' : 'rgb(252, 252, 251)', 'Cached history uses the selected background');
+  }
+  t.diagnostic('PASS: black/white switching recolours cached history and preserves contents without fetching again');
+  await evaluate('history.scrollTop = 300; historyScrollTop = history.scrollTop; requestHistory()');
+  await evaluate('window.tty7History(1,{lines:[],cursor:null,has_more:false,truncated:false})');
+  assert.equal(await evaluate('history.hidden'),false, 'Loading history does not leave the read-only view');
+  assert.notEqual(await evaluate('historyStatus.textContent'),'已到历史起点', 'An exhausted page does not imply the viewport is at the top');
+  await evaluate('history.scrollTop = 0');
+  await wait('historyStatus.textContent === "已到历史起点"');
+  await evaluate('scrollLocally(300)');
+  assert.notEqual(await evaluate('historyStatus.textContent'),'已到历史起点', 'The start label disappears when scrolling away from the top');
+
+  // A real downward gesture reaches live mode without opening the keyboard;
+  // the following tap may immediately focus and send input.
+  await evaluate('history.scrollTop = history.scrollHeight - history.clientHeight - 100; historyScrollTop = history.scrollTop');
+  const focusBeforeReturn = await evaluate('calls.focus');
+  await touch('touchStart',100,450);
+  await touch('touchMove',100,250);
+  await touch('touchEnd',100,250);
+  await wait('history.hidden && following && isAtLive()');
+  assert.equal(await evaluate('calls.focus'),focusBeforeReturn);
+  await touch('touchStart',100,250); await touch('touchEnd',100,250);
+  assert.equal(await evaluate('calls.focus'),focusBeforeReturn + 1);
+  assert.equal(await evaluate('input.readOnly'),false);
+  await call('Input.insertText', {text:'after history'});
+  assert.deepEqual(await evaluate('calls.input'),['after history']);
+
+  // Native scroll events (for example a scrollbar or accessibility scroll)
+  // follow the same boundary rule, while opening cached history stays open.
+  await evaluate('showHistory()');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await evaluate('history.hidden'),false);
+  await evaluate('scrollLocally(-300)');
+  await evaluate('history.scrollTop = history.scrollHeight');
+  await wait('history.hidden && following && isAtLive()');
+  t.diagnostic('PASS: history start follows viewport position; dragging or scrolling to the bottom restores live mode and tap input');
+
+  // The button must win over pending drag frames and either fling direction,
+  // including after a live viewport has been scrolled away from its bottom.
+  for (const direction of [-1,1]) {
+    await evaluate(`showHistory(); scrollLocally(-300); viewport.scrollTop = 0;
+      pendingY = ${direction * 200}; frame = requestAnimationFrame(flushScroll);
+      glide([[${direction * 100},performance.now() - 20],[0,performance.now()]],performance.now());
+      document.getElementById('return-live').click()`);
+    assert.equal(await evaluate('history.hidden && following && isAtLive()'),true, 'The button scrolls live content to the bottom immediately');
+    assert.equal(await evaluate('frame === 0 && coast === 0 && pendingY === 0'),true);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(await evaluate('history.hidden && following && isAtLive()'),true, 'An old fling cannot reopen history');
+  }
+  t.diagnostic('PASS: return-live immediately scrolls to the bottom and cancels queued scrolling in both directions');
   await evaluate('window.tty7Begin(2)');
   assert.equal(await evaluate('historyScreen.childElementCount'),0);
   assert.equal(await evaluate('input.readOnly'),true);
   t.diagnostic('PASS: switching terminal clears history snapshot and input focus');
+  await call('Page.navigate', {url:url + '?theme=dark'});
+  await wait('typeof window.tty7Appearance === "function" && document.documentElement.dataset.theme === "dark"');
+  assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Saved native theme applies on initial page load');
   ws.close();
 });

@@ -228,6 +228,8 @@ interface RemoteSocket {
 }
 interface MobilePlatform {
     val deviceName: String
+    fun loadTheme(): MobileTheme?
+    fun saveTheme(theme: MobileTheme)
     fun parseQr(uri: String): Computer
     suspend fun loadComputers(): List<Computer>
     suspend fun saveComputers(computers: List<Computer>)

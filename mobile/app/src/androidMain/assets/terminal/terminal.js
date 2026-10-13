@@ -24,7 +24,9 @@ const terminalFontsReady = Promise.all([
     if (!(await document.fonts.load(font, sample)).length) throw new Error('终端字体加载失败');
 }));
 const systemTheme = matchMedia('(prefers-color-scheme: dark)');
-let nativeDark = null;
+const initialTheme = new URLSearchParams(location.search).get('theme');
+let nativeDark = initialTheme === 'dark' ? true : initialTheme === 'light' ? false : null;
+if (nativeDark !== null) document.documentElement.dataset.theme = nativeDark ? 'dark' : 'light';
 const ansiPalettes = {
     light:['#24292e','#d1242f','#1a7f37','#9a6700','#0969da','#8250df','#1b7c83','#6e7781',
         '#57606a','#cf222e','#1f883d','#bf8700','#218bff','#a475f9','#3192aa','#8c959f'],
@@ -54,14 +56,26 @@ const terminal = new Terminal({
     // Keep their colours where readable, correcting contrast against each cell.
     minimumContrastRatio:4.5
 });
-systemTheme.addEventListener('change', () => { terminal.options.theme = terminalTheme(); });
+systemTheme.addEventListener('change', applyAppearance);
 // Android WebView's media query can follow the Activity theme instead of the
-// Compose system appearance. The native surface supplies the definitive value.
+// selected app appearance. The native surface supplies the definitive value.
 window.tty7Appearance = function(dark) {
     nativeDark = dark;
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    terminal.options.theme = terminalTheme();
+    applyAppearance();
 };
+function applyAppearance() {
+    terminal.options.theme = terminalTheme();
+    // History is a styled DOM cache; recolour it without clearing its contents
+    // or requesting remote history again when the user changes themes.
+    for (const container of [historyText, historyScreen]) {
+        for (const span of container.querySelectorAll('span[data-fg]')) {
+            const bg = resolveColor(span.dataset.bg);
+            span.style.color = readable(resolveColor(span.dataset.fg), bg);
+            span.style.backgroundColor = bg;
+        }
+    }
+}
 function installCanonicalWidths(target) {
     const provider = new window.Tty7ScreenWidths();
     // xterm exposes Unicode providers through its documented proposed API.
@@ -142,10 +156,14 @@ function isAtLive() {
 function returnLive() {
     history.hidden = true;
     terminal.scrollToBottom();
+    scrollback.scrollTop = scrollback.scrollHeight;
     viewport.scrollTop = viewport.scrollHeight;
     following = true;
 }
-document.getElementById('return-live').addEventListener('click', returnLive);
+document.getElementById('return-live').addEventListener('click', () => {
+    stopScrolling();
+    returnLive();
+});
 terminal.onRender(() => {
     // WebView may measure fonts after the first write/attachment.
     sizeSurface();
@@ -160,13 +178,27 @@ let historyMore = true;
 let historyLoading = false;
 let historyLoaded = false;
 let historyBytes = 0;
+let historyTruncated = false;
+let historyError = null;
+let historyScrollTop = 0;
 // A separate read-only styled cache, at most 2,000 rows / 2 MiB UTF-8.
 const maxHistoryRows = 2000;
 const maxHistoryBytes = 2 * 1024 * 1024;
+function updateHistoryStatus() {
+    historyStatus.textContent = historyLoading ? '正在加载历史…' :
+        historyError ? historyError + '；返回实时后重试' :
+        historyTruncated ? '已保留历史（有边界截断）' :
+        !historyMore && history.scrollTop <= 1 ? '已到历史起点' :
+        historyMore ? '向上滚动加载更多' : '主屏幕历史（只读）';
+}
+function isAtHistoryBottom() {
+    return history.scrollTop >= history.scrollHeight - history.clientHeight - 1;
+}
 function requestHistory() {
     if (!inputReady || historyLoading || !historyMore) return;
     historyLoading = true;
-    historyStatus.textContent = '正在加载历史…';
+    historyError = null;
+    updateHistoryStatus();
     if (window.Tty7) window.Tty7.history(generation, historyCursor || '');
 }
 function showHistory() {
@@ -182,17 +214,32 @@ function showHistory() {
     history.hidden = false;
     history.scrollLeft = viewport.scrollLeft;
     history.scrollTop = history.scrollHeight;
+    // Opening/prepending history also emits scroll events. Only a downward
+    // movement by the reader should leave history at its lower boundary.
+    historyScrollTop = history.scrollTop;
+    updateHistoryStatus();
     blurInput();
     if (!historyLoaded) { historyMore = true; requestHistory(); }
     return true;
 }
 history.addEventListener('scroll', () => {
-    if (!history.hidden && history.scrollTop < 160) requestHistory();
+    if (history.hidden) return;
+    const movedDown = history.scrollTop > historyScrollTop;
+    historyScrollTop = history.scrollTop;
+    if (movedDown && isAtHistoryBottom()) { returnLive(); return; }
+    updateHistoryStatus();
+    if (history.scrollTop < 160) requestHistory();
 });
-function color(cell, foreground) {
+function cellColor(cell, foreground) {
     const value = foreground ? cell.getFgColor() : cell.getBgColor();
     if (foreground ? cell.isFgRGB() : cell.isBgRGB()) return '#' + value.toString(16).padStart(6, '0');
-    if (!(foreground ? cell.isFgPalette() : cell.isBgPalette())) return foreground ? terminalTheme().foreground : terminalTheme().background;
+    if (!(foreground ? cell.isFgPalette() : cell.isBgPalette())) return foreground ? 'foreground' : 'background';
+    return 'p' + value;
+}
+function resolveColor(token) {
+    if (token.startsWith('#')) return token;
+    if (token === 'foreground' || token === 'background') return terminalTheme()[token];
+    const value = Number(token.slice(1));
     if (value < 16) return ansiPalette()[value];
     if (value >= 232) { const v = (8 + (value - 232) * 10).toString(16).padStart(2, '0'); return '#' + v.repeat(3); }
     const index = value - 16, channel = n => (n ? 55 + n * 40 : 0).toString(16).padStart(2, '0');
@@ -217,14 +264,18 @@ function historyRow(line, rowIndex, source = historyParser) {
     for (let col = 0; col < line.cols; ++col) {
         const cell = cells.getCell(col);
         if (!cell || cell.getWidth() === 0) continue;
-        let fg = color(cell, true), bg = color(cell, false);
-        if (cell.isInverse()) [fg, bg] = [bg, fg];
+        let fgToken = cellColor(cell, true), bgToken = cellColor(cell, false);
+        if (cell.isInverse()) [fgToken, bgToken] = [bgToken, fgToken];
+        const fg = resolveColor(fgToken), bg = resolveColor(bgToken);
         const style = `color:${readable(fg,bg)};background:${bg};font-weight:${cell.isBold() ? 'bold' : 'normal'};font-style:${cell.isItalic() ? 'italic' : 'normal'};text-decoration:${cell.isUnderline() ? 'underline' : ''} ${cell.isStrikethrough() ? 'line-through' : ''}`;
         const chars = cell.isInvisible() ? ' '.repeat(cell.getWidth()) : cell.getChars() || ' ';
         const positioned = /[^\x20-\x7e]/.test(chars) || cell.getWidth() !== 1;
-        if (positioned || style !== previous || !run) {
+        const runKey = `${fgToken}|${bgToken}|${style}`;
+        if (positioned || runKey !== previous || !run) {
             run = document.createElement('span');
             run.style.cssText = style;
+            run.dataset.fg = fgToken;
+            run.dataset.bg = bgToken;
             if (positioned) {
                 run.style.display = 'inline-block';
                 run.style.width = `${cell.getWidth()}ch`;
@@ -232,7 +283,7 @@ function historyRow(line, rowIndex, source = historyParser) {
                 run.style.verticalAlign = 'top';
             }
             row.appendChild(run);
-            previous = style;
+            previous = runKey;
         }
         run.appendChild(document.createTextNode(chars));
         if (positioned) run = null;
@@ -281,19 +332,23 @@ window.tty7History = async function(gen, page) {
         historyMore = page.has_more;
         historyLoaded = true;
         historyLoading = false;
-        historyStatus.textContent = page.truncated || evicted ? '已保留历史（有边界截断）' : historyMore ? '向上滚动加载更多' : '已到历史起点';
+        historyTruncated = historyTruncated || page.truncated || evicted;
+        historyScrollTop = history.scrollTop;
+        updateHistoryStatus();
         if (!historyMore && !historyText.childElementCount) returnLive();
     } catch (error) { window.tty7HistoryError(gen, error.message || '历史加载失败'); }
 };
 window.tty7HistoryError = function(gen, message) {
     if (gen !== generation) return;
     historyLoading = false;
-    historyStatus.textContent = message + '；返回实时后重试';
+    historyError = message;
     historyMore = false;
     historyCursor = null;
     historyLoaded = false;
     historyText.replaceChildren();
     historyBytes = 0;
+    historyScrollTop = history.scrollTop;
+    updateHistoryStatus();
 };
 
 function moveScroll(element, amount) {
@@ -304,6 +359,9 @@ function moveScroll(element, amount) {
 function scrollLocally(amount) {
     if (!history.hidden) {
         moveScroll(history, amount);
+        if (amount > 0 && isAtHistoryBottom()) { returnLive(); return; }
+        historyScrollTop = history.scrollTop;
+        updateHistoryStatus();
         if (amount < 0 && history.scrollTop < 160) requestHistory();
         following = false;
         return;
@@ -492,6 +550,7 @@ window.tty7Begin = function(gen) {
     historyScreen.replaceChildren();
     blurInput();
     historyCursor = null; historyMore = true; historyLoading = false; historyLoaded = false; historyBytes = 0;
+    historyTruncated = false; historyError = null; historyScrollTop = 0;
     following = true;
     appliedRevision = appliedEpoch = null;
     // Drain at most the previous current-state write, never historical replay.

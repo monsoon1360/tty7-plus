@@ -37,6 +37,7 @@ fun MobileApp(
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val state by controller.state.collectAsState()
+    var showSettings by remember { mutableStateOf(false) }
     var scanning by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(false) }
     var pairingSubmitted by remember { mutableStateOf(false) }
@@ -66,6 +67,7 @@ fun MobileApp(
     LaunchedEffect(pairingLinks) {
         pairingLinks.collect {
             scanning = false
+            showSettings = false
             showPairing = true
             pairingSubmitted = state.computers.isEmpty()
             scope.launch { drawer.close() }
@@ -94,26 +96,11 @@ fun MobileApp(
         registerLifecycle(controller::setForeground)
         onDispose { registerLifecycle(null); registerNetwork(null); controller.setForeground(false) }
     }
-    val colors = if (isSystemInDarkTheme()) darkColorScheme(
-        primary = Color(0xFFECECED), onPrimary = Color(0xFF18181A),
-        primaryContainer = Color(0xFF29292C), onPrimaryContainer = Color(0xFFECECED),
-        secondaryContainer = Color(0xFF29292C), onSecondaryContainer = Color(0xFFECECED),
-        surfaceContainerHighest = Color(0xFF242427), surfaceContainerHigh = Color(0xFF242427),
-        surfaceContainer = Color(0xFF1E1E20), surfaceContainerLow = Color(0xFF17171A),
-        background = Color(0xFF17171A), surface = Color(0xFF1E1E20),
-        onBackground = Color(0xFFECECED), onSurface = Color(0xFFECECED), onSurfaceVariant = Color(0xFF969698),
-        outline = Color(0xFF555558), outlineVariant = Color(0xFF323235),
-    ) else lightColorScheme(
-        primary = Color(0xFF1C1C1E), onPrimary = Color(0xFFFCFCFB),
-        primaryContainer = Color(0xFFECECE9), onPrimaryContainer = Color(0xFF1C1C1E),
-        secondaryContainer = Color(0xFFECECE9), onSecondaryContainer = Color(0xFF1C1C1E),
-        surfaceContainerHighest = Color(0xFFF3F3F1), surfaceContainerHigh = Color(0xFFF3F3F1),
-        surfaceContainer = Color(0xFFFCFCFB), surfaceContainerLow = Color(0xFFFCFCFB),
-        background = Color(0xFFFCFCFB), surface = Color(0xFFFCFCFB),
-        onBackground = Color(0xFF1C1C1E), onSurface = Color(0xFF1C1C1E), onSurfaceVariant = Color(0xFF777779),
-        outline = Color(0xFFB7B7B5), outlineVariant = Color(0xFFE4E4E1),
-    )
-    MaterialTheme(colorScheme = colors) {
+    val systemDark = isSystemInDarkTheme()
+    var theme by remember(platform) { mutableStateOf(platform.loadTheme()) }
+    val dark = theme?.dark ?: systemDark
+    ApplySystemAppearance(dark)
+    MobileAppTheme(dark) {
         Surface(Modifier.fillMaxSize()) {
             if (scanning) {
                 CameraScanner(onScan = { scanning = false; pairingSubmitted = true; controller.pair(it) }, onClose = { scanning = false })
@@ -158,6 +145,10 @@ fun MobileApp(
                             }
                             HorizontalDivider()
                             TextButton(onClick = {
+                                showSettings = true
+                                scope.launch { drawer.close() }
+                            }, modifier = Modifier.fillMaxWidth().testTag("open-settings-drawer")) { Text("设置") }
+                            TextButton(onClick = {
                                 controller.leaveTerminal()
                                 showPairing = true
                                 scope.launch { drawer.close() }
@@ -180,6 +171,11 @@ fun MobileApp(
                             Text(agentStatus(status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.testTag("agent-status-${currentPane.id}"))
                         }
                     }
+                    IconButton(onClick = {
+                        focusManager.clearFocus(force = true)
+                        keyboard?.hide()
+                        showSettings = true
+                    }, modifier = Modifier.testTag("open-settings").semantics { contentDescription = "设置" }) { LineIcon("settings") }
                     if (!state.connected || state.status.startsWith("Terminal exited (")) Text(connectionStatus(state.status), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp).testTag("connection-status"))
                 }
                 state.verificationCode?.takeIf { state.computer?.pending == true }?.let {
@@ -270,6 +266,11 @@ fun MobileApp(
                 }
             }
             }
+            if (showSettings) ThemeSettings(
+                selected = if (dark) MobileTheme.Dark else MobileTheme.Light,
+                onSelect = { selected -> platform.saveTheme(selected); theme = selected },
+                onDismiss = { showSettings = false },
+            )
             closing?.let { (workspace, pane) -> AlertDialog(onDismissRequest = { closing = null }, title = { Text("关闭终端？") }, text = { Text("确定关闭「${pane.title}」？电脑上此终端的 Shell 和正在运行的程序都将被终止。") }, confirmButton = { TextButton(onClick = { controller.closeTerminal(workspace.id, pane); closing = null }, modifier = Modifier.testTag("confirm-close-terminal")) { Text("关闭终端") } }, dismissButton = { TextButton(onClick = { closing = null }) { Text("取消") } }) }
             forgetting?.let { computer -> AlertDialog(onDismissRequest = { forgetting = null }, title = { Text("解除与「${computer.hostName}」的配对？") }, text = { Text("这会关闭手机上的连接并删除连接凭据，之后才能扫描二维码配对电脑。若要彻底撤销访问权限，请在电脑的「配对设备」设置中移除此设备。") }, confirmButton = { TextButton(onClick = { controller.forget(computer); forgetting = null; pairingSubmitted = false; qrText = ""; showPairing = true }, modifier = Modifier.testTag("confirm-unpair-computer")) { Text("解除配对") } }, dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } }) }
         }
@@ -429,6 +430,14 @@ private fun LineIcon(name: String, color: Color = LocalContentColor.current) {
             strokeWidth = 1.8f * unit, cap = StrokeCap.Round,
         )
         when (name) {
+            "settings" -> {
+                drawCircle(color, radius = 3f * unit, center = Offset(12f * unit, 12f * unit), style = Stroke(1.8f * unit))
+                drawCircle(color, radius = 7f * unit, center = Offset(12f * unit, 12f * unit), style = Stroke(1.8f * unit))
+                line(12f, 2f, 12f, 5f); line(12f, 19f, 12f, 22f)
+                line(2f, 12f, 5f, 12f); line(19f, 12f, 22f, 12f)
+                line(5f, 5f, 7f, 7f); line(17f, 17f, 19f, 19f)
+                line(5f, 19f, 7f, 17f); line(17f, 7f, 19f, 5f)
+            }
             "menu" -> { line(4f, 6f, 20f, 6f); line(4f, 12f, 20f, 12f); line(4f, 18f, 20f, 18f) }
             "close" -> { line(6f, 6f, 18f, 18f); line(18f, 6f, 6f, 18f) }
             "plus" -> { line(12f, 5f, 12f, 19f); line(5f, 12f, 19f, 12f) }

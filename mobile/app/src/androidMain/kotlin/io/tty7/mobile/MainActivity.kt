@@ -117,3 +117,13 @@ class MainActivity : ComponentActivity() {
 actual fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled, onBack)
 }
+
+@androidx.compose.runtime.Composable
+actual fun ApplySystemAppearance(dark: Boolean) {
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    androidx.compose.runtime.LaunchedEffect(activity, dark) {
+        val style = if (dark) androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+            else androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        activity?.let { (it as? ComponentActivity)?.enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style) }
+    }
+}

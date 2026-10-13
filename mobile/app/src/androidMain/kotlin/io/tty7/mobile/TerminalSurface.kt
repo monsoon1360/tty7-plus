@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import android.view.inputmethod.InputMethodManager
 import android.webkit.*
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
@@ -68,7 +67,7 @@ actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (Strin
 private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit,
     onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, onRendererGone: () -> Unit) {
     val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
+    val dark = LocalMobileDarkTheme.current
     val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     val currentFeed by rememberUpdatedState(feed)
@@ -148,7 +147,7 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
                 }
             }
             addTerminalBridge(bridge)
-            loadUrl(TERMINAL_URL)
+            loadUrl("$TERMINAL_URL?theme=${if (dark) "dark" else "light"}")
         }
     }
     SideEffect { webRef = web }
