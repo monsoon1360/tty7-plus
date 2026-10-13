@@ -850,6 +850,7 @@ pub fn translate_en(key: L10nKey) -> &'static str {
             "Could not set tty7 as the default terminal: {error}"
         }
         L10nKey::SettingsVersion => "Version",
+        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus disables upstream updates to preserve this fork's changes",
         L10nKey::SettingsUpdates => "Updates",
         L10nKey::SettingsUpdateAndRelaunch => "Update and relaunch",
         L10nKey::SettingsUpdateViewRelease => "View release",

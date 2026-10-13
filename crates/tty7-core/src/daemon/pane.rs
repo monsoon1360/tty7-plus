@@ -4099,6 +4099,9 @@ pub fn codex_report_target(
                 .is_some_and(|(cwd, c)| same_dir(c, cwd))
         })
         .collect();
+    // An unscoped shared server also runs sessions outside tty7. Only an
+    // existing session match or matching directory may claim those reports.
+    if named == 0 && here.is_empty() { return None; }
     let pool = if here.is_empty() {
         codex().collect()
     } else {
@@ -4730,6 +4733,13 @@ mod tests {
 
         // The app-server was started in pane 1, so every hook names it.
         assert_eq!(target(1, Some("s-a"), "/work/a"), Some(1));
+        assert_eq!(target(0, Some("s-a"), "/elsewhere"), Some(1),
+            "a shared server without tty7 environment still routes known sessions");
+        assert_eq!(target(0, Some("s-new"), "/work/b"), Some(2),
+            "an unscoped shared server can identify a new session by directory");
+        assert_eq!(codex_report_target(&[pane(1, true, "/work/a", None)], 0,
+            Some("outside"), Some(Path::new("/outside")), false), None,
+            "a session outside tty7 must not claim the only Codex pane");
         assert_eq!(
             target(1, Some("s-c"), "/work/elsewhere"),
             Some(4),

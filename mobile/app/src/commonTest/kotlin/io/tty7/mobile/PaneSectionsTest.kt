@@ -35,11 +35,15 @@ class PaneSectionsTest {
         val shell = pane(1, "tty7-plus", "auto:tty7-plus")
         assertEquals("tty7-plus", terminalTitle(shell))
         val agent = shell.copy(agentName = "Codex", agentStatus = "working")
-        assertEquals("Codex", terminalTitle(agent))
-        assertEquals("Codex", terminalTitle(agent.copy(agentStatus = "waiting")))
-        assertEquals("Codex", terminalTitle(agent.copy(agentStatus = "done")))
+        assertNull(terminalAgentTitle(shell))
+        assertEquals("复盘实战数据", terminalAgentTitle(agent.copy(title = "复盘实战数据")))
+        assertEquals("Codex", terminalAgentTitle(agent.copy(title = "")))
+        assertEquals("tty7-plus", terminalTitle(agent))
+        assertEquals("tty7-plus", terminalTitle(agent.copy(agentStatus = "waiting")))
+        assertEquals("tty7-plus", terminalTitle(agent.copy(agentStatus = "done")))
         assertEquals("tty7-plus", terminalTitle(agent.copy(agentName = null, agentStatus = null)))
         assertEquals("renamed", terminalTitle(shell.copy(group = "renamed")))
+        assertEquals("renamed", terminalTitle(agent.copy(group = "renamed")))
     }
 
     @Test fun terminalHeaderNormalizesEmptyAndUngroupedNames() {

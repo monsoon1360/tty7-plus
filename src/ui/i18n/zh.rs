@@ -745,6 +745,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::SettingsDefaultTerminalSetFailed => "无法将 tty7 设为默认终端：{error}",
         L10nKey::SettingsVersion => "版本",
+        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus 已禁用上游更新，避免覆盖本分支的改动",
         L10nKey::SettingsUpdates => "更新",
         L10nKey::SettingsUpdateAndRelaunch => "更新并重新启动",
         L10nKey::SettingsUpdateViewRelease => "查看发布页面",

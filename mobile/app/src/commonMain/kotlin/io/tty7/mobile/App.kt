@@ -160,15 +160,20 @@ fun MobileApp(
                 Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().padding(horizontal = if (currentPane == null || showPairing) 12.dp else 0.dp)) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(onClick = { scope.launch { drawer.open() } }, modifier = Modifier.testTag("toggle-sessions").semantics { contentDescription = "打开会话抽屉" }) { LineIcon("menu") }
-                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.weight(1f).padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
                             if (showPairing) "配对管理" else currentPane?.let(::terminalTitle) ?: drawerWorkspace?.name ?: "tty7",
-                            style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false).testTag("terminal-title"),
+                            style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("terminal-title"),
                         )
-                        if (!showPairing) currentPane?.agentStatus?.let { status ->
-                            AgentStatusDot(status)
-                            Text(agentStatus(status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.testTag("agent-status-${currentPane.id}"))
+                        if (!showPairing) currentPane?.takeIf { !it.agentName.isNullOrBlank() }?.let { pane ->
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(terminalAgentTitle(pane)!!, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).testTag("terminal-agent-title"))
+                                pane.agentStatus?.let { status ->
+                                    AgentStatusDot(status)
+                                    Text(agentStatus(status), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.testTag("agent-status-${pane.id}"))
+                                }
+                            }
                         }
                     }
                     IconButton(onClick = {
@@ -448,8 +453,12 @@ private fun LineIcon(name: String, color: Color = LocalContentColor.current) {
     }
 }
 
-internal fun terminalTitle(pane: Pane): String = pane.agentName?.takeIf { it.isNotBlank() }
-    ?: pane.group?.takeIf { it.isNotBlank() && it != "Ungrouped" } ?: "未分组"
+internal fun terminalTitle(pane: Pane): String =
+    pane.group?.takeIf { it.isNotBlank() && it != "Ungrouped" } ?: "未分组"
+
+internal fun terminalAgentTitle(pane: Pane): String? = pane.agentName?.takeIf { it.isNotBlank() }?.let {
+    pane.title.takeIf { title -> title.isNotBlank() && title != "-" } ?: it
+}
 
 internal data class PaneSection(val name: String?, val panes: List<Pane>) {
     val title: String get() = if (name == null || name == "Ungrouped") "未分组" else name

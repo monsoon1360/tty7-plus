@@ -3751,11 +3751,11 @@ impl Tty7App {
     }
 
     pub(crate) fn set_check_for_updates(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.update_config(cx, |cfg| cfg.check_for_updates = on);
+        self.update_config(cx, |cfg| cfg.check_for_updates = on && crate::core::update::UPDATES_ENABLED);
     }
 
     pub(crate) fn set_auto_download_updates(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.update_config(cx, |cfg| cfg.auto_download_updates = on);
+        self.update_config(cx, |cfg| cfg.auto_download_updates = on && crate::core::update::UPDATES_ENABLED);
     }
 
     /// Moves this installation to another release feed. See

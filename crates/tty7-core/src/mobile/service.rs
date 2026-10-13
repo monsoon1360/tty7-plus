@@ -1816,7 +1816,8 @@ mod tests {
         ScreenSnapshot {
             revision: 1, epoch: 1, cols: 80, rows, alternate: false,
             cursor: ScreenCursor { row: 0, col: 0, shape: "block".into(), visible: true, blink: true },
-            modes: ScreenModes { app_cursor: false, app_keypad: false, bracketed_paste: true },
+            modes: ScreenModes { app_cursor: false, app_keypad: false, bracketed_paste: true,
+                mouse: false, sgr_mouse: false, alternate_scroll: true },
             lines: (0..rows).map(|row| Arc::new(format!("\x1b[0;31m{row}界e\u{301}{}\x1b[0m", "x".repeat(width)))).collect(),
         }
     }

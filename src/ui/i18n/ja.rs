@@ -859,6 +859,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
             "tty7 をデフォルトのターミナルに設定できませんでした: {error}"
         }
         L10nKey::SettingsVersion => "バージョン",
+        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus の変更を保護するため、上流の更新を無効にしています",
         L10nKey::SettingsUpdates => "アップデート",
         L10nKey::SettingsUpdateAndRelaunch => "更新して再起動",
         L10nKey::SettingsUpdateViewRelease => "リリースページを開く",

@@ -16,6 +16,9 @@ use crate::ui::i18n::{L10nKey, t, t_fmt};
 
 const REPO: &str = "l0ng-ai/tty7";
 
+/// Upstream packages would replace this fork and discard its customizations.
+pub const UPDATES_ENABLED: bool = false;
+
 /// The rolling prerelease the Nightly channel follows. Force-moved to a new
 /// commit every night, which is exactly why it cannot double as a version.
 const NIGHTLY_TAG: &str = "nightly";
@@ -217,6 +220,7 @@ pub struct UpdateStatus {
 impl Global for UpdateStatus {}
 
 pub fn spawn_check(cx: &mut App) {
+    if !UPDATES_ENABLED { return; }
     // Before hydration and before the config gate: an interrupted portable
     // replacement has to surface whether or not checking is on, and it is
     // recorded as a failure so `hydrate_from_disk` below carries it into the
@@ -294,6 +298,7 @@ fn spawn_recheck_loop(cx: &mut App) {
 }
 
 fn spawn_check_inner(report_failure: bool, cx: &mut App) {
+    if !UPDATES_ENABLED { return; }
     if is_busy(cx) {
         return;
     }
@@ -602,6 +607,7 @@ pub fn cancel_download(cx: &mut App) {
 /// Install as soon as there is something to install: now if the package is
 /// already staged, otherwise when the download in flight finishes.
 pub fn install_available(cx: &mut App) {
+    if !UPDATES_ENABLED { return; }
     let status = cx.try_global::<UpdateStatus>().cloned().unwrap_or_default();
     if let Some(pending) = status.ready.clone()
         && pending.is_usable()
@@ -635,6 +641,7 @@ pub fn install_available(cx: &mut App) {
 /// is the option that costs the user nothing: no interrupted work now, and no
 /// decision to make later either.
 pub fn stage_for_next_launch(update: AvailableUpdate, cx: &mut App) {
+    if !UPDATES_ENABLED { return; }
     #[cfg(target_os = "windows")]
     if update.needs_elevation {
         // "Next launch" promises an unattended install, which an
@@ -994,6 +1001,7 @@ pub fn open_url(url: &str) {
 /// Every failure path clears the plan and returns `false`. An update that
 /// cannot be applied must never become an app that will not start.
 pub fn apply_pending_at_launch() -> bool {
+    if !UPDATES_ENABLED { return false; }
     let mut state = UpdateState::load();
     let Some(pending) = state.pending.clone() else {
         return false;

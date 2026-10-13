@@ -120,6 +120,9 @@ let inputReady = false;
 let fontsReady = false;
 let sizeTimer;
 let sentGrid = '';
+let applicationScreen = null;
+let applicationScrollDebt = 0;
+let scrollPoint = {x:0, y:0};
 function requestPhoneGrid() {
     if (!fontsReady || sizeTimer) return;
     sizeTimer = setTimeout(() => {
@@ -366,6 +369,27 @@ function scrollLocally(amount) {
         following = false;
         return;
     }
+    // Full-screen programs own their transcript (Codex, vim, less, tmux).
+    // Match the desktop's wheel route rather than opening shell history.
+    const modes = applicationScreen?.modes;
+    if (inputReady && applicationScreen?.alternate && (modes.mouse || modes.alternate_scroll)) {
+        const cellHeight = screen.clientHeight / terminal.rows;
+        applicationScrollDebt += amount / Math.max(1, cellHeight);
+        const lines = Math.max(-20, Math.min(20, Math.trunc(applicationScrollDebt)));
+        if (!lines) return;
+        applicationScrollDebt -= Math.trunc(applicationScrollDebt);
+        let sequence;
+        if (modes.mouse) {
+            const rect = screen.getBoundingClientRect();
+            const col = Math.max(1, Math.min(terminal.cols, 1 + Math.floor((scrollPoint.x - rect.left) / (rect.width / terminal.cols))));
+            const row = Math.max(1, Math.min(terminal.rows, 1 + Math.floor((scrollPoint.y - rect.top) / cellHeight)));
+            const button = lines < 0 ? 64 : 65;
+            sequence = modes.sgr_mouse ? `\x1b[<${button};${col};${row}M` :
+                `\x1b[M${String.fromCharCode(button + 32, Math.min(col,223) + 32, Math.min(row,223) + 32)}`;
+        } else sequence = modes.app_cursor ? (lines < 0 ? '\x1bOA' : '\x1bOB') : (lines < 0 ? '\x1b[A' : '\x1b[B');
+        if (window.Tty7) window.Tty7.input(generation, sequence.repeat(Math.abs(lines)));
+        return;
+    }
     if (amount < 0) {
         amount = moveScroll(viewport, amount);
         if (amount < 0 && inputReady && showHistory()) moveScroll(history, amount);
@@ -373,8 +397,8 @@ function scrollLocally(amount) {
     following = isAtLive();
 }
 
-// A drag stays local: even on an alternate screen it never becomes a key or
-// mouse report. Only an intentional tap may focus the IME.
+// A drag scrolls locally or tells a full-screen program to scroll, and never
+// focuses the IME. Only an intentional tap may focus it.
 const touchSlop = 8;
 const touchScrollSpeed = 1.8;
 const activePointers = new Set();
@@ -406,6 +430,7 @@ function flushScroll() {
     if (vertical) scrollLocally(vertical * touchScrollSpeed);
 }
 function trackTouch(point, time) {
+    scrollPoint = {x:point.clientX, y:point.clientY};
     if (!touch.axis) {
         const dx = Math.abs(point.clientX - touch.startX);
         const dy = Math.abs(point.clientY - touch.startY);
@@ -517,6 +542,7 @@ viewport.addEventListener('wheel', event => {
     event.preventDefault();
     event.stopPropagation();
     stopScrolling();
+    scrollPoint = {x:event.clientX, y:event.clientY};
     const factor = event.deltaMode === 1 ? screen.clientHeight / terminal.rows :
         event.deltaMode === 2 ? viewport.clientHeight : 1;
     (history.hidden ? viewport : history).scrollLeft += event.deltaX * factor;
@@ -541,6 +567,8 @@ let appliedEpoch = null;
 window.tty7Begin = function(gen) {
     generation = gen;
     inputReady = false;
+    applicationScreen = null;
+    applicationScrollDebt = 0;
     sentGrid = '';
     stopScrolling();
     touch = undefined;
@@ -594,6 +622,8 @@ window.tty7Screen = function(gen, state, sequence) {
                     historyMore = true;
                 }
                 appliedRevision = state.revision; appliedEpoch = state.epoch;
+                if (applicationScreen?.alternate !== state.alternate) applicationScrollDebt = 0;
+                applicationScreen = {alternate:state.alternate, modes:state.modes};
                 sizeSurface();
                 if (following) returnLive();
                 writing = false;

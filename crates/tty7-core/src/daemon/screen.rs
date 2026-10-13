@@ -35,6 +35,12 @@ pub(crate) struct ScreenModes {
     pub app_cursor: bool,
     pub app_keypad: bool,
     pub bracketed_paste: bool,
+    #[serde(default)]
+    pub mouse: bool,
+    #[serde(default)]
+    pub sgr_mouse: bool,
+    #[serde(default)]
+    pub alternate_scroll: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +271,9 @@ impl ScreenMirror {
                 app_cursor: mode.contains(TermMode::APP_CURSOR),
                 app_keypad: mode.contains(TermMode::APP_KEYPAD),
                 bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+                mouse: mode.intersects(TermMode::MOUSE_MODE),
+                sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
+                alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
             },
             lines,
         });

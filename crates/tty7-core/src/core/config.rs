@@ -298,15 +298,8 @@ pub struct Config {
     /// installation only ever ends up on Nightly by asking for it.
     #[serde(default, deserialize_with = "de_lenient")]
     pub update_channel: UpdateChannel,
-    /// Whether a found update is fetched and verified before the user asks for
-    /// it. On by default: it turns "spend five minutes downloading" into "press
-    /// restart", which is the whole difference between an update people apply
-    /// and one they postpone forever. Nothing is ever *installed* without an
-    /// explicit choice — the staged package waits in Settings.
-    ///
-    /// Worth turning off on a metered connection: the packages run 25–30 MB and
-    /// a check happens every six hours.
-    #[serde(default = "default_true")]
+    /// Retained for config compatibility. Upstream updates are disabled in this fork.
+    #[serde(default)]
     pub auto_download_updates: bool,
     /// Whether the local daemon runs the mobile gateway, so phones paired in
     /// Settings → Mobile can reach this machine's panes. Off by default: it
@@ -835,10 +828,10 @@ impl Default for Config {
             editor_git_gutter: true,
             sidebar_auto_grouping: true,
             notify_on_command_finish: NotifyMode::Unfocused,
-            check_for_updates: true,
+            check_for_updates: false,
             mobile_access: false,
             update_channel: UpdateChannel::default(),
-            auto_download_updates: true,
+            auto_download_updates: false,
             install_cli_on_path: true,
             gui_language: default_gui_language(),
             notify_threshold_secs: default_notify_threshold_secs(),
@@ -1079,6 +1072,9 @@ impl Config {
     }
 
     fn sanitize(&mut self) {
+        // Never inherit upstream update preferences when opening this fork.
+        self.check_for_updates = false;
+        self.auto_download_updates = false;
         if !self.font_size.is_finite() || self.font_size <= 0.0 {
             self.font_size = Config::default().font_size;
         }
@@ -2410,6 +2406,16 @@ mod tests {
         assert_eq!(clamp(0), 100);
         assert_eq!(clamp(10_000), 10_000);
         assert_eq!(clamp(usize::MAX), MAX_SCROLLBACK);
+    }
+
+    #[test]
+    fn fork_rejects_inherited_upstream_auto_update_preferences() {
+        let defaults = Config::default();
+        assert!(!defaults.check_for_updates && !defaults.auto_download_updates);
+        let mut inherited: Config = serde_json::from_str(
+            r#"{"check_for_updates":true,"auto_download_updates":true}"#).unwrap();
+        inherited.sanitize();
+        assert!(!inherited.check_for_updates && !inherited.auto_download_updates);
     }
 
     #[test]

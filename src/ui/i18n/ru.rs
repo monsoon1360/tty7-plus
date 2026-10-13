@@ -909,6 +909,7 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
             "Не удалось назначить tty7 терминалом по умолчанию: {error}"
         }
         L10nKey::SettingsVersion => "Версия",
+        L10nKey::SettingsUpstreamUpdatesDisabled => "Обновления tty7 отключены для сохранения изменений tty7-plus",
         L10nKey::SettingsUpdates => "Обновления",
         L10nKey::SettingsUpdateAndRelaunch => "Обновить и перезапустить",
         L10nKey::SettingsUpdateViewRelease => "Что нового",

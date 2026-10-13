@@ -722,6 +722,7 @@ l10n_keys! {
     SettingsDefaultTerminalSetSuccess,
     SettingsDefaultTerminalSetFailed,
     SettingsVersion,
+    SettingsUpstreamUpdatesDisabled,
     SettingsUpdates,
     SettingsUpdateAndRelaunch,
     SettingsUpdateViewRelease,

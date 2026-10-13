@@ -1528,6 +1528,8 @@ impl Tty7App {
             Some(text) => format!("{} · {text}", env!("CARGO_PKG_VERSION")),
             None => env!("CARGO_PKG_VERSION").to_string(),
         };
+        let version_desc = if crate::core::update::UPDATES_ENABLED { version_desc }
+            else { format!("{version_desc} · {}", t(L10nKey::SettingsUpstreamUpdatesDisabled)) };
 
         let check = h_flex()
             .gap(px(8.))
@@ -1551,7 +1553,7 @@ impl Tty7App {
                     },
                     BtnKind::Secondary,
                 )
-                .disabled(busy)
+                .disabled(busy || !crate::core::update::UPDATES_ENABLED)
                 .on_click(cx.listener(|_, _, _w, cx| crate::core::update::spawn_check_forced(cx))),
             )
             .into_any_element();
@@ -1767,16 +1769,14 @@ impl Tty7App {
         .then(|| t(L10nKey::SettingsAppHttpProxyInvalid).to_string());
         let http_proxy =
             self.settings_checked_input(&http_proxy_input, FIELD_W, http_proxy_error, cx);
-        let check =
-            self.settings_switch("check-updates", check_for_updates, cx, |this, on, _, cx| {
-                this.set_check_for_updates(on, cx)
-            });
-        let auto = self.settings_switch(
-            "auto-download-updates",
-            auto_download,
-            cx,
-            |this, on, _, cx| this.set_auto_download_updates(on, cx),
-        );
+        let check = kit::switch("check-updates").checked(check_for_updates)
+            .disabled(!crate::core::update::UPDATES_ENABLED)
+            .on_click(cx.listener(|this, on: &bool, _, cx| this.set_check_for_updates(*on, cx)))
+            .into_any_element();
+        let auto = kit::switch("auto-download-updates").checked(auto_download)
+            .disabled(!crate::core::update::UPDATES_ENABLED)
+            .on_click(cx.listener(|this, on: &bool, _, cx| this.set_auto_download_updates(*on, cx)))
+            .into_any_element();
         let restart = self
             .settings_button(
                 "restart-daemon",

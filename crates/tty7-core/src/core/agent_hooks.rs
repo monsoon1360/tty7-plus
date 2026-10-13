@@ -13,7 +13,10 @@ const MAX_STDIN: u64 = 64 * 1024;
 
 pub fn run_agent_hook(agent: &str, event: &str) {
     detach_console();
-    if std::env::var_os(TTY7_ENV_MARKER).is_none() {
+    let in_tty7 = std::env::var_os(TTY7_ENV_MARKER).is_some();
+    // Shared agent servers can start outside tty7. Their payload, rather than
+    // inherited environment, identifies the session and directory to route.
+    if !in_tty7 && !shared_hook_server(agent) {
         return;
     }
     let agent = effective_agent(agent, std::env::var_os(GROK_HOOK_ENV).is_some());
@@ -29,8 +32,10 @@ pub fn run_agent_hook(agent: &str, event: &str) {
     if report_to_daemon(&body) {
         return;
     }
-    write_to_controlling_tty(&hook_sequence(&body));
+    if in_tty7 { write_to_controlling_tty(&hook_sequence(&body)); }
 }
+
+fn shared_hook_server(agent: &str) -> bool { matches!(agent, "codex" | "jcode") }
 
 /// Hand the report to the daemon that owns this pane, over its socket.
 ///
@@ -44,12 +49,10 @@ pub fn run_agent_hook(agent: &str, event: &str) {
 /// or at a pane it does not run in (see `DaemonPane::report_agent_event`)
 /// falls back to the tty.
 fn report_to_daemon(body: &str) -> bool {
-    let Some(pane) = std::env::var(crate::daemon::pane::TTY7_PANE_ENV)
+    let pane = std::env::var(crate::daemon::pane::TTY7_PANE_ENV)
         .ok()
         .and_then(|p| p.trim().parse::<u64>().ok())
-    else {
-        return false;
-    };
+        .unwrap_or(0);
     crate::client::PaneClient::local()
         .report_agent_event(pane, std::process::id(), body)
         .is_ok()
