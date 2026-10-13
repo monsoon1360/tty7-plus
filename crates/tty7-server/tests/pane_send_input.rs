@@ -260,8 +260,11 @@ fn send_input_to_a_dead_pane_answers_an_error() {
     let err = panes
         .send_input(pane_id, b"echo too_late\r")
         .expect_err("input into an exited pane must fail");
+    // The session's end lets the server reap the dead pane, so input that
+    // arrives after the reap finds no pane at all; both are refusals.
+    let err = err.to_string();
     assert!(
-        err.to_string().contains("not running"),
+        err.contains("not running") || err.contains("no such pane"),
         "the refusal was {err}"
     );
 }
