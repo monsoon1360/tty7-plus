@@ -775,6 +775,13 @@ impl Tab {
             .find_map(|l| l.read(cx).agent())
     }
 
+    pub(crate) fn phone_active(&self, cx: &App) -> bool {
+        self.pane
+            .terminals()
+            .into_iter()
+            .any(|leaf| leaf.read(cx).terminal.leased_by().as_deref() == Some("phone"))
+    }
+
     /// The tab's most urgent agent leaf, named and reported by that one leaf.
     ///
     /// `agent` and `agent_status` answer independently — the *first* leaf

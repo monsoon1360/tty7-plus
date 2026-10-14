@@ -1852,6 +1852,7 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::TabContextMarkUnread => "Отметить непрочитанной",
         L10nKey::TabContextHibernate => "Перевести в спящий режим",
         L10nKey::TabContextWake => "Возобновить",
+        L10nKey::TabTooltipPhoneActive => "Используется на телефоне",
         L10nKey::TabTooltipAsleep => "В спящем режиме. Выберите, чтобы возобновить",
         L10nKey::TabWakeFailed => "Не удалось возобновить вкладку: ни одна панель не запустилась",
         L10nKey::RemoteStripDisconnected => "Нет соединения с {machine}",

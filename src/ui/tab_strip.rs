@@ -1773,6 +1773,21 @@ impl Tty7App {
             .into_any_element()
     }
 
+    pub(crate) fn phone_mark(&self, id: impl Into<gpui::ElementId>, cx: &App) -> gpui::AnyElement {
+        let tip = SharedString::from(t(L10nKey::TabTooltipPhoneActive));
+        div()
+            .id(id)
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(16.))
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::empty().path("icons/phone.svg").size(px(13.)))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .into_any_element()
+    }
+
     pub(crate) fn zoom_mark(&self, id: impl Into<gpui::ElementId>, cx: &App) -> gpui::AnyElement {
         let tip = chord_tooltip(t(L10nKey::TabTooltipZoomed), "ToggleMaximizePane", cx);
         div()
@@ -2389,6 +2404,7 @@ impl Tty7App {
             let full_title = self.tab_title_tooltip(tab, i, Some(window), cx);
             let ssh_dot = self.tab_ssh_dot(tab, cx);
             let asleep = tab.is_asleep();
+            let phone_active = tab.phone_active(cx);
             let agent = tab.agent(cx).or_else(|| tab.asleep_agent());
             let agent_status = tab.agent_status(cx);
             let agent_unread = tab.agent_unread_count(cx);
@@ -2535,6 +2551,9 @@ impl Tty7App {
                 })
                 .when(asleep, |chip| {
                     chip.child(self.sleep_mark(("tab-asleep", i), cx))
+                })
+                .when(phone_active, |chip| {
+                    chip.child(self.phone_mark(("tab-phone", i), cx))
                 })
                 .child(label_region)
                 .when(show_badges && i < 9, |chip| {

@@ -603,6 +603,7 @@ impl Tty7App {
                 let is_active = i == active;
                 let ssh_dot = self.tab_ssh_dot(tab, cx);
                 let asleep = tab.is_asleep();
+                let phone_active = tab.phone_active(cx);
                 let agent = tab.agent(cx).or_else(|| tab.asleep_agent());
                 let agent_status = tab.agent_status(cx);
                 let agent_unread = tab.agent_unread_count(cx);
@@ -637,9 +638,16 @@ impl Tty7App {
                 };
                 // Elision is measured against this budget so the label and
                 // branch never wrap or overflow into CSS truncation.
-                let label_avail =
-                    (row_metrics::text_budget(width) - badge_extra - zoom_extra - status_extra)
-                        .max(48.);
+                let label_avail = (row_metrics::text_budget(width)
+                    - badge_extra
+                    - zoom_extra
+                    - status_extra
+                    - if phone_active {
+                        row_metrics::ZOOM + row_metrics::GAP
+                    } else {
+                        0.
+                    })
+                .max(48.);
                 let title_size = 0.875 * rem;
                 let meta_size = META_REM * rem;
                 let title_font = if is_active { &title_font_active } else { &font };
@@ -1107,6 +1115,9 @@ impl Tty7App {
                     })
                     .when(asleep, |row| {
                         row.child(self.sleep_mark(("sidebar-asleep", i), cx))
+                    })
+                    .when(phone_active, |row| {
+                        row.child(self.phone_mark(("sidebar-phone", i), cx))
                     })
                     .child(label_region)
                     .children(status_dot)

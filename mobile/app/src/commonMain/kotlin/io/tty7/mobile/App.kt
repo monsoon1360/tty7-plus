@@ -4,15 +4,22 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -21,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.Flow
@@ -129,7 +137,7 @@ fun MobileApp(
                                     }
                                 }
                                 IconButton(onClick = { drawerWorkspace?.let { controller.createTerminal(it.id) } }, enabled = state.connected && drawerWorkspace != null, modifier = Modifier.testTag("create-terminal-${drawerWorkspace?.id}").semantics { contentDescription = "新建终端" }) { LineIcon("plus") }
-                                IconButton(onClick = { scope.launch { drawer.close() } }, modifier = Modifier.testTag("close-sessions").semantics { contentDescription = "收起会话抽屉" }) { LineIcon("close") }
+                                IconButton(onClick = { scope.launch { drawer.close() } }, modifier = Modifier.testTag("close-sessions").semantics { contentDescription = "收起会话抽屉" }) { LineIcon("left") }
                             }
                             Box(Modifier.weight(1f)) {
                                 SessionList(
@@ -327,17 +335,7 @@ private fun SessionList(
 ) {
     val query = search.trim()
     Column(Modifier.fillMaxSize()) {
-        TextField(
-            search, onSearch, placeholder = { Text("搜索会话") }, singleLine = true,
-            shape = RoundedCornerShape(8.dp),
-            leadingIcon = { LineIcon("search") },
-            colors = TextFieldDefaults.colors(
-                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            ),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("search-sessions"),
-        )
+        SessionSearchField(search, onSearch)
         LazyColumn(Modifier.weight(1f).testTag("session-list")) {
             if (workspaces.isEmpty()) item { Text(if (connected) "暂无工作区，请在电脑端创建。" else "连接电脑后显示工作区。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(12.dp)) }
             workspaces.forEach { workspace ->
@@ -356,7 +354,7 @@ private fun SessionList(
                         val sharedBranch = if (section.name != null && branches.size == 1) branches.single() else null
                         item(key = "group-${workspace.id}-$index") {
                             Row(
-                                Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp, start = 12.dp, end = 12.dp).testTag("session-group-${workspace.id}-$index"),
+                                Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp, start = 12.dp, end = 12.dp).testTag("session-group-${workspace.id}-$index"),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(section.title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
@@ -372,7 +370,7 @@ private fun SessionList(
                                 TextButton(onClick = { onSelect(workspace, pane) }, enabled = connected, shape = RoundedCornerShape(6.dp), contentPadding = PaddingValues(12.dp), modifier = Modifier.weight(1f).testTag("terminal-${pane.id}")) {
                                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         val agent = pane.agentName != null || pane.agentStatus != null
-                                        LineIcon("terminal", MaterialTheme.colorScheme.onSurfaceVariant)
+                                        SessionAvatar(pane)
                                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                             Text(pane.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             if (agent) AgentBadge(pane)
@@ -381,11 +379,7 @@ private fun SessionList(
                                         }
                                     }
                                 }
-                                IconButton(
-                                    onClick = { onClose(workspace, pane) },
-                                    enabled = connected,
-                                    modifier = Modifier.testTag("close-terminal-${pane.id}").semantics { contentDescription = "关闭终端：${pane.title}" },
-                                ) { LineIcon("close", MaterialTheme.colorScheme.onSurfaceVariant) }
+                                SessionActions(pane, connected, onClose = { onClose(workspace, pane) })
                             }
                         }
                     }
@@ -394,6 +388,69 @@ private fun SessionList(
             if (query.isNotEmpty() && workspaces.none { workspace ->
                 workspace.panes.any { pane -> listOfNotNull(workspace.name, pane.title, pane.cwd, pane.group, pane.gitBranch, pane.agentName).any { it.contains(query, ignoreCase = true) } }
             }) item { Text("没有匹配的会话。", modifier = Modifier.padding(vertical = 16.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun SessionSearchField(search: String, onSearch: (String) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(10.dp)
+    BasicTextField(
+        value = search,
+        onValueChange = onSearch,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus(); keyboard?.hide() }),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 4.dp)
+            .heightIn(min = 44.dp).onFocusChanged { focused = it.isFocused }
+            .clip(shape).background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .border(1.dp, if (focused) MaterialTheme.colorScheme.outline else Color.Transparent, shape)
+            .testTag("search-sessions").semantics { contentDescription = "搜索会话" },
+        decorationBox = { innerTextField ->
+            Row(
+                Modifier.padding(start = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LineIcon("search", MaterialTheme.colorScheme.onSurfaceVariant)
+                Box(Modifier.weight(1f).padding(vertical = 10.dp)) {
+                    if (search.isEmpty()) Text("搜索会话", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    innerTextField()
+                }
+                if (search.isNotEmpty()) {
+                    Box(
+                        Modifier.size(44.dp).clip(RoundedCornerShape(22.dp)).clickable(role = Role.Button) { onSearch("") }
+                            .testTag("clear-session-search").semantics { contentDescription = "清空搜索" },
+                        contentAlignment = Alignment.Center,
+                    ) { LineIcon("close", MaterialTheme.colorScheme.onSurfaceVariant) }
+                } else Spacer(Modifier.width(12.dp))
+            }
+        },
+    )
+}
+
+@Composable
+private fun SessionActions(pane: Pane, connected: Boolean, onClose: () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(connected) { if (!connected) expanded = false }
+    Box {
+        IconButton(
+            onClick = { expanded = true }, enabled = connected,
+            modifier = Modifier.testTag("session-actions-${pane.id}").semantics { contentDescription = "会话操作：${pane.title}" },
+        ) { LineIcon("more", MaterialTheme.colorScheme.onSurfaceVariant) }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text("关闭终端", color = MaterialTheme.colorScheme.error) },
+                leadingIcon = { LineIcon("close", MaterialTheme.colorScheme.error) },
+                enabled = connected,
+                onClick = { expanded = false; onClose() },
+                modifier = Modifier.testTag("close-terminal-${pane.id}").semantics { contentDescription = "关闭终端：${pane.title}" },
+            )
         }
     }
 }
@@ -408,6 +465,25 @@ private fun AgentBadge(pane: Pane) {
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("agent-status-${pane.id}"),
         )
+    }
+}
+
+@Composable
+private fun SessionAvatar(pane: Pane) {
+    val look = agentAppearance(pane.agentName)
+    if (look == null) {
+        LineIcon("terminal", MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    val mark = remember(look.kind) { agentMark(look.kind) }
+    Box(
+        Modifier.size(24.dp).background(Color(0xFF000000 or look.field.toLong()), RoundedCornerShape(6.dp))
+            .testTag("agent-icon-${pane.id}").semantics { contentDescription = pane.agentName ?: "Agent" },
+        contentAlignment = Alignment.Center,
+    ) {
+        val ink = Color(0xFF000000 or look.ink.toLong())
+        if (mark != null) Icon(mark, contentDescription = null, tint = ink, modifier = Modifier.size(18.dp))
+        else LineIcon("bot", ink)
     }
 }
 
@@ -445,10 +521,19 @@ private fun LineIcon(name: String, color: Color = LocalContentColor.current) {
             }
             "menu" -> { line(4f, 6f, 20f, 6f); line(4f, 12f, 20f, 12f); line(4f, 18f, 20f, 18f) }
             "close" -> { line(6f, 6f, 18f, 18f); line(18f, 6f, 6f, 18f) }
+            "left" -> { line(14f, 6f, 8f, 12f); line(8f, 12f, 14f, 18f) }
+            "more" -> { for (x in listOf(5f, 12f, 19f)) drawCircle(color, radius = 1.5f * unit, center = Offset(x * unit, 12f * unit)) }
             "plus" -> { line(12f, 5f, 12f, 19f); line(5f, 12f, 19f, 12f) }
             "down" -> { line(7f, 10f, 12f, 15f); line(12f, 15f, 17f, 10f) }
             "search" -> { drawCircle(color, radius = 6f * unit, center = Offset(10f * unit, 10f * unit), style = Stroke(1.8f * unit)); line(15f, 15f, 20f, 20f) }
             "terminal" -> { line(5f, 7f, 10f, 12f); line(10f, 12f, 5f, 17f); line(13f, 17f, 20f, 17f) }
+            "bot" -> {
+                line(12f, 3f, 12f, 6f)
+                drawRoundRect(color, Offset(4f * unit, 6f * unit), androidx.compose.ui.geometry.Size(16f * unit, 14f * unit), androidx.compose.ui.geometry.CornerRadius(3f * unit), style = Stroke(1.8f * unit))
+                drawCircle(color, 1.2f * unit, Offset(8f * unit, 12f * unit))
+                drawCircle(color, 1.2f * unit, Offset(16f * unit, 12f * unit))
+                line(9f, 16f, 15f, 16f)
+            }
         }
     }
 }

@@ -2380,6 +2380,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::TabContextMarkUnread => "未読としてマーク",
         L10nKey::TabContextHibernate => "休止",
         L10nKey::TabContextWake => "復帰",
+        L10nKey::TabTooltipPhoneActive => "スマートフォンで使用中",
         L10nKey::TabTooltipAsleep => "休止中 — 選択すると復帰",
         L10nKey::TabWakeFailed => "タブを復帰できませんでした：どのペインも起動できません",
         // ---- The right panel's GitHub tab ----

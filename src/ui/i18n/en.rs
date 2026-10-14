@@ -2311,6 +2311,7 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::TabContextMarkUnread => "Mark as Unread",
         L10nKey::TabContextHibernate => "Hibernate",
         L10nKey::TabContextWake => "Wake",
+        L10nKey::TabTooltipPhoneActive => "In use on phone",
         L10nKey::TabTooltipAsleep => "Hibernated — select to wake",
         L10nKey::TabWakeFailed => "Could not wake the tab: none of its panes could be started",
         // ---- The right panel's GitHub tab ----

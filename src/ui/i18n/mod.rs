@@ -1389,6 +1389,7 @@ l10n_keys! {
     TabContextHibernate,
     TabContextWake,
     TabTooltipAsleep,
+    TabTooltipPhoneActive,
     TabWakeFailed,
     RemoteStripDisconnected,
     RemoteStripConnecting,
