@@ -178,6 +178,9 @@ pub struct TerminalModes {
     /// `CSI ? 996 n` queries seen and not yet taken — see
     /// [`Self::take_color_scheme_queries`].
     color_scheme_queries: usize,
+    /// `CSI c` (primary device attributes) queries seen and not yet taken —
+    /// see [`Self::take_device_attribute_queries`].
+    device_attribute_queries: usize,
     keyboard: KeyboardStacks,
 }
 
@@ -220,6 +223,12 @@ impl TerminalModes {
     /// last call. The tracker only counts them; answering is the caller's job.
     pub fn take_color_scheme_queries(&mut self) -> usize {
         std::mem::take(&mut self.color_scheme_queries)
+    }
+
+    /// How many `CSI c` / `CSI 0 c` (primary device attributes) queries were
+    /// fed since the last call. Counted only, like the 996 ones.
+    pub fn take_device_attribute_queries(&mut self) -> usize {
+        std::mem::take(&mut self.device_attribute_queries)
     }
 
     /// The bytes that put a freshly reset terminal back into these modes, or
@@ -361,6 +370,12 @@ impl TerminalModes {
                     b'n' => {
                         if marker == b'?' && self.params == b"996" {
                             self.color_scheme_queries += 1;
+                        }
+                        self.state = State::Text;
+                    }
+                    b'c' => {
+                        if marker == 0 && matches!(self.params.as_slice(), b"" | b"0") {
+                            self.device_attribute_queries += 1;
                         }
                         self.state = State::Text;
                     }
@@ -694,6 +709,19 @@ mod tests {
         assert!(modes.is_on(BRACKETED_PASTE));
         modes.feed(b"\x1b[?2004l");
         assert!(!modes.is_on(BRACKETED_PASTE));
+    }
+
+    #[test]
+    fn counts_primary_device_attribute_queries() {
+        let mut modes = TerminalModes::new();
+        modes.feed(b"\x1b]11;?\x07\x1b[");
+        modes.feed(b"c\x1b[0c\x1b[>c\x1b[=c\x1b[?6c");
+        assert_eq!(
+            modes.take_device_attribute_queries(),
+            2,
+            "a split DA1 counts, DA2, DA3 and a DA1 reply do not"
+        );
+        assert_eq!(modes.take_device_attribute_queries(), 0);
     }
 
     #[test]

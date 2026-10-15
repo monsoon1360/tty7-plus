@@ -2640,6 +2640,7 @@ impl DaemonPane {
                             if let Some(screen) = &mut st.screen { screen.feed(raw); }
                             record_output(&mut st, bytes);
                             fan_out_output(&mut st, bytes, frames, &gate);
+                            let da1_owed = detached_device_attribute_queries(&mut st);
                             apply_signals(&mut st, signals);
                             if let Some(remote) = remote {
                                 apply_remote_context(&mut st, remote);
@@ -2661,6 +2662,7 @@ impl DaemonPane {
                             let alive = st.alive;
                             let facts_after = may_change_facts.then(|| observed_facts(&st));
                             drop(st);
+                            answer_device_attributes(&writer, da1_owed);
                             if !shutting_down.load(Ordering::SeqCst)
                                 && let (Some(before), Some(after)) = (facts_before, facts_after)
                                 && facts_changed(&before, &after)
@@ -3647,6 +3649,38 @@ fn record_output(st: &mut PaneState, bytes: &[u8]) {
     st.ring.append(bytes);
     st.modes.feed(bytes);
     wake_screens(st);
+}
+
+/// The primary device attributes a client's emulator answers with.
+const DA1_REPLY: &[u8] = b"\x1b[?6c";
+
+/// A pane with no client attached has nobody to answer its queries, and a
+/// replay drops replies, so one asked then is never answered. Programs that
+/// end a batch of queries with DA1 wait on that answer: Claude Code's OSC 11
+/// theme check hangs on it and then skips every later check, so the theme
+/// flips tty7 reports never reach it. Answering DA1 here lets the batch end;
+/// the colour report a client sends on attach then asks again, and is answered.
+///
+/// Returns how many DA1 queries the daemon owes an answer to. With a client
+/// attached the client answers, so none are owed. Read under the state lock;
+/// the answers are written by [`answer_device_attributes`] after it is
+/// released, because a pty whose program is not reading its input blocks the
+/// write, and nothing else that needs this pane's state should wait on that.
+fn detached_device_attribute_queries(st: &mut PaneState) -> usize {
+    let asked = st.modes.take_device_attribute_queries();
+    if st.subscriber.is_some() { 0 } else { asked }
+}
+
+fn answer_device_attributes(writer: &Mutex<Box<dyn Write + Send>>, owed: usize) {
+    if owed == 0 {
+        return;
+    }
+    if let Ok(mut writer) = writer.lock() {
+        for _ in 0..owed {
+            let _ = writer.write_all(DA1_REPLY);
+        }
+        let _ = writer.flush();
+    }
 }
 
 /// Everything a client needs to rebuild the pane's screen and status, in the
@@ -7112,6 +7146,41 @@ mod tests {
         );
 
         withdraw_observations();
+    }
+
+    /// Claude Code ends its OSC 11 theme query with DA1 and waits for both.
+    /// Started in a pane no window shows (an agent woken at launch), it got
+    /// neither and never checked the theme again.
+    #[test]
+    fn a_detached_pane_answers_device_attributes_and_an_attached_one_leaves_it_to_the_client() {
+        #[derive(Clone, Default)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = Sink::default();
+        let writer: Mutex<Box<dyn Write + Send>> = Mutex::new(Box::new(sink.clone()));
+        let mut st = test_state(true);
+
+        record_output(&mut st, b"\x1b]11;?\x07\x1b[c");
+        answer_device_attributes(&writer, detached_device_attribute_queries(&mut st));
+        assert_eq!(sink.0.lock().unwrap().as_slice(), DA1_REPLY);
+
+        let (tx, _rx) = mpsc::channel();
+        st.subscriber = Some(tx);
+        record_output(&mut st, b"\x1b[c");
+        answer_device_attributes(&writer, detached_device_attribute_queries(&mut st));
+        assert_eq!(
+            sink.0.lock().unwrap().as_slice(),
+            DA1_REPLY,
+            "the client answers"
+        );
     }
 
     #[test]
