@@ -97,15 +97,17 @@ pub fn load_with_shell_files(scope: &Scope, shell_files: Vec<(String, Vec<u8>)>)
     } else {
         let mut out = Vec::new();
         for (name, bytes) in &shell_files {
-            parse_history_file(name, &String::from_utf8_lossy(bytes), &mut out);
+            parse_history_file(name, &decode_history_file(name, bytes), &mut out);
         }
         out
     };
+    // Bytes, not `read_to_string`: one bad byte anywhere must not make the
+    // whole file vanish from the menu.
     if let Some(path) = scope.file()
-        && let Ok(content) = std::fs::read_to_string(&path)
+        && let Ok(bytes) = std::fs::read(&path)
     {
         let start = raw.len();
-        raw.extend(content.lines().map(parse_own_line));
+        raw.extend(String::from_utf8_lossy(&bytes).lines().map(parse_own_line));
         stamp_missing(&mut raw[start..], file_mtime_secs(&path));
     }
     normalize(raw)
@@ -321,6 +323,10 @@ fn load_shell_history() -> Vec<Raw> {
     } else if let Some(home) = std::env::var_os("HOME") {
         add(PathBuf::from(home).join(FISH_HISTORY_UNDER_HOME));
     }
+    read_shell_history_files(files)
+}
+
+fn read_shell_history_files(mut files: Vec<PathBuf>) -> Vec<Raw> {
     files.sort_by_key(|p| {
         std::fs::metadata(p)
             .and_then(|m| m.modified())
@@ -332,7 +338,7 @@ fn load_shell_history() -> Vec<Raw> {
         if let Ok(bytes) = std::fs::read(&path) {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let start = out.len();
-            parse_history_file(&name, &String::from_utf8_lossy(&bytes), &mut out);
+            parse_history_file(&name, &decode_history_file(&name, &bytes), &mut out);
             // bash (and a bare HISTFILE) often have no per-line timestamp.
             // Borrow the file's mtime so those entries can still be ordered
             // against zsh/fish/tty7 records that do carry one — otherwise a
@@ -360,6 +366,61 @@ fn stamp_missing(raw: &mut [Raw], ts: Option<u64>) {
             r.ts = Some(ts);
         }
     }
+}
+
+/// zsh's escape byte. zsh stores every byte in `Meta..=Marker` (0x83..=0xA2),
+/// plus NUL, as `Meta` followed by the byte xor 0x20 — in memory and in
+/// `$HISTFILE` alike. Those are UTF-8 continuation bytes, so most CJK text
+/// comes out escaped and decodes to mojibake unless it is undone first.
+const ZSH_META: u8 = 0x83;
+
+fn decode_history_file(name: &str, bytes: &[u8]) -> String {
+    if is_zsh_history(name, bytes) {
+        String::from_utf8_lossy(&unmetafy(bytes)).into_owned()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
+/// Only zsh metafies. A bash or fish file can hold `0x83` as part of plain
+/// UTF-8 (`ー` is E3 83 BC), and unescaping it there would corrupt it. A
+/// local `$HISTFILE` can be called anything, so a file with a zsh extended
+/// history line (`: <start>:<elapsed>;`) counts as zsh too.
+fn is_zsh_history(name: &str, bytes: &[u8]) -> bool {
+    name.ends_with("zsh_history")
+        || name == ".zhistory"
+        || bytes.split(|&b| b == b'\n').any(is_zsh_extended_line)
+}
+
+fn is_zsh_extended_line(line: &[u8]) -> bool {
+    let Some(rest) = line.strip_prefix(b": ") else {
+        return false;
+    };
+    let Some(semi) = rest.iter().position(|&b| b == b';') else {
+        return false;
+    };
+    let mut fields = rest[..semi].split(|&b| b == b':');
+    let digits = |s: &[u8]| !s.is_empty() && s.iter().all(u8::is_ascii_digit);
+    matches!(
+        (fields.next(), fields.next(), fields.next()),
+        (Some(start), Some(elapsed), None) if digits(start) && digits(elapsed)
+    )
+}
+
+/// zsh's `unmetafy`: a Meta byte is dropped and the byte after it xor'ed back.
+fn unmetafy(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut it = bytes.iter().copied();
+    while let Some(b) = it.next() {
+        if b == ZSH_META
+            && let Some(next) = it.next()
+        {
+            out.push(next ^ 0x20);
+        } else {
+            out.push(b);
+        }
+    }
+    out
 }
 
 /// Which reader a history file gets, by file name. The remote side has only
@@ -1214,5 +1275,118 @@ mod tests {
         assert!(loaded.entries.iter().any(|e| e == &unique));
         assert!(loaded.cwds.get(&unique).is_none_or(|d| d.is_empty()));
         assert!(!loaded.entries.iter().any(|e| e == "/tmp/evil"));
+    }
+
+    /// What zsh writes to disk: NUL and every byte in Meta..=Marker
+    /// (0x83..=0xA2) becomes Meta followed by the byte xor 0x20.
+    fn metafy(s: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &b in s.as_bytes() {
+            if b == 0 || (0x83..=0xA2).contains(&b) {
+                out.push(0x83);
+                out.push(b ^ 0x20);
+            } else {
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    const CJK_CMD: &str = "echo \"读取令牌失败\"";
+
+    #[test]
+    fn the_metafy_helper_really_rewrites_this_command() {
+        // Guard the guard: the tests below are only meaningful if the command
+        // carries bytes zsh escapes.
+        assert_ne!(metafy(CJK_CMD), CJK_CMD.as_bytes());
+    }
+
+    #[test]
+    fn a_remote_zsh_history_is_unmetafied_before_decoding() {
+        crate::core::config::pin_test_config_dir();
+
+        let scope = Scope::remote("me@cjkbox");
+        let mut zsh = b": 1700000000:0;".to_vec();
+        zsh.extend(metafy(CJK_CMD));
+        zsh.push(b'\n');
+        let loaded = load_with_shell_files(&scope, vec![(".zsh_history".to_string(), zsh)]);
+
+        assert!(
+            loaded.entries.iter().any(|e| e == CJK_CMD),
+            "zsh's metafied bytes must decode to the command that was typed: {:?}",
+            loaded.entries
+        );
+        assert!(
+            !loaded.entries.iter().any(|e| e.contains('\u{FFFD}')),
+            "no replacement characters: {:?}",
+            loaded.entries
+        );
+    }
+
+    #[test]
+    fn a_local_zsh_history_is_unmetafied_whatever_histfile_is_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let named = dir.path().join(".zsh_history");
+        let mut zsh = b": 1700000000:0;".to_vec();
+        zsh.extend(metafy(CJK_CMD));
+        zsh.push(b'\n');
+        std::fs::write(&named, &zsh).unwrap();
+        // `HISTFILE` can be anything; extended history still gives it away.
+        let custom = dir.path().join("my-histfile");
+        let mut other = b": 1700000001:0;".to_vec();
+        other.extend(metafy("ls ~/文档"));
+        other.push(b'\n');
+        std::fs::write(&custom, &other).unwrap();
+
+        let cmds: Vec<String> = read_shell_history_files(vec![named, custom])
+            .into_iter()
+            .map(|r| r.cmd)
+            .collect();
+        assert!(cmds.iter().any(|c| c == CJK_CMD), "{cmds:?}");
+        assert!(cmds.iter().any(|c| c == "ls ~/文档"), "{cmds:?}");
+    }
+
+    #[test]
+    fn bash_history_is_not_unmetafied() {
+        // `ー` is E3 83 BC: valid UTF-8 that happens to contain zsh's Meta
+        // byte. Only zsh escapes it, so only zsh files get unescaped.
+        crate::core::config::pin_test_config_dir();
+
+        let scope = Scope::remote("me@bashbox");
+        let bash = "echo ー\n".as_bytes().to_vec();
+        let loaded = load_with_shell_files(&scope, vec![(".bash_history".to_string(), bash)]);
+        assert!(
+            loaded.entries.iter().any(|e| e == "echo ー"),
+            "{:?}",
+            loaded.entries
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".bash_history");
+        std::fs::write(&path, "echo ー\n").unwrap();
+        let cmds: Vec<String> = read_shell_history_files(vec![path])
+            .into_iter()
+            .map(|r| r.cmd)
+            .collect();
+        assert_eq!(cmds, vec!["echo ー".to_string()]);
+    }
+
+    #[test]
+    fn one_bad_byte_does_not_hide_the_rest_of_tty7_s_own_history() {
+        crate::core::config::pin_test_config_dir();
+
+        let scope = Scope::remote("me@badbyte");
+        let path = scope.file().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = b"1700000000\t0\t\techo \xff\n".to_vec();
+        bytes.extend_from_slice(b"1700000001\t0\t\tmake test\n");
+        std::fs::write(&path, bytes).unwrap();
+
+        let loaded = load(&scope);
+        assert!(
+            loaded.entries.iter().any(|e| e == "make test"),
+            "{:?}",
+            loaded.entries
+        );
     }
 }
