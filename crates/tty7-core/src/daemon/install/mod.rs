@@ -1330,19 +1330,34 @@ impl<'a> Installer<'a> {
 /// pattern is anchored at a `/` so it cannot match a name that merely ends in
 /// one of ours.
 ///
+/// Only the daemon counts, which is why both arms look past the executable at
+/// the command line. The same binary also runs as `--stdio --pane` bridges —
+/// one per SSH pane link, for as long as the link is up — and as `--stdio`
+/// control sessions. Taking the first `tty7-server-*` the loop met meant that
+/// whenever a bridge sorted ahead of the daemon (`/proc/[0-9]*` expands
+/// lexically, so a 7-digit pid or a wrapped one comes first) the restart sent
+/// its SIGTERM to the bridge and then waited out its timeout on a daemon
+/// nobody had signalled (#1181). The daemon is always launched as
+/// `<binary> --daemon` ([`launch_command`]), by every dialect so far; on Linux
+/// that is an exact argument in `cmdline`, and through `ps` the `args` of the
+/// process have to be its `comm` followed by `--daemon`.
+///
 /// The `/proc` glob lives *inside* the `[ -d /proc ]` arm on purpose. The far
 /// end runs these through the user's login shell, and zsh — the default on
 /// macOS — aborts the whole command line when a glob matches nothing, so with
 /// the loop at top level the trailing `true` never ran and every one of these
 /// was a silent no-op on every Mac. That is what left `restart_daemon` waiting
 /// out its ten seconds for a daemon nobody had asked to stop.
-const RUNNING_EXE_COMMAND: &str = r#"if [ -d /proc ]; then for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; case "$e" in */tty7-server-*) printf '%s' "${e% (deleted)}"; break;; esac; done; else ps -xwwo pid=,comm= 2>/dev/null | while read -r pid e; do case "$e" in */tty7-server-*) printf '%s' "$e"; break;; esac; done; fi; true"#;
+const RUNNING_EXE_COMMAND: &str = r#"if [ -d /proc ]; then for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; case "$e" in */tty7-server-*) tr '\000' '\n' 2>/dev/null <"$p/cmdline" | grep -qx -e --daemon || continue; printf '%s' "${e% (deleted)}"; break;; esac; done; else ps -xwwo pid=,comm= 2>/dev/null | while read -r pid e; do case "$e" in */tty7-server-*) case "$(ps -p "$pid" -wwo args= 2>/dev/null)" in "$e --daemon"|"$e --daemon "*) printf '%s' "$e"; break;; esac;; esac; done; fi; true"#;
 
 /// Starts the line [`Installer::quick_prove`]'s script prints once the server
 /// answered, so nothing a login script prints can pass for it.
 const QUICK_PROVE_MARK: &str = "tty7-quick-prove ";
 
-const TERMINATE_RUNNING_COMMAND: &str = r#"if [ -d /proc ]; then for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; case "$e" in */tty7-server-*) kill -TERM "${p#/proc/}" 2>/dev/null; break;; esac; done; else ps -xwwo pid=,comm= 2>/dev/null | while read -r pid e; do case "$e" in */tty7-server-*) kill -TERM "$pid" 2>/dev/null; break;; esac; done; fi; true"#;
+/// [`RUNNING_EXE_COMMAND`]'s twin, signalling instead of printing — and
+/// signalling *every* daemon it finds rather than stopping at the first, so
+/// that an older dialect's daemon left running beside ours is stopped too.
+const TERMINATE_RUNNING_COMMAND: &str = r#"if [ -d /proc ]; then for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; case "$e" in */tty7-server-*) tr '\000' '\n' 2>/dev/null <"$p/cmdline" | grep -qx -e --daemon && kill -TERM "${p#/proc/}" 2>/dev/null;; esac; done; else ps -xwwo pid=,comm= 2>/dev/null | while read -r pid e; do case "$e" in */tty7-server-*) case "$(ps -p "$pid" -wwo args= 2>/dev/null)" in "$e --daemon"|"$e --daemon "*) kill -TERM "$pid" 2>/dev/null;; esac;; esac; done; fi; true"#;
 
 /// The two files a launch writes beside the server binary. Named here because
 /// `is_first_install` reads the same directory and must not mistake one of

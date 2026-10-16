@@ -1449,6 +1449,10 @@ fn finding_the_running_server_survives_a_machine_without_proc() {
             fallback.contains("ps -xwwo pid=,comm="),
             "unwrapped, unabbreviated, and this user's processes only: {cmd}"
         );
+        assert!(
+            guarded.contains("--daemon") && fallback.contains("--daemon"),
+            "both arms pick out the daemon, not any process of the binary: {cmd}"
+        );
     }
 }
 
@@ -1537,6 +1541,187 @@ fn the_ps_arm_is_a_ps_this_machine_accepts() {
         }),
         "a pid and a command per line is the whole shape the loop reads: {listing}"
     );
+
+    // And the second question the loop asks of each candidate: its whole
+    // command line, to tell the daemon from a bridge of the same binary.
+    let out = std::process::Command::new("ps")
+        .args(["-p", &std::process::id().to_string(), "-wwo", "args="])
+        .output()
+        .expect("a machine with no /proc has a ps");
+    assert!(
+        out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
+        "ps rejected the per-process query: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// One process table, as both arms of the probes see it: an SSH pane link's
+/// `--stdio --pane` bridge of one build, the daemon of another, an older
+/// dialect's daemon left behind by an upgrade, and things that are not ours.
+///
+/// The bridge's pid sorts first on purpose. `/proc/[0-9]*` expands in
+/// lexical order, so a seven-digit pid — or any pid after a wrap — comes
+/// before a six-digit one; that is how the bridge used to win the race to
+/// the first match (#1181).
+#[cfg(unix)]
+const FAKE_BRIDGE: (&str, &str, &[&str]) = (
+    "1234567",
+    "/home/me/my files/tty7-server-c4p5",
+    &["--stdio", "--pane"],
+);
+#[cfg(unix)]
+const FAKE_DAEMON: (&str, &str, &[&str]) = (
+    "345678",
+    "/home/me/my files/tty7-server-c3p4",
+    &["--daemon"],
+);
+#[cfg(unix)]
+const FAKE_OLD_DAEMON: (&str, &str, &[&str]) =
+    ("99", "/home/me/my files/tty7-server-c2p3", &["--daemon"]);
+
+/// Runs `cmd` in every shell this machine has, against a stand-in process
+/// table, and returns, per shell, what it printed and what it asked `kill` to
+/// do.
+///
+/// Nothing here can reach a real process: `kill` and `ps` are shell functions
+/// that only write down how they were called, and every `/proc` in the script
+/// is pointed at a directory of our own making — the real one when
+/// `with_proc` is set, a path that does not exist (so the `ps` arm runs)
+/// otherwise.
+#[cfg(unix)]
+fn run_against_fake_processes(cmd: &str, with_proc: bool) -> Vec<(String, String, Vec<String>)> {
+    let table = [FAKE_BRIDGE, FAKE_DAEMON, FAKE_OLD_DAEMON];
+    let dir = tempfile::tempdir().unwrap();
+    let proc_dir = dir.path().join("fake-proc");
+    std::fs::create_dir(&proc_dir).unwrap();
+    for (pid, exe, args) in table {
+        let p = proc_dir.join(pid);
+        std::fs::create_dir(&p).unwrap();
+        std::os::unix::fs::symlink(exe, p.join("exe")).unwrap();
+        let mut cmdline = Vec::new();
+        for arg in std::iter::once(&exe).chain(args) {
+            cmdline.extend_from_slice(arg.as_bytes());
+            cmdline.push(0);
+        }
+        std::fs::write(p.join("cmdline"), cmdline).unwrap();
+    }
+    // Not ours: a shell whose command line happens to say `--daemon`, and a
+    // process whose executable cannot be read at all.
+    let sh = proc_dir.join("1");
+    std::fs::create_dir(&sh).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", sh.join("exe")).unwrap();
+    std::fs::write(sh.join("cmdline"), b"sh\0-c\0tty7-server-c3p4 --daemon\0").unwrap();
+    std::fs::create_dir(proc_dir.join("2")).unwrap();
+
+    let proc_root = if with_proc {
+        proc_dir.clone()
+    } else {
+        dir.path().join("no-proc-here")
+    };
+    let proc_root = proc_root.to_str().unwrap();
+    assert!(!proc_root.contains("/proc"), "{proc_root}");
+    let rewritten = cmd.replace("/proc", proc_root);
+    assert!(
+        rewritten.matches(proc_root).count() == cmd.matches("/proc").count(),
+        "every /proc in the script has to be the stand-in: {rewritten}"
+    );
+
+    // `ps` lists pid and `comm`, then answers `-p <pid> -wwo args=` per
+    // process — and nothing else, so a change to either call shows up here.
+    let listing = dir.path().join("ps-list");
+    let args_dir = dir.path().join("ps-args");
+    std::fs::create_dir(&args_dir).unwrap();
+    let mut rows = String::new();
+    for (pid, exe, args) in table {
+        rows.push_str(&format!("{pid} {exe}\n"));
+        std::fs::write(args_dir.join(pid), format!("{exe} {}\n", args.join(" "))).unwrap();
+    }
+    rows.push_str("1 /bin/sh\n");
+    std::fs::write(args_dir.join("1"), "/bin/sh -c tty7-server-c3p4 --daemon\n").unwrap();
+    std::fs::write(&listing, rows).unwrap();
+
+    let kill_log = dir.path().join("kill.log");
+    let shadows = format!(
+        r#"kill() {{ printf '%s\n' "$*" >> {log}; }}; ps() {{ if [ "$*" = "-xwwo pid=,comm=" ]; then cat {listing}; elif [ "$1" = -p ] && [ "$3" = "-wwo" ] && [ "$4" = "args=" ]; then cat {args}/"$2"; fi; }}; "#,
+        log = shell_quote(kill_log.to_str().unwrap()),
+        listing = shell_quote(listing.to_str().unwrap()),
+        args = shell_quote(args_dir.to_str().unwrap()),
+    );
+    let script = format!("{shadows}{rewritten}");
+
+    let shells: Vec<&str> = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"]
+        .into_iter()
+        .filter(|sh| std::path::Path::new(sh).exists())
+        .collect();
+    shells
+        .into_iter()
+        .map(|shell| {
+            let _ = std::fs::remove_file(&kill_log);
+            let out = std::process::Command::new(shell)
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .unwrap_or_else(|e| panic!("{shell} would not run: {e}"));
+            assert!(
+                out.status.success(),
+                "{shell} failed\nstderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let killed = std::fs::read_to_string(&kill_log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            (
+                shell.to_string(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                killed,
+            )
+        })
+        .collect()
+}
+
+/// Restarting a remote daemon has to stop the daemon — every daemon, an older
+/// dialect's included — and nothing else. Every SSH pane link keeps a bridge
+/// of the same binary alive over there; signalling that instead left the
+/// daemon serving and the restart timing out after ten seconds (#1181).
+#[cfg(unix)]
+#[test]
+fn stopping_the_remote_server_signals_every_daemon_and_no_bridge() {
+    for with_proc in [true, false] {
+        for (shell, _, mut killed) in
+            run_against_fake_processes(TERMINATE_RUNNING_COMMAND, with_proc)
+        {
+            killed.sort();
+            assert_eq!(
+                killed,
+                vec![
+                    format!("-TERM {}", FAKE_DAEMON.0),
+                    format!("-TERM {}", FAKE_OLD_DAEMON.0),
+                ],
+                "{shell}, {}: the daemons and only the daemons",
+                if with_proc { "/proc" } else { "ps" },
+            );
+        }
+    }
+}
+
+/// The running build is the daemon's, not whichever pane bridge happens to be
+/// listed first — a bridge can be another client's build entirely.
+#[cfg(unix)]
+#[test]
+fn the_running_server_is_the_daemon_not_a_bridge() {
+    for with_proc in [true, false] {
+        for (shell, stdout, killed) in run_against_fake_processes(RUNNING_EXE_COMMAND, with_proc) {
+            assert_eq!(
+                stdout,
+                FAKE_DAEMON.1,
+                "{shell}, {}",
+                if with_proc { "/proc" } else { "ps" },
+            );
+            assert!(killed.is_empty(), "{shell}: the probe signals nothing");
+        }
+    }
 }
 
 /// A stop that never reached the far end has to say so. It used to be
