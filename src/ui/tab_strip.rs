@@ -1,7 +1,7 @@
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Axis, Bounds, Context, FontWeight, MouseButton,
-    Pixels, SharedString, Window, canvas, deferred, div, ease_out_quint, linear_color_stop,
-    linear_gradient, prelude::*, px,
+    Animation, AnimationExt as _, AnyElement, App, Axis, Bounds, Context, Edges, FontWeight,
+    MouseButton, Pixels, SharedString, Window, canvas, deferred, div, ease_out_quint,
+    linear_color_stop, linear_gradient, prelude::*, px,
 };
 use gpui_component::button::{Button, ButtonCustomVariant, ButtonVariants as _};
 use gpui_component::input::Input;
@@ -632,6 +632,21 @@ pub(crate) fn hit_target(button: Button) -> Button {
 
 /// The narrowest a chip gets: its `min_w`, which flex-shrink cannot go under.
 const CHIP_MIN_W: f32 = 100.;
+
+/// How wide the tab strip is drawn: the content width less what the row
+/// reserves beside it (the lead, plus the window buttons or a docked column),
+/// never below `floor`.
+///
+/// Under Linux client-side decorations `viewport_w` measures the whole surface,
+/// shadow included, while the title bar row sits inside the frame padding —
+/// so both paddings come off before anything else does. Sizing the strip to
+/// the raw viewport overran the frame by exactly that much and clipped the
+/// close button (#1169). `window_paddings` answers `Edges::all(0)` under
+/// server-side decorations and on a maximized or tiled CSD window, so
+/// everywhere else this is the width the strip always had.
+fn strip_width(viewport_w: Pixels, pad: Edges<Pixels>, reserved: f32, floor: f32) -> Pixels {
+    (viewport_w - pad.left - pad.right - px(reserved)).max(px(floor))
+}
 
 /// The run of chips to draw when they cannot all fit.
 ///
@@ -2358,13 +2373,21 @@ impl Tty7App {
         // under it showed through the file name while staying clickable.
         let document_w = self.document_dock_px(window, cx).unwrap_or(0.);
         let controls_w = crate::ui::app::window_controls_w(window.is_fullscreen());
+        let pad = gpui_component::window_paddings(window);
         let strip_w = if cfg!(target_os = "macos") {
-            (window.viewport_size().width
-                - px(crate::ui::app::TITLE_BAR_LEAD + panel_w + document_w))
-            .max(px(160.))
+            strip_width(
+                window.viewport_size().width,
+                pad,
+                crate::ui::app::TITLE_BAR_LEAD + panel_w + document_w,
+                160.,
+            )
         } else {
-            (window.viewport_size().width - px(crate::ui::app::TITLE_BAR_LEAD + controls_w))
-                .max(px(140.))
+            strip_width(
+                window.viewport_size().width,
+                pad,
+                crate::ui::app::TITLE_BAR_LEAD + controls_w,
+                140.,
+            )
         };
         let chrome_band_w = (!cfg!(target_os = "macos") && self.right_panel_open(cx))
             .then(|| (self.right_panel_px(window, cx) - controls_w - 1.).max(0.));
@@ -3172,6 +3195,25 @@ mod tests {
     use gpui::TestAppContext;
     use std::path::Path;
     use unicode_segmentation::UnicodeSegmentation;
+
+    /// #1169: under Linux client-side decorations the viewport measures the
+    /// whole surface, shadow included, while the title bar row sits inside the
+    /// frame padding. A strip sized off the raw viewport overran the frame by
+    /// both paddings and pushed the close button out past the right edge.
+    #[test]
+    fn the_strip_and_window_buttons_fit_inside_the_csd_frame() {
+        let (lead, controls) = (12., 102.);
+        let pad = Edges::all(px(12.));
+        let strip = strip_width(px(1200.), pad, lead + controls, 140.);
+        assert!(
+            px(lead) + strip + px(controls) <= px(1200. - 12. - 12.),
+            "strip {strip:?} leaves the window buttons outside the frame"
+        );
+        // No frame padding (server-side decorations, macOS, Windows, or a
+        // maximized/tiled CSD window): the strip keeps the width it always had.
+        let bare = strip_width(px(1200.), Edges::all(px(0.)), lead + controls, 140.);
+        assert_eq!(bare, px(1200. - lead - controls));
+    }
 
     /// Where a band lands in the terminal column, for a strip that starts
     /// `lead` in and ends `strip_end` from the column's left edge.
