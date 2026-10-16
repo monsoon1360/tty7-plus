@@ -2143,6 +2143,7 @@ impl TerminalElement {
                     }
                 }
                 view.update(cx, |v, cx| {
+                    v.drop_mouse_grab();
                     if inside {
                         if !mods.shift {
                             v.mouse_motion(col, row, &mods);

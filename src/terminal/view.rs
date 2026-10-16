@@ -378,6 +378,11 @@ pub struct TerminalView {
     relink_inflight: bool,
     pub marked_text: String,
     last_mouse_cell: Option<(usize, usize)>,
+    /// The button whose press this pane reported to the application, until
+    /// its release. The drag and release handlers listen on the whole window,
+    /// so this is what keeps a drag over the title bar, the sidebar or the
+    /// pane next door from reaching a program that never saw it begin (#1182).
+    mouse_grab: Option<MouseButton>,
     /// Where the grid sat in the window on the last frame, so an event that
     /// arrives with nothing but a window position — the wheel — can be told
     /// which cell it is over.
@@ -1991,6 +1996,7 @@ impl TerminalView {
             relink_inflight: false,
             marked_text: String::new(),
             last_mouse_cell: None,
+            mouse_grab: None,
             cell_geom: None,
             ime_anchor: None,
             report_mouse,
@@ -3591,10 +3597,17 @@ impl TerminalView {
             _ => return,
         };
         self.last_mouse_cell = Some((col, row));
+        self.mouse_grab = Some(button);
         self.write_mouse(base, mods, col, row, true);
     }
 
+    /// Only the release of a press this pane reported: a button let go
+    /// anywhere else in the window is not this program's to hear.
     pub fn mouse_release(&mut self, button: MouseButton, col: usize, row: usize, mods: &Modifiers) {
+        if self.mouse_grab != Some(button) {
+            return;
+        }
+        self.mouse_grab = None;
         let base = match button {
             MouseButton::Left => 0,
             MouseButton::Middle => 1,
@@ -3604,8 +3617,10 @@ impl TerminalView {
         self.write_mouse(base, mods, col, row, false);
     }
 
+    /// Only a drag that began with a press this pane reported. Once it has,
+    /// the drag follows the pointer out of the grid, pinned to its edge.
     pub fn mouse_drag(&mut self, button: MouseButton, col: usize, row: usize, mods: &Modifiers) {
-        if self.last_mouse_cell == Some((col, row)) {
+        if self.mouse_grab != Some(button) || self.last_mouse_cell == Some((col, row)) {
             return;
         }
         let wants = self.report_mouse
@@ -3626,6 +3641,12 @@ impl TerminalView {
             _ => return,
         };
         self.write_mouse(base, mods, col, row, true);
+    }
+
+    /// No button is down, so no press is still waiting for its release —
+    /// even one whose release went to another window and never came back.
+    pub(super) fn drop_mouse_grab(&mut self) {
+        self.mouse_grab = None;
     }
 
     pub fn mouse_motion(&mut self, col: usize, row: usize, mods: &Modifiers) {
@@ -18649,5 +18670,188 @@ mod prompt_handover_tests {
                 );
             })
             .unwrap();
+    }
+
+    /// #1182: dragging anywhere in the window — the title bar, the sidebar,
+    /// the pane next door — reached every pane whose program had asked for
+    /// the mouse. The drag handler listens on the whole window and pinned the
+    /// pointer to the nearest cell, so tmux (`mouse on`) saw a drag along its
+    /// top row it never saw a press for, dropped into copy-mode and started
+    /// selecting. A click anywhere likewise sent a release to every such pane.
+    ///
+    /// Only a press the pane itself reported starts a drag it reports; that
+    /// drag follows the pointer out of the pane (clamped, as xterm does) and
+    /// ends with the release, and nothing reaches the pane beside it.
+    #[gpui::test]
+    fn only_the_pane_a_press_landed_in_hears_the_drag(cx: &mut TestAppContext) {
+        use gpui::{MouseMoveEvent, MouseUpEvent, PlatformInput};
+
+        struct Split {
+            a: gpui::Entity<TerminalView>,
+            b: gpui::Entity<TerminalView>,
+        }
+        impl Render for Split {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_row()
+                    // Stands in for the sidebar and anything else that is not
+                    // a pane: no hitbox of either terminal covers it.
+                    .child(div().w(px(200.)).h_full())
+                    .child(div().flex_1().h_full().child(self.a.clone()))
+                    .child(div().flex_1().h_full().child(self.b.clone()))
+            }
+        }
+
+        crate::core::config::pin_test_config_dir();
+        cx.executor().allow_parking();
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(Config::default());
+        });
+        let (a_client, mut a_pty) = test_stream_pair();
+        let (b_client, mut b_pty) = test_stream_pair();
+        let window = cx.add_window(|window, cx| {
+            let pane = |link, window: &mut Window, cx: &mut Context<Split>| {
+                let terminal = RemoteTerminal::from_stream(link, TermSize::new(80, 24))
+                    .expect("link-backed terminal");
+                cx.new(|cx| TerminalView::with_terminal(terminal, 1, window, cx))
+            };
+            let a = pane(a_client, window, cx);
+            let b = pane(b_client, window, cx);
+            Split { a, b }
+        });
+        let (a, b) = window
+            .update(cx, |split, _, _| (split.a.clone(), split.b.clone()))
+            .unwrap();
+
+        // Both panes run tmux with `mouse on`.
+        output(&mut a_pty, b"\x1b[?1002h\x1b[?1006h");
+        output(&mut b_pty, b"\x1b[?1002h\x1b[?1006h");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        for _ in 0..300 {
+            vcx.update(|window, _| window.refresh());
+            vcx.run_until_parked();
+            let ready = vcx.update(|_, cx| {
+                [&a, &b].iter().all(|v| {
+                    let v = v.read(cx);
+                    v.mouse_mode() && v.cell_geom.is_some()
+                })
+            });
+            if ready {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let geom = |v: &gpui::Entity<TerminalView>, vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|_, cx| v.read(cx).cell_geom.expect("the pane was painted"))
+        };
+        let (ga, gb) = (geom(&a, &mut vcx), geom(&b, &mut vcx));
+        assert!(
+            ga.origin.x > px(200.) && gb.origin.x > ga.origin.x,
+            "sidebar, then A, then B: {:?} {:?}",
+            ga.origin,
+            gb.origin
+        );
+        // Cell (col, row) of a pane, as a window position in its middle.
+        let at = |g: super::super::element::CellGeom, col: f32, row: f32| {
+            gpui::point(
+                g.origin.x + g.cell_width * (col + 0.5),
+                g.origin.y + g.line_height * (row + 0.5),
+            )
+        };
+
+        let hover = |vcx: &mut gpui::VisualTestContext, position| {
+            vcx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: None,
+                        modifiers: Modifiers::none(),
+                    }),
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+        };
+        let down = |vcx: &mut gpui::VisualTestContext, position| {
+            vcx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::none(),
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+        };
+        let drag = |vcx: &mut gpui::VisualTestContext, position| {
+            vcx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Modifiers::none(),
+                    }),
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+        };
+        let up = |vcx: &mut gpui::VisualTestContext, position| {
+            vcx.update(|window, cx| {
+                window.dispatch_event(
+                    PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: Modifiers::none(),
+                        click_count: 1,
+                    }),
+                    cx,
+                );
+            });
+            vcx.run_until_parked();
+        };
+        let text = |pty: &mut Stream| String::from_utf8(drain(pty)).unwrap();
+        // Whatever the panes said while settling is not what this is about.
+        let _ = (text(&mut a_pty), text(&mut b_pty));
+
+        // 1. A drag across the sidebar, the way one would drag a window by
+        //    its title bar: neither pane saw the press, so neither hears it.
+        let side = |y: f32| gpui::point(px(50.), px(y));
+        hover(&mut vcx, side(100.));
+        down(&mut vcx, side(100.));
+        drag(&mut vcx, side(140.));
+        drag(&mut vcx, side(180.));
+        up(&mut vcx, side(180.));
+        assert_eq!(
+            (text(&mut a_pty), text(&mut b_pty)),
+            (String::new(), String::new()),
+            "a drag outside every pane is no pane's business"
+        );
+
+        // 2. A drag that starts in A and wanders into B: A hears all of it,
+        //    pinned to its own edge once the pointer has left it, and B none.
+        hover(&mut vcx, at(ga, 2., 3.));
+        down(&mut vcx, at(ga, 2., 3.));
+        drag(&mut vcx, at(ga, 4., 3.));
+        drag(&mut vcx, at(gb, 1., 5.));
+        up(&mut vcx, at(gb, 1., 5.));
+        let last = ga.cols; // 1-based: the column A's grid ends on.
+        assert_eq!(
+            text(&mut a_pty),
+            format!("\x1b[<0;3;4M\x1b[<32;5;4M\x1b[<32;{last};6M\x1b[<0;{last};6m"),
+            "the pane the press landed in keeps the drag, clamped to its edge"
+        );
+        assert_eq!(
+            text(&mut b_pty),
+            "",
+            "the pane beside it never saw the press, so it hears nothing"
+        );
     }
 }
