@@ -219,7 +219,15 @@ windows = { version = "0.58", features = [
     "Win32_System_Variant",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
+    # INotificationActivationCallback, the COM class a click on a toast in
+    # notification history activates (`core::toast_activator`); `implement`
+    # is what lets us provide it and its class factory.
+    "Win32_UI_Notifications",
+    "implement",
 ] }
+# `#[implement]` expands to paths under `::windows_core`, so the crate has to
+# be a direct dependency. Same version `windows` 0.58 already pulls in.
+windows-core = "0.58"
 
 # Embeds `assets/favicon.ico` into the `.exe` so Windows shows the tty7 logo in
 # the taskbar / window / Explorer (macOS gets its icon from the `.app` bundle via

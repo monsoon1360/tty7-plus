@@ -42,13 +42,37 @@ pub(crate) fn icon_is_up() -> bool {
     ICON_UP.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// A sender for the current tray dispatch loop, if one is running.
-// Only the platform notification callbacks call this. The Windows one is
-// compiled out of test builds so unit tests never raise a real toast; the macOS
-// one is not, but no test sends a notification there either.
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) fn sender() -> Option<smol::channel::Sender<TrayAction>> {
-    SENDER.lock().ok()?.clone()
+/// Actions that arrived before the dispatch loop existed, replayed by `init`.
+///
+/// A toast click can reach a process before it has a window: Windows launches
+/// tty7 over COM to deliver a click on a toast in notification history, and
+/// calls in as soon as the class object is registered — well before the first
+/// window, and with it this loop, is up. Bounded so a process whose loop never
+/// starts cannot grow it without limit; the oldest click is the one to lose.
+static PENDING: Mutex<std::collections::VecDeque<TrayAction>> =
+    Mutex::new(std::collections::VecDeque::new());
+const MAX_PENDING: usize = 8;
+
+/// Hand `action` to the tray dispatch loop, or hold it until the loop starts.
+// Only the platform notification callbacks call this, and Linux has none.
+#[cfg_attr(
+    any(test, not(any(target_os = "macos", target_os = "windows"))),
+    allow(dead_code)
+)]
+pub(crate) fn send_or_queue(action: TrayAction) {
+    // Checked under the SENDER lock, which `init` also holds while it drains
+    // the queue, so an action can never land in the queue after the drain.
+    let Ok(sender) = SENDER.lock() else { return };
+    if let Some(tx) = sender.as_ref() {
+        let _ = tx.try_send(action);
+        return;
+    }
+    if let Ok(mut pending) = PENDING.lock() {
+        if pending.len() == MAX_PENDING {
+            pending.pop_front();
+        }
+        pending.push_back(action);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -407,6 +431,11 @@ pub(crate) fn init(cx: &mut App) {
 
     let (tx, rx) = smol::channel::unbounded::<TrayAction>();
     if let Ok(mut slot) = SENDER.lock() {
+        if let Ok(mut pending) = PENDING.lock() {
+            for action in pending.drain(..) {
+                let _ = tx.try_send(action);
+            }
+        }
         *slot = Some(tx.clone());
     }
 

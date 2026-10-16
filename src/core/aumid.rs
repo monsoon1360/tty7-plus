@@ -16,6 +16,14 @@
 //! anything at all from a `cargo` build directory (which would repoint the
 //! user's installed shortcut at `target\debug`).
 //!
+//! The same shortcut also names tty7's toast activator
+//! (`System.AppUserModel.ToastActivatorCLSID`), and `init()` registers that
+//! class as a per-user COM local server. That pair is what makes a click on a
+//! toast sitting in notification history reach us: the shell activates the
+//! class over COM — launching tty7 when it is not running — instead of firing
+//! the `Activated` event of a `ToastNotification` object that is long gone.
+//! See `core::toast_activator`.
+//!
 //! Everything is best-effort. `toast_app_id()` yields the AUMID only once a
 //! shortcut carrying it is in place *and* the shell has had time to index it;
 //! otherwise callers keep the PowerShell identity, which looks wrong but still
@@ -33,6 +41,33 @@ use std::time::{Duration, Instant};
 /// mismatch silently splits the identity in two (a unit test checks this).
 pub(crate) const AUMID: &str = "com.github.tty7";
 
+/// The toast activator class (`core::toast_activator`). Keep in sync with the
+/// `AppUserModelToastActivatorCLSID` on the installer shortcuts and the key
+/// its uninstaller removes — a unit test checks both. Never change it: older
+/// shortcuts and registrations in the field name this exact class.
+pub(crate) const TOAST_ACTIVATOR_CLSID: windows::core::GUID =
+    windows::core::GUID::from_u128(0x4E1F6381_E90B_4BED_9156_A9013F718FE6);
+
+/// The argument the COM registration launches us with. COM appends
+/// `-Embedding` after it; neither changes how the launch is handled — it is a
+/// pathless launch whose window the activation then brings forward — but they
+/// make the process's origin legible in a process list or a crash report.
+const TOAST_ACTIVATED_ARG: &str = "--toast-activated";
+
+/// The CLSID as the registry and the installer spell it, without braces:
+/// `4E1F6381-E90B-4BED-9156-A9013F718FE6`.
+fn clsid_text(clsid: &windows::core::GUID) -> String {
+    let hex = format!("{:032X}", clsid.to_u128());
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
 /// How long we keep using the PowerShell identity after writing the shortcut
 /// ourselves. The shell picks a new `.lnk` up asynchronously and silently
 /// discards toasts for an AUMID it has not indexed yet; the measured lag on
@@ -42,6 +77,9 @@ const INDEX_GRACE: Duration = Duration::from_secs(30);
 
 /// One-time GUI-startup hook; see the module docs. Cheap after the first call.
 pub(crate) fn init() {
+    // First, so a launch that COM made to deliver a toast click has its class
+    // object up as early as possible; COM is waiting on it.
+    crate::core::toast_activator::start();
     let _ = toast_app_id();
 }
 
@@ -74,13 +112,17 @@ fn setup() -> Branding {
         // directories the shortcut half below refuses to touch.
         let _ = SetCurrentProcessExplicitAppUserModelID(&windows::core::HSTRING::from(AUMID));
     }
+    register_local_server();
     match decide() {
         Ok(Decision::Branded) => Branding::Ready,
         Ok(Decision::Skip(why)) => {
             log::debug!("keeping the PowerShell toast identity: {why}");
             Branding::Unavailable
         }
-        Ok(Decision::Write(lnk)) => match write_shortcut(&lnk) {
+        Ok(Decision::Write { lnk, indexed }) => match write_shortcut(&lnk) {
+            // Refreshing a shortcut that already carried the AUMID (to add the
+            // toast activator) leaves the identity the shell indexed intact.
+            Ok(()) if indexed => Branding::Ready,
             Ok(()) => Branding::Pending(Instant::now()),
             Err(e) => {
                 log::warn!("toast branding disabled, keeping the PowerShell identity: {e}");
@@ -97,8 +139,9 @@ fn setup() -> Branding {
 enum Decision {
     /// A shortcut already carries our AUMID; write nothing.
     Branded,
-    /// Create or refresh this per-user shortcut, in place.
-    Write(PathBuf),
+    /// Create or refresh this per-user shortcut, in place. `indexed` when it
+    /// already carries our AUMID, so the shell knows the identity already.
+    Write { lnk: PathBuf, indexed: bool },
     /// Nothing we may safely write. The string is for the log.
     Skip(&'static str),
 }
@@ -135,11 +178,17 @@ fn decide() -> Result<Decision, String> {
     let stamped = existing
         .as_ref()
         .is_some_and(|s| s.aumid.as_deref() == Some(AUMID));
+    // A shortcut from before the toast activator existed brands toasts fine,
+    // but a click on one in notification history goes nowhere until the
+    // shortcut also names the class — so it is rewritten like an off-target one.
+    let activates = existing
+        .as_ref()
+        .is_some_and(|s| s.toast_activator == Some(TOAST_ACTIVATOR_CLSID));
     let on_target = existing
         .as_ref()
         .and_then(|s| s.target.as_deref())
         .is_some_and(|t| same_path(t, &exe));
-    if stamped && on_target {
+    if stamped && activates && on_target {
         return Ok(Decision::Branded);
     }
 
@@ -155,7 +204,115 @@ fn decide() -> Result<Decision, String> {
         });
     }
 
-    Ok(Decision::Write(lnk))
+    Ok(Decision::Write {
+        lnk,
+        indexed: stamped,
+    })
+}
+
+/// `HKCU\Software\Classes\CLSID\{…}\LocalServer32` — what COM runs to
+/// deliver a toast click while tty7 is not running. Per-user, so it needs no
+/// elevation whatever the install shape; the uninstaller removes the CLSID key.
+fn local_server_key() -> String {
+    format!(
+        r"Software\Classes\CLSID\{{{}}}\LocalServer32",
+        clsid_text(&TOAST_ACTIVATOR_CLSID)
+    )
+}
+
+fn local_server_command(exe: &Path) -> std::ffi::OsString {
+    let mut command = std::ffi::OsString::from("\"");
+    command.push(exe.as_os_str());
+    command.push("\" ");
+    command.push(TOAST_ACTIVATED_ARG);
+    command
+}
+
+/// Point the toast activator's COM registration at the running exe, unless
+/// it already does. Never from a cargo build directory, for the same reason
+/// `decide()` never writes the shortcut from one: a `cargo run` must not leave
+/// the user's toast clicks launching `target\debug`. A dev build still
+/// receives clicks while it is running, through its class object.
+fn register_local_server() {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            log::warn!("toast activator not registered: current exe: {e}");
+            return;
+        }
+    };
+    if is_build_output(&exe) {
+        return;
+    }
+    let key = local_server_key();
+    let command = local_server_command(&exe);
+    if read_default_string(&key).as_deref() == Some(command.as_os_str()) {
+        return;
+    }
+    if let Err(e) = write_default_string(&key, &command) {
+        log::warn!("toast activator not registered: {e}");
+    }
+}
+
+fn read_default_string(subkey: &str) -> Option<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+
+    let subkey = wide_z(OsStr::new(subkey));
+    let mut buf = vec![0u16; 1024];
+    let mut bytes = u32::try_from(buf.len() * 2).ok()?;
+    // SAFETY: `subkey` is a live NUL-terminated UTF-16 string; the default
+    // value is named by a null pointer; `buf` holds `bytes` writable bytes.
+    let code = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            std::ptr::null(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    if code != ERROR_SUCCESS {
+        return None;
+    }
+    buf.truncate(bytes as usize / 2);
+    while buf.last() == Some(&0) {
+        buf.pop();
+    }
+    Some(std::ffi::OsString::from_wide(&buf))
+}
+
+fn write_default_string(subkey: &str, value: &OsStr) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
+
+    let subkey_w = wide_z(OsStr::new(subkey));
+    let value = wide_z(value);
+    let bytes = u32::try_from(value.len() * 2).map_err(|_| "value too long".to_string())?;
+    // SAFETY: both buffers are live NUL-terminated UTF-16 strings, `bytes`
+    // covers `value` including its terminator, and a null value name is the
+    // key's default value. `RegSetKeyValueW` creates missing keys.
+    let code = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            subkey_w.as_ptr(),
+            std::ptr::null(),
+            REG_SZ,
+            value.as_ptr().cast(),
+            bytes,
+        )
+    };
+    if code == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "write HKCU\\{subkey}: {}",
+            std::io::Error::from_raw_os_error(code as i32)
+        ))
+    }
 }
 
 /// True when `exe` sits in a `cargo` build directory rather than an install.
@@ -218,12 +375,19 @@ fn all_users_shortcut_path() -> Option<PathBuf> {
 #[derive(Default)]
 struct Shortcut {
     aumid: Option<String>,
+    toast_activator: Option<windows::core::GUID>,
     target: Option<PathBuf>,
 }
 
 fn wide(s: &OsStr) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     s.encode_wide().collect()
+}
+
+fn wide_z(s: &OsStr) -> Vec<u16> {
+    let mut w = wide(s);
+    w.push(0);
+    w
 }
 
 fn hstring(path: &Path) -> Result<windows::core::HSTRING, String> {
@@ -241,10 +405,13 @@ fn co_init() {
     }
 }
 
-/// Read back the two properties `decide()` cares about. Absent ones come back
+/// Read back the properties `decide()` cares about. Absent ones come back
 /// as `None`; only genuine COM failures are errors.
 fn read_shortcut(lnk: &Path) -> Result<Shortcut, String> {
-    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::Storage::EnhancedStorage::{
+        PKEY_AppUserModel_ID, PKEY_AppUserModel_ToastActivatorCLSID,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PropVariantToGUID;
     use windows::Win32::System::Com::{
         CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ,
     };
@@ -271,6 +438,14 @@ fn read_shortcut(lnk: &Path) -> Result<Shortcut, String> {
             .and_then(|v| BSTR::try_from(&v).ok())
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty());
+        // VT_CLSID whichever side wrote it. An absent property is VT_EMPTY,
+        // which `PropVariantToGUID` converts to the nil GUID rather than an
+        // error, so that is what "not set" looks like here.
+        let toast_activator = store
+            .GetValue(&PKEY_AppUserModel_ToastActivatorCLSID)
+            .ok()
+            .and_then(|v| PropVariantToGUID(&v).ok())
+            .filter(|clsid| *clsid != windows::core::GUID::zeroed());
 
         // SLGP_RAWPATH returns the stored target verbatim; without it the
         // shell may go looking for a moved file, including over the network.
@@ -284,15 +459,22 @@ fn read_shortcut(lnk: &Path) -> Result<Shortcut, String> {
             })
             .filter(|p| !p.as_os_str().is_empty());
 
-        Ok(Shortcut { aumid, target })
+        Ok(Shortcut {
+            aumid,
+            toast_activator,
+            target,
+        })
     }
 }
 
 /// Create or overwrite `lnk`, pointing at the running exe and carrying our
-/// AUMID. The exe has the icon compiled in (build.rs), which is what the toast
+/// AUMID and toast activator. The exe has the icon compiled in (build.rs), which is what the toast
 /// header shows.
 fn write_shortcut(lnk: &Path) -> Result<(), String> {
-    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::Storage::EnhancedStorage::{
+        PKEY_AppUserModel_ID, PKEY_AppUserModel_ToastActivatorCLSID,
+    };
+    use windows::Win32::System::Com::StructuredStorage::InitPropVariantFromCLSID;
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile};
     use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
@@ -313,6 +495,11 @@ fn write_shortcut(lnk: &Path) -> Result<(), String> {
         let store: IPropertyStore = link.cast().map_err(|e| format!("IPropertyStore: {e}"))?;
         store
             .SetValue(&PKEY_AppUserModel_ID, &PROPVARIANT::from(AUMID))
+            .map_err(|e| format!("SetValue: {e}"))?;
+        let clsid = InitPropVariantFromCLSID(&TOAST_ACTIVATOR_CLSID)
+            .map_err(|e| format!("InitPropVariantFromCLSID: {e}"))?;
+        store
+            .SetValue(&PKEY_AppUserModel_ToastActivatorCLSID, &clsid)
             .map_err(|e| format!("SetValue: {e}"))?;
         store.Commit().map_err(|e| format!("Commit: {e}"))?;
         let persist: IPersistFile = link.cast().map_err(|e| format!("IPersistFile: {e}"))?;
@@ -338,6 +525,49 @@ mod tests {
         assert!(
             iss.contains(&needle),
             "windows-installer.iss must set {needle} on its shortcuts"
+        );
+    }
+
+    #[test]
+    fn toast_activator_matches_the_installer() {
+        let iss = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/scripts/windows-installer.iss"
+        ))
+        .expect("read windows-installer.iss");
+        let clsid = super::clsid_text(&super::TOAST_ACTIVATOR_CLSID);
+        let stamp = format!("AppUserModelToastActivatorCLSID: \"{clsid}\"");
+        assert_eq!(
+            iss.matches(&stamp).count(),
+            iss.matches("AppUserModelID:").count(),
+            "every windows-installer.iss shortcut must set {stamp}"
+        );
+        let cleanup = format!(r"'Software\Classes\CLSID\{{{clsid}}}'");
+        assert!(
+            iss.contains(&cleanup),
+            "the uninstaller must remove {cleanup}"
+        );
+    }
+
+    #[test]
+    fn the_clsid_is_spelled_the_registry_way() {
+        assert_eq!(
+            super::clsid_text(&super::TOAST_ACTIVATOR_CLSID),
+            "4E1F6381-E90B-4BED-9156-A9013F718FE6"
+        );
+        assert_eq!(
+            super::local_server_key(),
+            r"Software\Classes\CLSID\{4E1F6381-E90B-4BED-9156-A9013F718FE6}\LocalServer32"
+        );
+    }
+
+    /// COM runs this string after appending `-Embedding`; an unquoted path
+    /// with a space in it would launch `C:\Program` instead.
+    #[test]
+    fn the_local_server_command_quotes_the_exe() {
+        assert_eq!(
+            super::local_server_command(Path::new(r"C:\Program Files\tty7\tty7-app.exe")),
+            r#""C:\Program Files\tty7\tty7-app.exe" --toast-activated"#
         );
     }
 
@@ -441,6 +671,9 @@ mod tests {
         written.expect("write shortcut");
         let shortcut = read.expect("read attempted").expect("read shortcut");
         assert_eq!(shortcut.aumid.as_deref(), Some(super::AUMID));
+        // Without it a click on the toast in notification history reaches
+        // nobody (#1179), and `decide()` would rewrite the shortcut forever.
+        assert_eq!(shortcut.toast_activator, Some(super::TOAST_ACTIVATOR_CLSID));
         let exe = std::env::current_exe().expect("current exe");
         let target = shortcut.target.unwrap_or_default();
         assert!(
@@ -461,7 +694,7 @@ mod tests {
     fn sends_a_branded_toast() {
         let decision = match super::decide().expect("decide") {
             super::Decision::Branded => "already branded".to_string(),
-            super::Decision::Write(lnk) => format!("writing {}", lnk.display()),
+            super::Decision::Write { lnk, .. } => format!("writing {}", lnk.display()),
             super::Decision::Skip(why) => format!("skipping: {why}"),
         };
         println!("decision: {decision}");

@@ -2942,10 +2942,12 @@ fn sanitize_notification_text(s: &str, max_chars: usize) -> String {
     out
 }
 
-/// What a click on a macOS notification has to carry back: the pane to reveal.
+/// What a click on a notification has to carry back: the pane to reveal.
 ///
-/// It rides in the notification's `identifier`, which is the one field the
-/// center hands back verbatim on activation without a dictionary round trip.
+/// On macOS it rides in the notification's `identifier`, which is the one
+/// field the center hands back verbatim on activation without a dictionary
+/// round trip. On Windows it is the toast's `launch` attribute, which comes
+/// back as the `invokedArgs` of a COM activation (`core::toast_activator`).
 /// Shape: `tty7-pane-<pid>-<leaf>-<seq>`.
 ///
 /// The pid is what makes a stale identifier fail closed. Notifications outlive
@@ -2953,13 +2955,14 @@ fn sanitize_notification_text(s: &str, max_chars: usize) -> String {
 /// whatever process now owns the bundle id — a relaunched tty7, or a second
 /// instance running alongside. A leaf id is a gpui entity id, which a fresh
 /// process hands out again in the same order, so without the pid that click
-/// would reveal an unrelated pane. The sequence number keeps two notifications
-/// for the same pane apart — the center treats a repeated identifier as
-/// "replace the earlier one".
-#[cfg(any(target_os = "macos", test))]
+/// would reveal an unrelated pane. On Windows that is the *only* kind of click
+/// a process COM launched for the purpose can receive. The sequence number
+/// keeps two notifications for the same pane apart — the center treats a
+/// repeated identifier as "replace the earlier one".
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 const NOTIFICATION_ID_PREFIX: &str = "tty7-pane-";
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn notification_identifier(leaf_id: u64) -> String {
     use std::sync::atomic::AtomicU64;
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -2968,7 +2971,7 @@ fn notification_identifier(leaf_id: u64) -> String {
     format!("{NOTIFICATION_ID_PREFIX}{pid}-{leaf_id}-{seq}")
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn leaf_id_in_identifier(identifier: &str) -> Option<u64> {
     let rest = identifier.strip_prefix(NOTIFICATION_ID_PREFIX)?;
     let (pid, rest) = rest.split_once('-')?;
@@ -3103,20 +3106,30 @@ fn try_clickable_notification(title: &str, body: &str, leaf_id: u64) -> bool {
     let Some(tx) = toast_thread() else {
         return false;
     };
-    tx.try_send((title.to_string(), body.to_string(), leaf_id))
-        .is_ok()
+    tx.try_send((
+        title.to_string(),
+        body.to_string(),
+        notification_identifier(leaf_id),
+    ))
+    .is_ok()
 }
 
+/// Title, body, and the `launch` identifier a click hands back.
 #[cfg(all(target_os = "windows", not(test)))]
-type ToastRequest = (String, String, u64);
+type ToastRequest = (String, String, String);
 
-/// Toasts are built, shown and *kept* on one dedicated thread.
+/// Toasts are built, shown and kept on one dedicated thread.
 ///
-/// A `ToastNotification` has to stay alive for its `Activated` event to reach
-/// us, and Windows parks toasts in Action Center long after they leave the
-/// screen — a thread per toast sleeping out a fixed window would both leak
-/// threads and stop working the moment the timer expired. Keeping them on a
-/// single thread also means the WinRT objects never cross a thread boundary.
+/// A click reaches us two ways. The one that always works is COM activation
+/// (`core::toast_activator`): the shell calls our registered class with the
+/// toast's `launch` string, whether the click lands on the popup or on the
+/// toast in notification history, and whether or not this process is still
+/// the one that sent it. The other is the toast object's own `Activated`
+/// event, which fires only for the popup and only while the object is alive
+/// here — it is kept as the fallback for a shortcut that predates the toast
+/// activator (an all-users install from an older installer, which we cannot
+/// rewrite unelevated). Keeping the objects on a single thread also means the
+/// WinRT objects never cross a thread boundary.
 #[cfg(all(target_os = "windows", not(test)))]
 fn toast_thread() -> Option<&'static std::sync::mpsc::SyncSender<ToastRequest>> {
     use std::sync::OnceLock;
@@ -3147,13 +3160,14 @@ fn toast_loop(rx: std::sync::mpsc::Receiver<ToastRequest>) {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
 
-    // How many past toasts stay clickable. Dropping the oldest is what bounds
-    // the memory here; there is no useful deadline to expire them on.
+    // How many recent popups keep their `Activated` fallback. Dropping the
+    // oldest is what bounds the memory here; the popup is long gone by then,
+    // and the COM path does not depend on these objects at all.
     const MAX_LIVE_TOASTS: usize = 32;
     let mut live: VecDeque<ToastNotification> = VecDeque::new();
 
-    while let Ok((title, body, leaf_id)) = rx.recv() {
-        if let Some(toast) = show_windows_toast(&title, &body, leaf_id) {
+    while let Ok((title, body, launch)) = rx.recv() {
+        if let Some(toast) = show_windows_toast(&title, &body, launch) {
             if live.len() == MAX_LIVE_TOASTS {
                 live.pop_front();
             }
@@ -3162,11 +3176,31 @@ fn toast_loop(rx: std::sync::mpsc::Receiver<ToastRequest>) {
     }
 }
 
+/// The toast's XML. `launch` is what Windows hands back on a click — as the
+/// `invokedArgs` of a COM activation, and as the `Arguments` of the in-process
+/// `Activated` event.
+#[cfg(any(target_os = "windows", test))]
+fn toast_xml(title: &str, body: &str, launch: &str) -> String {
+    format!(
+        r#"<toast launch="{}" activationType="foreground">
+  <visual>
+    <binding template="ToastText02">
+      <text id="1">{}</text>
+      <text id="2">{}</text>
+    </binding>
+  </visual>
+</toast>"#,
+        xml_escape(launch),
+        xml_escape(title),
+        xml_escape(body)
+    )
+}
+
 #[cfg(all(target_os = "windows", not(test)))]
 fn show_windows_toast(
     title: &str,
     body: &str,
-    leaf_id: u64,
+    launch: String,
 ) -> Option<windows::UI::Notifications::ToastNotification> {
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::Foundation::TypedEventHandler;
@@ -3175,18 +3209,7 @@ fn show_windows_toast(
 
     let app_id = crate::core::aumid::toast_app_id()?;
 
-    let xml = format!(
-        r#"<toast>
-  <visual>
-    <binding template="ToastText02">
-      <text id="1">{}</text>
-      <text id="2">{}</text>
-    </binding>
-  </visual>
-</toast>"#,
-        xml_escape(title),
-        xml_escape(body)
-    );
+    let xml = toast_xml(title, body, &launch);
 
     let doc = match XmlDocument::new() {
         Ok(d) => {
@@ -3212,7 +3235,7 @@ fn show_windows_toast(
 
     if let Err(e) = toast.Activated(&TypedEventHandler::new(
         move |_sender: &Option<ToastNotification>, _args: &Option<IInspectable>| {
-            reveal_pane(leaf_id);
+            toast_activated(&launch);
             Ok(())
         },
     )) {
@@ -3235,13 +3258,69 @@ fn show_windows_toast(
     Some(toast)
 }
 
+/// What a click on a Windows toast asks for. A pane this process notified
+/// about is revealed; anything else — a toast from an earlier tty7, one
+/// without a pane, a launch string we do not recognize — still brings tty7
+/// forward, which is what the user clicked a tty7 toast for.
+#[cfg(any(target_os = "windows", test))]
+fn toast_click_action(launch: &str) -> crate::ui::tray::TrayAction {
+    use crate::ui::tray::TrayAction;
+    match leaf_id_in_identifier(launch) {
+        Some(leaf_id) => TrayAction::RevealPane { leaf_id },
+        None => TrayAction::ShowWindow,
+    }
+}
+
+/// The last few `launch` strings acted on. A click on the popup can arrive
+/// twice — through COM and through the toast object's `Activated` event — and
+/// must reveal once. Identifiers are unique per toast, so a repeat is that
+/// same click; an empty one (a toast without a pane) is never deduplicated.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Default)]
+struct RecentActivations(std::collections::VecDeque<String>);
+
+#[cfg(any(target_os = "windows", test))]
+impl RecentActivations {
+    const KEEP: usize = 8;
+
+    fn first_time(&mut self, launch: &str) -> bool {
+        if launch.is_empty() {
+            return true;
+        }
+        if self.0.iter().any(|seen| seen == launch) {
+            return false;
+        }
+        if self.0.len() == Self::KEEP {
+            self.0.pop_front();
+        }
+        self.0.push_back(launch.to_string());
+        true
+    }
+}
+
+/// A click on a tty7 toast, from whichever path delivered it. Runs on a COM or
+/// WinRT callback thread, so it only touches the tray channel — queued there
+/// when this process has no dispatch loop yet (a launch COM made to deliver
+/// the click).
+#[cfg(target_os = "windows")]
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn toast_activated(launch: &str) {
+    static RECENT: std::sync::Mutex<RecentActivations> =
+        std::sync::Mutex::new(RecentActivations(std::collections::VecDeque::new()));
+    let first = RECENT
+        .lock()
+        .map(|mut recent| recent.first_time(launch))
+        .unwrap_or(true);
+    if first {
+        crate::ui::tray::send_or_queue(toast_click_action(launch));
+    }
+}
+
 /// Ask the tray dispatch loop to bring `leaf_id` to the front. Runs on whatever
 /// thread the platform hands the activation to, so it only touches the channel.
-#[cfg(any(target_os = "macos", all(target_os = "windows", not(test))))]
+#[cfg(target_os = "macos")]
 fn reveal_pane(leaf_id: u64) {
-    if let Some(tx) = crate::ui::tray::sender() {
-        let _ = tx.try_send(crate::ui::tray::TrayAction::RevealPane { leaf_id });
-    }
+    crate::ui::tray::send_or_queue(crate::ui::tray::TrayAction::RevealPane { leaf_id });
 }
 
 #[cfg(not(any(target_os = "macos", all(target_os = "windows", not(test)))))]
@@ -3251,7 +3330,7 @@ fn try_clickable_notification(_title: &str, _body: &str, _leaf_id: u64) -> bool 
     false
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -3319,7 +3398,72 @@ mod notification_tests {
         assert_eq!(sanitize_notification_text("short", 8), "short");
     }
 
+    /// Pulls the `launch` attribute back out the way the shell would see it.
+    fn launch_attribute(xml: &str) -> String {
+        let start = xml
+            .find(r#"launch=""#)
+            .expect("toast has a launch attribute")
+            + 8;
+        let len = xml[start..].find('"').expect("closed attribute");
+        xml[start..start + len].to_string()
+    }
+
+    /// #1179: a toast clicked from notification history is only reported over
+    /// COM, as the toast's `launch` string. Without one the pane is lost.
+    #[test]
+    fn a_toast_carries_its_pane_in_the_launch_attribute() {
+        let xml = toast_xml("title", "body", &notification_identifier(42));
+        assert_eq!(
+            toast_click_action(&launch_attribute(&xml)),
+            crate::ui::tray::TrayAction::RevealPane { leaf_id: 42 }
+        );
+    }
+
+    #[test]
+    fn a_toast_from_another_process_only_shows_the_window() {
+        let other_pid = std::process::id().wrapping_add(1);
+        let stale = format!("{NOTIFICATION_ID_PREFIX}{other_pid}-42-0");
+        let xml = toast_xml("title", "body", &stale);
+        assert_eq!(
+            toast_click_action(&launch_attribute(&xml)),
+            crate::ui::tray::TrayAction::ShowWindow
+        );
+        assert_eq!(
+            toast_click_action(""),
+            crate::ui::tray::TrayAction::ShowWindow
+        );
+    }
+
+    #[test]
+    fn one_click_delivered_twice_reveals_once() {
+        let mut recent = RecentActivations::default();
+        let a = notification_identifier(1);
+        let b = notification_identifier(1);
+        assert!(recent.first_time(&a));
+        assert!(!recent.first_time(&a));
+        assert!(recent.first_time(&b));
+        // Toasts without a pane all share the empty launch string.
+        assert!(recent.first_time(""));
+        assert!(recent.first_time(""));
+    }
+
+    /// The real WinRT XML parser must accept the document and hand the launch
+    /// string back verbatim. Parses only; shows nothing.
     #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_parses_the_toast_and_keeps_its_launch_string() {
+        use windows::Data::Xml::Dom::XmlDocument;
+        let id = notification_identifier(7);
+        let doc = XmlDocument::new().expect("XmlDocument");
+        doc.LoadXml(&toast_xml("a & <b>", "\"c\" 'd'", &id).into())
+            .expect("toast xml parses");
+        let launch = doc
+            .DocumentElement()
+            .and_then(|root| root.GetAttribute(&"launch".into()))
+            .expect("launch attribute");
+        assert_eq!(launch.to_string(), id);
+    }
+
     #[test]
     fn xml_escaping_covers_every_entity_once() {
         assert_eq!(

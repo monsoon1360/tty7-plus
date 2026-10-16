@@ -13,5 +13,7 @@ pub mod keychain;
 pub mod rate_meter;
 pub mod session;
 pub mod ssh_config;
+#[cfg(target_os = "windows")]
+pub mod toast_activator;
 pub mod update;
 pub mod window_state;

@@ -29,4 +29,6 @@ mod typeahead;
 pub mod view;
 
 pub(crate) use remote::notify_desktop;
+#[cfg(target_os = "windows")]
+pub(crate) use remote::toast_activated;
 pub use remote::{PaneRoute, PaneWorkspace, RemoteTerminal, attach_refused, attach_unanswered};

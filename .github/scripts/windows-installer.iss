@@ -120,9 +120,15 @@ Source: "{#StageDir}\server\*"; DestDir: "{app}\server"; Flags: ignoreversion re
 ; all-users install alone — it cannot write {commonprograms} unelevated, and a
 ; per-user twin would both duplicate the Start Menu entry and outlive this
 ; uninstaller — so an elevated install depends on the stamp right here.
+;
+; AppUserModelToastActivatorCLSID names the COM class a click on a toast in
+; notification history activates; without it that click goes nowhere (#1179).
+; Must match `core::aumid::TOAST_ACTIVATOR_CLSID`. The app registers the class
+; itself (HKCU, at every launch, so it always names the running exe); the
+; uninstaller below removes that registration.
 [Icons]
-Name: "{autoprograms}\tty7"; Filename: "{app}\tty7-app.exe"; AppUserModelID: "com.github.tty7"
-Name: "{autodesktop}\tty7"; Filename: "{app}\tty7-app.exe"; Tasks: desktopicon; AppUserModelID: "com.github.tty7"
+Name: "{autoprograms}\tty7"; Filename: "{app}\tty7-app.exe"; AppUserModelID: "com.github.tty7"; AppUserModelToastActivatorCLSID: "4E1F6381-E90B-4BED-9156-A9013F718FE6"
+Name: "{autodesktop}\tty7"; Filename: "{app}\tty7-app.exe"; Tasks: desktopicon; AppUserModelID: "com.github.tty7"; AppUserModelToastActivatorCLSID: "4E1F6381-E90B-4BED-9156-A9013F718FE6"
 
 [Run]
 ; The registry shape lives in core::explorer_context_menu, not here: the app
@@ -253,11 +259,25 @@ begin
     HKEY_CURRENT_USER, 'Software\Classes\Directory\Background\shell\tty7');
 end;
 
+(* Remove the toast activator's COM registration.
+
+  `core::aumid` writes HKCU\Software\Classes\CLSID\{…}\LocalServer32 at launch
+  so that a click on a toast in notification history can start tty7. Left
+  behind, it would point COM at a deleted exe. Only the class's own key is
+  deleted; a missing key is a no-op. HKCU for the same reason as the PATH
+  entry above: that is the only hive the app writes. *)
+procedure RemoveToastActivator();
+begin
+  RegDeleteKeyIncludingSubkeys(
+    HKEY_CURRENT_USER, 'Software\Classes\CLSID\{4E1F6381-E90B-4BED-9156-A9013F718FE6}');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
     RemoveAppDirFromUserPath();
     RemoveExplorerContextMenu();
+    RemoveToastActivator();
   end;
 end;
