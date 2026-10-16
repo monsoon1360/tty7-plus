@@ -1532,13 +1532,27 @@ impl RemoteTerminal {
                                 // comes back with the prompt's cursor.
                                 let mut cuts: Vec<(usize, ReaderCut)> = Vec::new();
                                 command_cuts(&mut command_tok, &bytes, &mut cuts);
+                                // Each prompt mark in it also clears the kitty
+                                // keyboard stacks, at the mark itself. Live,
+                                // that happens on the `Prompt` report that
+                                // follows it; a replay carries one report for
+                                // the whole ring, so flags a dead program left
+                                // before an earlier prompt would otherwise come
+                                // back to whatever runs in the pane now (#1155).
+                                // The daemon's `TerminalModes` clears them at
+                                // the same marks, so the prelude ahead of the
+                                // ring agrees.
                                 let fed =
                                     feed_grid(&term, &mut processor, &bytes, cuts, &quit, |term, cut| {
                                         match cut {
                                             ReaderCut::Command(mark) => {
+                                                if mark == CommandMark::Finished {
+                                                    term.reset_keyboard_modes();
+                                                }
                                                 command_cursor.apply(term, mark)
                                             }
                                             ReaderCut::Prompt(mark) => {
+                                                term.reset_keyboard_modes();
                                                 prompt_break.apply(term, mark)
                                             }
                                             ReaderCut::Parked(_) => {}
@@ -1733,7 +1747,20 @@ impl RemoteTerminal {
                                     let resets = stale_mode_resets(*term.mode());
                                     if !resets.is_empty() {
                                         processor.advance(&mut *term, &resets);
-                                        drop(term);
+                                    }
+                                    // Nothing in front of the shell could have
+                                    // negotiated kitty keyboard flags, so they
+                                    // all go — both screens' stacks, not just
+                                    // the flags in effect. `CSI = 0 u` cannot
+                                    // do that: a program killed on the
+                                    // alternate screen left its push on that
+                                    // screen's stack, and the next program to
+                                    // enter it got the flags back and its
+                                    // Escape as `CSI 27 u` — which a ConPTY
+                                    // reader sees as no key at all (#1155).
+                                    term.reset_keyboard_modes();
+                                    drop(term);
+                                    if !resets.is_empty() {
                                         proxy.send_event(AlacEvent::Wakeup);
                                     }
                                 }
@@ -2831,9 +2858,8 @@ fn stale_mode_resets(mode: TermMode) -> Vec<u8> {
     if mode.contains(TermMode::FOCUS_IN_OUT) {
         seq.extend_from_slice(b"\x1b[?1004l");
     }
-    if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) || mode.contains(TermMode::ALT_SCREEN) {
-        seq.extend_from_slice(b"\x1b[=0;1u");
-    }
+    // The kitty keyboard flags are not reset here: no sequence clears their
+    // stacks, so the caller does it through `Term::reset_keyboard_modes`.
     seq
 }
 
@@ -4372,6 +4398,160 @@ mod replay_tests {
              view stopped receiving output"
         );
     }
+
+    /// What a physical Escape is written to the pane as, by the encoder a
+    /// local ConPTY pane uses (#1155 is a ConPTY-only symptom), once the
+    /// reader has applied everything up to `barrier`. Also returns the reply
+    /// a `CSI ? u` sent after the barrier gets.
+    fn escape_after(frames: Vec<DaemonMsg>, barrier: &str) -> (Vec<u8>, Option<String>) {
+        use crate::terminal::input::{KeyFlags, keystroke_to_bytes};
+        crate::core::config::pin_test_config_dir();
+        let (client_side, mut daemon) = socket_pair();
+        let term = RemoteTerminal::from_stream(client_side, TermSize::new(80, 24)).unwrap();
+        for frame in frames {
+            frame.encode(&mut daemon).unwrap();
+        }
+        DaemonMsg::Output(format!("{barrier}\x1b[?u").into_bytes())
+            .encode(&mut daemon)
+            .unwrap();
+        let text = settled(&term, &[barrier]);
+        assert!(text.contains(barrier), "the barrier never arrived:\n{text}");
+        let mut reply = None;
+        for _ in 0..200 {
+            while let Ok(event) = term.events.try_recv() {
+                if let AlacEvent::PtyWrite(text) = event {
+                    reply = Some(text);
+                }
+            }
+            if reply.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mode = *term.term.lock().mode();
+        let flags = KeyFlags::from_mode_with_local_conpty(&mode, true);
+        let escape = keystroke_to_bytes(&gpui::Keystroke::parse("escape").unwrap(), flags);
+        drop(daemon);
+        (escape.unwrap_or_default(), reply)
+    }
+
+    fn at_prompt() -> DaemonMsg {
+        DaemonMsg::Prompt {
+            active: true,
+            at_prompt: true,
+            last_exit: Some(130),
+        }
+    }
+
+    /// #1155: a program pushed kitty keyboard flags on the main screen and
+    /// again on the alternate one, and was killed there. Once the prompt is
+    /// back, the next program to enter the alternate screen must not find the
+    /// dead one's flags on its stack.
+    #[test]
+    fn a_prompt_forgets_kitty_flags_a_killed_program_left_on_either_screen() {
+        let (escape, reply) = escape_after(
+            vec![
+                DaemonMsg::Output(b"\x1b[>1u\x1b[?1049h\x1b[>7u".to_vec()),
+                at_prompt(),
+                DaemonMsg::Output(b"\x1b[?1049h".to_vec()),
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b", "Escape must reach the next program bare");
+        assert_eq!(
+            reply.as_deref(),
+            Some("\x1b[?0u"),
+            "a flags query must agree with the flags in effect"
+        );
+    }
+
+    /// #1155: a program that left the alternate screen *before* popping
+    /// popped the main screen's stack, so its push stayed on the alternate
+    /// one while no flags were in effect at the prompt.
+    #[test]
+    fn a_prompt_forgets_a_kitty_push_stranded_on_the_inactive_screen() {
+        let (escape, _) = escape_after(
+            vec![
+                DaemonMsg::Output(b"\x1b[?1049h\x1b[>7u\x1b[?1049l\x1b[<u".to_vec()),
+                at_prompt(),
+                DaemonMsg::Output(b"\x1b[?1049h".to_vec()),
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b");
+    }
+
+    /// A stale entry under the next program's own push must not come back
+    /// when it pops.
+    #[test]
+    fn a_pop_after_the_prompt_does_not_restore_stale_kitty_flags() {
+        let (escape, _) = escape_after(
+            vec![
+                DaemonMsg::Output(b"\x1b[>7u".to_vec()),
+                at_prompt(),
+                DaemonMsg::Output(b"\x1b[>1u\x1b[<u".to_vec()),
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b");
+    }
+
+    /// The guard on the other side: flags a program negotiates after the
+    /// prompt returned are its own and take effect.
+    #[test]
+    fn kitty_flags_pushed_after_the_prompt_take_effect() {
+        let (escape, reply) = escape_after(
+            vec![
+                DaemonMsg::Output(b"\x1b[?1049h\x1b[>7u".to_vec()),
+                at_prompt(),
+                DaemonMsg::Output(b"\x1b[?1049h\x1b[>1u".to_vec()),
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b[27u");
+        assert_eq!(reply.as_deref(), Some("\x1b[?1u"));
+    }
+
+    /// The same on a re-attach. The replay carries one prompt report for the
+    /// whole ring, and here it says a program owns the pane — so the prompt
+    /// the shell drew between the dead program and this one is only in the
+    /// ring's bytes, and has to clear the flags where it stands.
+    #[test]
+    fn a_replay_forgets_kitty_flags_from_before_an_earlier_prompt() {
+        let (escape, _) = escape_after(
+            vec![
+                DaemonMsg::Size(ws(80, 24)),
+                DaemonMsg::Snapshot(b"\x1b[>1u\x1b[?1049h\x1b[>7u".to_vec()),
+                DaemonMsg::Snapshot(
+                    b"\x1b]133;D;130\x07\x1b]133;A\x07$ \x1b]133;B\x07codex\r\n\x1b]133;C\x07"
+                        .to_vec(),
+                ),
+                DaemonMsg::Snapshot(b"\x1b[?1049h".to_vec()),
+                DaemonMsg::Prompt {
+                    active: true,
+                    at_prompt: false,
+                    last_exit: Some(130),
+                },
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b");
+
+        // What the program after the prompt pushes is replayed as it was.
+        let (escape, _) = escape_after(
+            vec![
+                DaemonMsg::Size(ws(80, 24)),
+                DaemonMsg::Snapshot(b"\x1b[>7u\x1b]133;A\x07\x1b]133;C\x07\x1b[>1u".to_vec()),
+                DaemonMsg::Prompt {
+                    active: true,
+                    at_prompt: false,
+                    last_exit: None,
+                },
+            ],
+            "NEXT-PROGRAM",
+        );
+        assert_eq!(escape, b"\x1b[27u");
+    }
 }
 
 #[cfg(all(test, windows))]
@@ -5760,14 +5940,18 @@ mod tests {
         assert!(text.contains("\x1b[?25h"));
         assert!(text.contains("\x1b[?1002l"));
         assert!(text.contains("\x1b[?1006l"));
-        assert!(text.ends_with("\x1b[=0;1u"));
+        assert!(
+            !text.contains("u"),
+            "kitty flags are the caller's: {text:?}"
+        );
 
         let kitty = TermMode::SHOW_CURSOR | TermMode::DISAMBIGUATE_ESC_CODES;
-        assert_eq!(stale_mode_resets(kitty), b"\x1b[=0;1u");
+        assert!(stale_mode_resets(kitty).is_empty());
     }
 
     #[test]
     fn prompt_report_scrubs_stale_tui_modes() {
+        crate::core::config::pin_test_config_dir();
         let (client_side, mut daemon_side) = UnixStream::pair().unwrap();
         let term = RemoteTerminal::from_stream(client_side, TermSize::new(80, 24)).unwrap();
 

@@ -1875,8 +1875,11 @@ pub fn restore_preamble(banner: Option<&str>) -> Vec<u8> {
 /// - `2004` is bracketed paste: a paste into a shell that does not know the
 ///   protocol arrives with `ESC[200~` typed around it.
 /// - `1` is DECCKM, which sends the arrow keys as `ESC O A` instead of `ESC[A`.
-/// - `CSI = 0 ; 1 u` sets the kitty keyboard flags to none, the same reset
-///   `stale_mode_resets` in the client uses.
+/// - `CSI = 0 ; 1 u` sets the kitty keyboard flags in effect to none. It
+///   leaves their stacks alone — no sequence clears those — so a pop could
+///   still bring a dead program's flags back; the new shell's first prompt
+///   mark is what clears the stacks (`Term::reset_keyboard_modes` in the
+///   client, `TerminalModes` here).
 ///
 /// Deliberately absent: `1007` (alternate scroll), which this emulator has *on*
 /// by default, so clearing it would walk away from the default rather than back

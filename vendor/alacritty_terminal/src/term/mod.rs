@@ -831,6 +831,17 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
+    /// Forget every kitty keyboard mode, on both screens.
+    ///
+    /// Escape sequences can only rewrite active flags, leaving stale stack entries
+    /// to return on the next pop or screen switch. Embedders call this when the
+    /// program that negotiated the modes is gone, such as at a shell prompt.
+    pub fn reset_keyboard_modes(&mut self) {
+        self.keyboard_mode_stack.clear();
+        self.inactive_keyboard_mode_stack.clear();
+        self.set_keyboard_mode(KeyboardModes::NO_MODE.into(), KeyboardModesApplyBehavior::Replace);
+    }
+
     /// Scroll screen down.
     ///
     /// Text moves down; clear at bottom
@@ -3674,6 +3685,40 @@ mod tests {
         assert_eq!(term.vi_mode_cursor.point, Point::new(Line(2), Column(3)));
         assert!(term.selection.is_none());
         assert_eq!(term.history_size(), 0);
+    }
+
+    #[test]
+    fn reset_keyboard_modes_forgets_both_screens() {
+        let size = TermSize::new(5, 10);
+        let config = Config { kitty_keyboard: true, ..Default::default() };
+        let mut term = Term::new(config, &size, VoidListener);
+        let kitty = |term: &Term<VoidListener>| *term.mode() & TermMode::KITTY_KEYBOARD_PROTOCOL;
+
+        term.push_keyboard_mode(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+        term.swap_alt();
+        term.push_keyboard_mode(KeyboardModes::all());
+        term.swap_alt();
+        assert_eq!(kitty(&term), TermMode::DISAMBIGUATE_ESC_CODES);
+
+        term.reset_keyboard_modes();
+        assert_eq!(kitty(&term), TermMode::empty());
+        assert!(term.keyboard_mode_stack.is_empty());
+        assert!(term.inactive_keyboard_mode_stack.is_empty());
+        term.swap_alt();
+        assert_eq!(kitty(&term), TermMode::empty());
+        term.push_keyboard_mode(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+        term.pop_keyboard_modes(1);
+        assert_eq!(kitty(&term), TermMode::empty());
+        term.swap_alt();
+        assert_eq!(kitty(&term), TermMode::empty());
+
+        term.push_keyboard_mode(KeyboardModes::DISAMBIGUATE_ESC_CODES);
+        assert_eq!(kitty(&term), TermMode::DISAMBIGUATE_ESC_CODES);
+        term.set_title(Some("kept".into()));
+        term.swap_alt();
+        term.reset_keyboard_modes();
+        assert!(term.mode().contains(TermMode::ALT_SCREEN));
+        assert_eq!(term.title, Some("kept".into()));
     }
 
     #[test]

@@ -188,10 +188,12 @@ impl ScreenMirror {
             state.parser.advance(&mut state.term, &bytes[at..*offset]);
             match *cut {
                 Cut::Command(mark) => {
+                    if mark == CommandMark::Finished { state.term.reset_keyboard_modes(); }
                     state.command_cursor.apply(&mut state.term, mark);
                     if mark == CommandMark::Started { state.at_prompt = false; }
                 }
                 Cut::Prompt(mark) => {
+                    state.term.reset_keyboard_modes();
                     state.prompt_break.apply(&mut state.term, mark);
                     state.at_prompt = true;
                 }
@@ -543,6 +545,23 @@ mod tests {
         assert!(mirror.alternate());
         assert_eq!(text(&mirror, 0), "ALT");
         assert_eq!(mirror.state.term.normal_grid().history_size(), 0);
+    }
+
+    #[test]
+    fn prompt_marks_clear_keyboard_stacks_before_and_after_checkpoint() {
+        use alacritty_terminal::term::TermMode;
+        for mark in [&b"\x1b]133;A\x07"[..], &b"\x1b]133;B\x07"[..], &b"\x1b]133;D;0\x07"[..]] {
+            let mut source = ScreenMirror::with_config(size(16, 3), false, &crate::core::config::Config::default());
+            source.feed(b"\x1b[>1u\x1b[?1049h\x1b[>31u\x1b[?1049l");
+            let mut restored = ScreenMirror::restore(&source.checkpoint().unwrap()).unwrap();
+            for mirror in [&mut source, &mut restored] {
+                mirror.feed(mark);
+                mirror.feed(b"\x1b[?1049h\x1b[<u\x1b[?1049l\x1b[<u");
+                assert!(!mirror.state.term.mode().intersects(TermMode::KITTY_KEYBOARD_PROTOCOL));
+                mirror.feed(b"\x1b[>1u");
+                assert!(mirror.state.term.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES));
+            }
+        }
     }
 
     #[test]

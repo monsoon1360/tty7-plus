@@ -125,6 +125,15 @@ impl KeyboardStacks {
         self.reload();
     }
 
+    /// Both stacks emptied and no flags in effect, on whichever screen is up
+    /// — what `Term::reset_keyboard_modes` leaves in the client's emulator.
+    fn clear(&mut self) {
+        *self = Self {
+            on_alt: self.on_alt,
+            ..Self::default()
+        };
+    }
+
     /// The bytes that rebuild these stacks on a fresh emulator, around `dec`
     /// (mode sets that may include the switch to the alternate screen).
     ///
@@ -406,9 +415,15 @@ impl TerminalModes {
     /// terminal again, so whatever program switched 2031 on is gone — possibly
     /// killed before it could send `?2031l`. A report after that would be
     /// typed into the shell's command line.
+    ///
+    /// The same goes for the kitty keyboard stacks, on both screens: the
+    /// client clears them at the prompt (`Term::reset_keyboard_modes`), so a
+    /// replay prelude built from flags a dead program pushed before the mark
+    /// would hand them straight back to the next program (#1155).
     fn osc_end(&mut self) {
         if matches!(self.params.as_slice(), b"133;A" | b"133;B" | b"133;D") {
             self.on.retain(|m| *m != COLOR_SCHEME_UPDATES);
+            self.keyboard.clear();
         }
         self.params.clear();
         self.state = State::Text;
@@ -697,6 +712,38 @@ mod tests {
                 .is_none(),
             "a ring that dropped nothing needs no prelude"
         );
+    }
+
+    /// #1155: a prompt mark forgets what the program before it pushed, on
+    /// both screens, but not what is pushed after it.
+    #[test]
+    fn a_shell_prompt_clears_both_kitty_keyboard_stacks() {
+        for mark in [
+            &b"\x1b]133;A\x07"[..],
+            b"\x1b]133;B\x1b\\",
+            b"\x1b]133;D;0\x07",
+        ] {
+            let mut bytes = b"\x1b[>1u\x1b[?1049h\x1b[>7u".to_vec();
+            bytes.extend_from_slice(mark);
+            let k = keyboard(&bytes);
+            assert_eq!(
+                k,
+                KeyboardStacks {
+                    on_alt: true,
+                    ..KeyboardStacks::default()
+                },
+                "the screen stays where it was; only the flags go"
+            );
+            bytes.extend_from_slice(b"\x1b[>1u");
+            let k = keyboard(&bytes);
+            assert_eq!((k.alternate.as_slice(), k.active), (&[1][..], 1));
+        }
+        assert_eq!(keyboard(b"\x1b[>1u\x1b]133;C\x07").active, 1);
+
+        // A replay prelude cut past the mark has nothing left to restore.
+        let mut head = TerminalModes::new();
+        head.feed(b"\x1b[>7u\x1b]133;A\x07");
+        assert!(head.restore_bytes().is_none());
     }
 
     #[test]
