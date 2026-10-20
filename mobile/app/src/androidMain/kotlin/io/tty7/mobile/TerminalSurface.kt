@@ -14,10 +14,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.webkit.WebViewAssetLoader
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.selects.select
 import kotlinx.serialization.json.JsonPrimitive
@@ -56,16 +59,17 @@ private fun WebView.addTerminalBridge(bridge: TerminalBridge) {
 }
 
 @Composable
-actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit) {
+actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit,
+    shortcuts: Flow<String>) {
     var rendererVersion by remember { mutableIntStateOf(0) }
     key(rendererVersion) {
-        AndroidTerminalSurface(feed, synced, onInput, onResize, onFailure) { rendererVersion++ }
+        AndroidTerminalSurface(feed, synced, onInput, onResize, onFailure, shortcuts) { rendererVersion++ }
     }
 }
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit,
-    onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, onRendererGone: () -> Unit) {
+    onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: Flow<String>, onRendererGone: () -> Unit) {
     val context = LocalContext.current
     val dark = LocalMobileDarkTheme.current
     val focusManager = LocalFocusManager.current
@@ -206,7 +210,8 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
                     }
                 } ?: if (feed.active) continue else break
                 val frame = feed.stage(incoming) ?: continue
-                web.evaluateJavascript("window.tty7Screen($gen,${frame.presentation()},$sequence)") { result ->
+                val script = withContext(Dispatchers.Default) { "window.tty7Screen($gen,${frame.presentation()},$sequence)" }
+                web.evaluateJavascript(script) { result ->
                     if (result != "true") events.trySend(TerminalRenderEvent.Failed(gen, "终端渲染调用失败"))
                 }
                 when (val event = nextEvent()) {
@@ -222,6 +227,13 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }
         catch (e: Exception) {
             if (gen == generation && feed?.active == true) { error = "终端渲染失败：${e.message ?: "渲染页面不可用"}"; currentFailure(error!!); feed.cancel() }
+        }
+    }
+    LaunchedEffect(feed, pageReady, shortcuts) {
+        shortcuts.collect { text ->
+            if (pageReady && currentFeed === feed && feed?.synced == true) {
+                web.evaluateJavascript("window.tty7Key($generation,${JsonPrimitive(text)})", null)
+            }
         }
     }
     Box(Modifier.fillMaxSize()) {

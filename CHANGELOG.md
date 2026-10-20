@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Agent-aware Android terminal keys.** Added an explicit Ctrl-J/LF newline
+  beside Enter/CR, clarified Esc versus Ctrl-C, and moved less frequent keys into
+  an overflow menu, including Codex's Shift+Left. The usual bar stays on one row;
+  waiting agents expose direction keys without horizontally scrolling the bar.
+  Keys stop pending gesture input without opening the soft keyboard.
 - **Protocol 3 synchronizes terminal state, not historical ANSI replay.** A
   continuous daemon mirror shares the desktop's terminal engine and sends only
   the current screen, then revision-based row patches. Android reuses its
@@ -41,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending pairing when none is approved.
 - **Phone-sized terminals with direct input.** The shared PTY follows the phone's
   measured terminal grid, including soft-keyboard viewport changes. Touch the
-  terminal to type at its cursor; the message editor remains optional. Desktop
+  terminal to type at its cursor. Desktop
   takeback stops further phone resizing until the terminal is explicitly reopened,
   and releasing the phone's size lease restores the desktop grid.
 - **Android keyboard focus stays within the viewport.** The invisible terminal
@@ -50,12 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codex mobile scrolling and return to latest.** Full-screen gestures coalesce
+  remote wheel input, retain unsent whole lines, clear old-direction movement on
+  reversal, and use a shorter 1:1 coast instead of the local-history fling.
+  Native keys, including Esc for Codex's return-to-latest action, cancel queued
+  scrolling so an old fling cannot pull the view back. No extra floating return
+  control covers the terminal.
+  Screen presentation JSON is built off the Android UI thread, and unchanged
+  geometry no longer repeats local scroll-to-bottom work on every update.
 - **Android terminal gestures and contrast.** Gestures now capture pointers on a
   stable viewport, so xterm replacing a touched row during redraw cannot lose the
   rest of a swipe or its release. Swipes and synthetic mouse events do not focus
   input. Synchronization leaves the keyboard unfocused; an intentional tap also
-  reclaims native keyboard focus after the Compose message editor. Vertical drags
-  move at 1.8× finger travel and coast after a flick; a new touch stops momentum.
+  reclaims native keyboard focus. Local-history vertical drags move at 1.8×
+  finger travel and coast after a flick; a new touch stops momentum.
   Multi-touch and cancellation cannot become taps. Explicit light foreground/cursor
   colours and a 4.5:1 minimum contrast keep dark ANSI and truecolour text readable.
 - **Android live output no longer stays on an old screen.** Screen commits, keyboard/grid

@@ -15,7 +15,7 @@ const browser = [process.env.TTY7_TEST_BROWSER,
 ].find(candidate => candidate && fs.existsSync(candidate));
 
 test('terminal keeps one-screen contents and distinguishes taps from history drags',
-  {skip: !browser && 'Chromium is unavailable; set TTY7_TEST_BROWSER', timeout:30000}, async t => {
+  {skip: !browser && 'Chromium is unavailable; set TTY7_TEST_BROWSER', timeout:45000}, async t => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'tty7-terminal-test-'));
   const url = pathToFileURL(path.resolve(__dirname, '../../androidMain/assets/terminal/index.html')).href;
   const browserProcess = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run',
@@ -227,19 +227,6 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await wait('history.hidden && following && isAtLive()');
   t.diagnostic('PASS: history start follows viewport position; dragging or scrolling to the bottom restores live mode and tap input');
 
-  // The button must win over pending drag frames and either fling direction,
-  // including after a live viewport has been scrolled away from its bottom.
-  for (const direction of [-1,1]) {
-    await evaluate(`showHistory(); scrollLocally(-300); viewport.scrollTop = 0;
-      pendingY = ${direction * 200}; frame = requestAnimationFrame(flushScroll);
-      glide([[${direction * 100},performance.now() - 20],[0,performance.now()]],performance.now());
-      document.getElementById('return-live').click()`);
-    assert.equal(await evaluate('history.hidden && following && isAtLive()'),true, 'The button scrolls live content to the bottom immediately');
-    assert.equal(await evaluate('frame === 0 && coast === 0 && pendingY === 0'),true);
-    await new Promise(resolve => setTimeout(resolve, 50));
-    assert.equal(await evaluate('history.hidden && following && isAtLive()'),true, 'An old fling cannot reopen history');
-  }
-  t.diagnostic('PASS: return-live immediately scrolls to the bottom and cancels queued scrolling in both directions');
   await evaluate('window.tty7Begin(2)');
   assert.equal(await evaluate('historyScreen.childElementCount'),0);
   assert.equal(await evaluate('input.readOnly'),true);
@@ -255,17 +242,20 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await touch('touchStart',100,400);
   await touch('touchMove',100,550);
   await touch('touchEnd',100,550);
+  await wait('calls.input.length > 0');
   await evaluate('stopScrolling()');
   assert.equal(await evaluate('history.hidden'),true, 'Codex owns full-screen transcript scrolling');
   assert.equal(await evaluate('calls.history'),requestsBeforeAppScroll, 'Full-screen drag does not fetch unrelated shell history');
   assert.equal(await evaluate('calls.focus'),focusBeforeAppScroll, 'Scrolling never opens the keyboard');
   assert.match(await evaluate('calls.input.join("")'), /\x1b\[<64;\d+;\d+M/, 'Upward scroll reaches the application as SGR wheel-up');
   await evaluate('calls.input = []; scrollLocally(80)');
+  await wait('calls.input.length > 0');
   assert.match(await evaluate('calls.input.join("")'), /\x1b\[<65;\d+;\d+M/);
   fullScreen.revision = '5'; fullScreen.modes.mouse = false; fullScreen.modes.app_cursor = true;
   await evaluate(`window.tty7Screen(2,${JSON.stringify(fullScreen)},5)`);
   await wait('calls.rendered === 5');
   await evaluate('calls.input = []; scrollLocally(-80)');
+  await wait('calls.input.length > 0');
   assert.match(await evaluate('calls.input.join("")'), /\x1bOA/, 'Programs without mouse reporting use application cursor keys');
   fullScreen.revision = '6'; fullScreen.alternate = false;
   await evaluate(`window.tty7Screen(2,${JSON.stringify(fullScreen)},6)`);
@@ -274,6 +264,111 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.equal(await evaluate('history.hidden'),false, 'Returning to the main screen restores paged terminal history');
   assert.deepEqual(await evaluate('calls.input'),[]);
   t.diagnostic('PASS: full-screen gestures route to application mouse/arrows; main-screen history stays local');
+
+  // Fresh generations keep cached history, touch state and delayed wheel
+  // batches from leaking between these regressions.
+  let appGeneration = 2;
+  let appSequence = 6;
+  const startApp = async ({synced = true} = {}) => {
+    await evaluate(`calls.begun = false; window.tty7Begin(${++appGeneration})`);
+    await wait('calls.begun');
+    const appState = {cols:40, rows:24, epoch:String(appGeneration), revision:String(++appSequence), base_revision:null,
+      cursor:{row:1,col:0,shape:'block',visible:true,blink:false}, alternate:true,
+      modes:{app_cursor:false,app_keypad:false,bracketed_paste:true,mouse:true,sgr_mouse:true,alternate_scroll:true},
+      lines:[{row:0,ansi:paint('Application transcript')}]};
+    const rendered = await evaluate('calls.rendered');
+    await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(appState)},${appSequence})`);
+    await wait(`calls.rendered === ${rendered + 1}`);
+    await evaluate(`calls.input = []; ${synced ? `window.tty7Synced(${appGeneration})` : ''}`);
+  };
+  const wheelCount = `(calls.input.join('').match(/\\x1b\\[<6[45];\\d+;\\d+M/g) || []).length`;
+  const wheels = inputs => inputs.join('').match(/\x1b\[<6[45];\d+;\d+M/g) || [];
+  const settle = async (milliseconds = 800) => {
+    await evaluate(`new Promise(resolve => setTimeout(resolve,${milliseconds}))`);
+  };
+  const startFling = async () => {
+    await touch('touchStart',100,200);
+    await touch('touchMove',100,280);
+    await touch('touchMove',100,380);
+    await touch('touchEnd',100,460);
+    await wait(`${wheelCount} > 0`);
+  };
+
+
+  await startApp();
+  await evaluate('scrollLocally(-65.25 * screen.clientHeight / terminal.rows)');
+  await wait(`${wheelCount} >= 65`);
+  await settle(150);
+  const largeScroll = await evaluate('calls.input');
+  assert.equal(wheels(largeScroll).length, 65, 'A large gesture preserves every whole line of scroll debt');
+  assert.ok(largeScroll.every(packet => {
+    const events = wheels([packet]);
+    return events.length > 0 && events.length <= 20 && events.every(event => event.startsWith('\x1b[<64;'));
+  }), 'Remote input is bounded to at most twenty wheel lines per packet');
+
+  await startApp();
+  const beforeReverse = await evaluate(`(() => {
+    scrollLocally(-65.25 * screen.clientHeight / terminal.rows);
+    const sent = calls.input.slice();
+    scrollLocally(3.25 * screen.clientHeight / terminal.rows);
+    return sent;
+  })()`);
+  await wait(`(calls.input.join('').match(/\\x1b\\[<65;\\d+;\\d+M/g) || []).length >= 3`);
+  await settle(200);
+  const reversed = wheels(await evaluate('calls.input'));
+  assert.equal(reversed.filter(event => event.startsWith('\x1b[<64;')).length, wheels(beforeReverse).length,
+    'Changing direction discards only unsent old-direction debt');
+  assert.equal(reversed.filter(event => event.startsWith('\x1b[<65;')).length, 3,
+    'The new direction is not reduced by old-direction debt');
+
+  await startApp();
+  await evaluate('scrollLocally(-2000.25 * screen.clientHeight / terminal.rows)');
+  await touch('touchStart',100,250);
+  const afterNewTouch = await evaluate('calls.input');
+  assert.ok(wheels(afterNewTouch).length < 2000, 'The new touch interrupts a still-pending large scroll');
+  await settle();
+  assert.deepEqual(await evaluate('calls.input'), afterNewTouch, 'A fresh touch discards unsent wheel debt');
+  await touch('touchEnd',100,250);
+  t.diagnostic('PASS: wheel batching preserves whole-line debt, clears it on reversal, and stops it on a new touch');
+
+  await startApp();
+  await startFling();
+  const keyFocus = await evaluate('calls.focus');
+  const shortcut = '\x1b';
+  const afterKey = await evaluate(`(() => {
+    scrollLocally(-2000.25 * screen.clientHeight / terminal.rows);
+    window.tty7Key(${appGeneration},${JSON.stringify(shortcut)});
+    return calls.input.slice();
+  })()`);
+  assert.equal(afterKey.filter(text => text === shortcut).length, 1, 'The current shortcut is delivered once, verbatim');
+  assert.equal(afterKey.at(-1), shortcut);
+  assert.equal(await evaluate('calls.focus'), keyFocus);
+  assert.equal(await evaluate('document.activeElement === input'), false, 'A native shortcut does not focus the IME');
+  await settle();
+  assert.deepEqual(await evaluate('calls.input'), afterKey, 'The shortcut cancels old wheel batches and inertia');
+
+  await startApp();
+  await evaluate(`scrollLocally(-65.25 * screen.clientHeight / terminal.rows);
+    window.tty7Key(${appGeneration - 1},${JSON.stringify(shortcut)})`);
+  await wait(`${wheelCount} >= 65`);
+  await settle(150);
+  const staleKeyInput = await evaluate('calls.input');
+  assert.equal(wheels(staleKeyInput).length, 65, 'A stale shortcut cannot cancel scrolling in the current pane');
+  assert.equal(staleKeyInput.includes(shortcut), false, 'A stale generation cannot send a shortcut');
+
+  await startApp({synced:false});
+  const unsyncedFocus = await evaluate('calls.focus');
+  await evaluate(`window.tty7Key(${appGeneration},${JSON.stringify(shortcut)});
+    window.tty7Synced(${appGeneration - 1});
+    window.tty7Key(${appGeneration},${JSON.stringify(shortcut)})`);
+  await settle(150);
+  assert.deepEqual(await evaluate('calls.input'), [], 'A shortcut cannot bypass subscription sync');
+  assert.equal(await evaluate('calls.focus'), unsyncedFocus);
+  assert.equal(await evaluate('history.hidden && isAtLive()'), true, 'Ignored keys leave the current viewport unchanged');
+  await evaluate(`window.tty7Synced(${appGeneration})`);
+  await evaluate(`window.tty7Key(${appGeneration},${JSON.stringify(shortcut)})`);
+  assert.deepEqual(await evaluate('calls.input'), [shortcut], 'The same shortcut works after the current pane is synced');
+  t.diagnostic('PASS: native Esc stops current inertia, while stale and unsynced keys cannot affect the pane');
   await call('Page.navigate', {url:url + '?theme=dark'});
   await wait('typeof window.tty7Appearance === "function" && document.documentElement.dataset.theme === "dark"');
   assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Saved native theme applies on initial page load');

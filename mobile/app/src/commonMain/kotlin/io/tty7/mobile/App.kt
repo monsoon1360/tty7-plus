@@ -32,6 +32,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 
 @Composable
@@ -240,13 +241,15 @@ fun MobileApp(
                 } else {
                     val selection = state.terminalSelection
                     val feed = state.terminal
+                    val shortcuts = remember(feed) { MutableSharedFlow<String>(extraBufferCapacity = 16) }
+                    val agentKind = agentAppearance(currentPane?.agentName)?.kind
                     val syncing = !state.connected || !state.terminalSynced || feed == null
                     val inputEnabled = !syncing
                     Column(Modifier.weight(1f).fillMaxWidth()) {
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface).testTag("terminal-surface")) {
                             Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
-                                    { message -> feed?.let { controller.terminalFailed(it, message) } })
+                                    { message -> feed?.let { controller.terminalFailed(it, message) } }, shortcuts)
                             }
                             if (selection == null) {
                                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
@@ -263,16 +266,13 @@ fun MobileApp(
                             )
                         }
                         if (selection != null) {
-                            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                listOf(
-                                    Triple("Enter", "回车", "\r"), Triple("Ctrl-C", "中断", "\u0003"),
-                                    Triple("Tab", "制表", "\t"), Triple("Esc", "退出键", "\u001b"),
-                                    Triple("↑", "↑", "\u001b[A"), Triple("↓", "↓", "\u001b[B"),
-                                    Triple("←", "←", "\u001b[D"), Triple("→", "→", "\u001b[C"),
-                                ).forEach { (tag, label, input) ->
-                                    TextButton(onClick = { controller.input(input) }, enabled = inputEnabled, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp), modifier = Modifier.height(48.dp).testTag("key-$tag")) { Text(label, style = MaterialTheme.typography.labelMedium) }
-                                }
-                            }
+                            TerminalKeyBar(
+                                paneId = currentPane?.id,
+                                agentKind = agentKind,
+                                status = currentPane?.agentStatus,
+                                enabled = inputEnabled,
+                                onInput = { input -> if (inputEnabled) shortcuts.tryEmit(input) },
+                            )
                         }
                     }
                 }
@@ -288,6 +288,96 @@ fun MobileApp(
             forgetting?.let { computer -> AlertDialog(onDismissRequest = { forgetting = null }, title = { Text("解除与「${computer.hostName}」的配对？") }, text = { Text("这会关闭手机上的连接并删除连接凭据，之后才能扫描二维码配对电脑。若要彻底撤销访问权限，请在电脑的「配对设备」设置中移除此设备。") }, confirmButton = { TextButton(onClick = { controller.forget(computer); forgetting = null; pairingSubmitted = false; qrText = ""; showPairing = true }, modifier = Modifier.testTag("confirm-unpair-computer")) { Text("解除配对") } }, dismissButton = { TextButton(onClick = { forgetting = null }) { Text("取消") } }) }
         }
     }
+}
+
+private data class TerminalKey(val tag: String, val label: String, val description: String, val input: String)
+
+private val primaryTerminalKeys = listOf(
+    TerminalKey("Enter", "回车", "回车 Enter，发送 CR", "\r"),
+    TerminalKey("LF", "换行", "原地换行 LF / Ctrl-J", "\n"),
+    TerminalKey("Esc", "Esc", "Esc，返回或取消，由终端程序决定", "\u001b"),
+    TerminalKey("Ctrl-C", "Ctrl-C", "中断 Ctrl-C", "\u0003"),
+)
+private val directionTerminalKeys = listOf(
+    TerminalKey("↑", "↑", "上方向键", "\u001b[A"),
+    TerminalKey("↓", "↓", "下方向键", "\u001b[B"),
+    TerminalKey("←", "←", "左方向键", "\u001b[D"),
+    TerminalKey("→", "→", "右方向键", "\u001b[C"),
+)
+private val moreTerminalKeys = listOf(
+    TerminalKey("Tab", "Tab · 制表", "制表 Tab", "\t"),
+    TerminalKey("Home", "Home · 行首", "行首 Home", "\u001b[H"),
+    TerminalKey("End", "End · 行尾", "行尾 End", "\u001b[F"),
+)
+private val codexShiftLeft = TerminalKey("Shift-Left", "Shift+←", "Codex Shift 加左方向键", "\u001b[1;2D")
+private val rawLineFeed = TerminalKey("LF", "Ctrl-J", "发送 LF，由终端程序决定是否换行或执行", "\n")
+
+@Composable
+private fun TerminalKeyBar(paneId: Long?, agentKind: String?, status: String?, enabled: Boolean, onInput: (String) -> Unit) {
+    var more by remember(paneId, agentKind, enabled) { mutableStateOf(false) }
+    val waiting = status.equals("waiting", ignoreCase = true)
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth()) {
+            primaryTerminalKeys.forEach { key ->
+                val shown = if (key.tag == "LF" && agentKind != "codex" && agentKind != "omp") rawLineFeed else key
+                TerminalKeyButton(shown, enabled, onInput, Modifier.weight(1f))
+            }
+            Box(Modifier.weight(1f)) {
+                TextButton(
+                    onClick = { more = true }, enabled = enabled,
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("key-more"),
+                ) { Text("更多", style = MaterialTheme.typography.labelMedium, maxLines = 1) }
+                DropdownMenu(expanded = more && enabled, onDismissRequest = { more = false }) {
+                    if (agentKind == "codex") {
+                        DropdownMenuItem(
+                            text = { Text(codexShiftLeft.label) },
+                            enabled = enabled,
+                            onClick = { more = false; if (enabled) onInput(codexShiftLeft.input) },
+                            modifier = Modifier.testTag("key-more-${codexShiftLeft.tag}").semantics { contentDescription = codexShiftLeft.description },
+                        )
+                    }
+                    moreTerminalKeys.forEach { key ->
+                        DropdownMenuItem(
+                            text = { Text(key.label) },
+                            enabled = enabled,
+                            onClick = { more = false; if (enabled) onInput(key.input) },
+                            modifier = Modifier.testTag("key-more-${key.tag}").semantics { contentDescription = key.description },
+                        )
+                        if (key.tag == "Tab") {
+                            Row(Modifier.width(208.dp).padding(horizontal = 8.dp)) {
+                                directionTerminalKeys.forEach { direction ->
+                                    TerminalKeyButton(
+                                        direction, enabled,
+                                        { input -> more = false; if (enabled) onInput(input) },
+                                        Modifier.weight(1f),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (waiting) {
+            Row(
+                Modifier.fillMaxWidth().semantics { contentDescription = "等待选择或确认：使用方向键选择，回车确认" },
+            ) {
+                directionTerminalKeys.forEach { key ->
+                    TerminalKeyButton(key, enabled, onInput, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TerminalKeyButton(key: TerminalKey, enabled: Boolean, onInput: (String) -> Unit, modifier: Modifier) {
+    TextButton(
+        onClick = { if (enabled) onInput(key.input) }, enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+        modifier = modifier.height(48.dp).testTag("key-${key.tag}").semantics { contentDescription = key.description },
+    ) { Text(key.label, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
 }
 
 @Composable
@@ -567,7 +657,7 @@ internal fun paneSections(panes: List<Pane>): List<PaneSection> {
 
 private fun agentStatus(status: String): String = when (status.lowercase()) {
     "working", "running" -> "正在运行"
-    "waiting" -> "等待操作"
+    "waiting" -> "等待选择或确认"
     "done" -> "已完成"
     "idle" -> "空闲"
     else -> "状态：$status"

@@ -112,6 +112,7 @@ for (const id of [4,10,11,12]) {
 }
 terminal.onData(data => {
     if (data === '\x1b[I' || data === '\x1b[O') return; // Local focus is not desktop focus.
+    stopScrolling();
     if (inputReady && window.Tty7) window.Tty7.input(generation, data);
 });
 
@@ -122,6 +123,13 @@ let sizeTimer;
 let sentGrid = '';
 let applicationScreen = null;
 let applicationScrollDebt = 0;
+let applicationScrollTimer = 0;
+let surfaceHeight = '';
+let surfaceWidth = '';
+let surfaceRows = 0;
+let surfaceCols = 0;
+let cellSize = {width:8, height:16};
+let scrollOrigin = {left:0, top:0};
 let scrollPoint = {x:0, y:0};
 function requestPhoneGrid() {
     if (!fontsReady || sizeTimer) return;
@@ -147,8 +155,19 @@ window.tty7Synced = function(gen) {
 };
 function sizeSurface() {
     // Grid changes come back in ordered PTY frames, never reflow ahead of output.
-    terminal.element.style.height = screen.style.height;
+    const height = screen.style.height;
+    const width = screen.style.width;
+    if (surfaceHeight === height && surfaceWidth === width && surfaceRows === terminal.rows && surfaceCols === terminal.cols) return;
+    surfaceHeight = height;
+    surfaceWidth = width;
+    surfaceRows = terminal.rows;
+    surfaceCols = terminal.cols;
+    // xterm already calculated these pixel dimensions. Reading inline styles
+    // avoids forcing DOM layout in every remote gesture after a screen patch.
+    cellSize = {width:parseFloat(width) / terminal.cols || 8, height:parseFloat(height) / terminal.rows || 16};
+    terminal.element.style.height = height;
     requestPhoneGrid();
+    if (following) returnLive();
 }
 function isAtLive() {
     return history.hidden &&
@@ -163,14 +182,17 @@ function returnLive() {
     viewport.scrollTop = viewport.scrollHeight;
     following = true;
 }
-document.getElementById('return-live').addEventListener('click', () => {
+window.tty7Key = function(gen, text) {
+    if (gen !== generation || !inputReady) return;
     stopScrolling();
-    returnLive();
-});
+    if (window.Tty7) window.Tty7.input(generation, text);
+};
+viewport.addEventListener('scroll', () => {
+    following = isAtLive();
+}, {passive:true});
 terminal.onRender(() => {
     // WebView may measure fonts after the first write/attachment.
     sizeSurface();
-    if (following) returnLive();
 });
 
 const historyStatus = document.getElementById('history-status');
@@ -359,6 +381,28 @@ function moveScroll(element, amount) {
     element.scrollTop += amount;
     return amount - (element.scrollTop - previous);
 }
+function applicationScrolls() {
+    const modes = applicationScreen?.modes;
+    return inputReady && history.hidden && applicationScreen?.alternate && (modes.mouse || modes.alternate_scroll);
+}
+function flushApplicationScroll() {
+    applicationScrollTimer = 0;
+    if (!applicationScrolls()) { applicationScrollDebt = 0; return; }
+    const lines = Math.max(-20, Math.min(20, Math.trunc(applicationScrollDebt)));
+    if (!lines) return;
+    applicationScrollDebt -= lines;
+    const modes = applicationScreen.modes;
+    let sequence;
+    if (modes.mouse) {
+        const col = Math.max(1, Math.min(terminal.cols, 1 + Math.floor((scrollPoint.x - scrollOrigin.left) / cellSize.width)));
+        const row = Math.max(1, Math.min(terminal.rows, 1 + Math.floor((scrollPoint.y - scrollOrigin.top) / cellSize.height)));
+        const button = lines < 0 ? 64 : 65;
+        sequence = modes.sgr_mouse ? `\x1b[<${button};${col};${row}M` :
+            `\x1b[M${String.fromCharCode(button + 32, Math.min(col,223) + 32, Math.min(row,223) + 32)}`;
+    } else sequence = modes.app_cursor ? (lines < 0 ? '\x1bOA' : '\x1bOB') : (lines < 0 ? '\x1b[A' : '\x1b[B');
+    if (window.Tty7) window.Tty7.input(generation, sequence.repeat(Math.abs(lines)));
+    if (Math.abs(applicationScrollDebt) >= 1) applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
+}
 function scrollLocally(amount) {
     if (!history.hidden) {
         moveScroll(history, amount);
@@ -371,23 +415,14 @@ function scrollLocally(amount) {
     }
     // Full-screen programs own their transcript (Codex, vim, less, tmux).
     // Match the desktop's wheel route rather than opening shell history.
-    const modes = applicationScreen?.modes;
-    if (inputReady && applicationScreen?.alternate && (modes.mouse || modes.alternate_scroll)) {
-        const cellHeight = screen.clientHeight / terminal.rows;
-        applicationScrollDebt += amount / Math.max(1, cellHeight);
-        const lines = Math.max(-20, Math.min(20, Math.trunc(applicationScrollDebt)));
-        if (!lines) return;
-        applicationScrollDebt -= Math.trunc(applicationScrollDebt);
-        let sequence;
-        if (modes.mouse) {
-            const rect = screen.getBoundingClientRect();
-            const col = Math.max(1, Math.min(terminal.cols, 1 + Math.floor((scrollPoint.x - rect.left) / (rect.width / terminal.cols))));
-            const row = Math.max(1, Math.min(terminal.rows, 1 + Math.floor((scrollPoint.y - rect.top) / cellHeight)));
-            const button = lines < 0 ? 64 : 65;
-            sequence = modes.sgr_mouse ? `\x1b[<${button};${col};${row}M` :
-                `\x1b[M${String.fromCharCode(button + 32, Math.min(col,223) + 32, Math.min(row,223) + 32)}`;
-        } else sequence = modes.app_cursor ? (lines < 0 ? '\x1bOA' : '\x1bOB') : (lines < 0 ? '\x1b[A' : '\x1b[B');
-        if (window.Tty7) window.Tty7.input(generation, sequence.repeat(Math.abs(lines)));
+    if (applicationScrolls()) {
+        if (amount * applicationScrollDebt < 0) applicationScrollDebt = 0;
+        applicationScrollDebt += amount / Math.max(1, cellSize.height);
+        // Coalesce touch/120 Hz move events before paying for another remote
+        // RPC. Retain every unsent whole line, including beyond a 20-line batch.
+        if (!applicationScrollTimer && Math.abs(applicationScrollDebt) >= 1) {
+            applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
+        }
         return;
     }
     if (amount < 0) {
@@ -417,6 +452,10 @@ function focusInput() {
 function stopScrolling() {
     cancelAnimationFrame(frame);
     cancelAnimationFrame(coast);
+    clearTimeout(applicationScrollTimer);
+    applicationScrollTimer = 0;
+    applicationScrollDebt = 0;
+    touch = undefined;
     frame = coast = 0;
     pendingX = pendingY = 0;
 }
@@ -427,7 +466,7 @@ function flushScroll() {
     const vertical = pendingY;
     pendingX = pendingY = 0;
     if (horizontal) (history.hidden ? viewport : history).scrollLeft += horizontal;
-    if (vertical) scrollLocally(vertical * touchScrollSpeed);
+    if (vertical) scrollLocally(vertical * (applicationScrolls() ? 1 : touchScrollSpeed));
 }
 function trackTouch(point, time) {
     scrollPoint = {x:point.clientX, y:point.clientY};
@@ -449,19 +488,21 @@ function trackTouch(point, time) {
 }
 function glide(samples, endedAt) {
     if (samples.length < 2) return;
+    const remote = applicationScrolls();
     const [y0, t0] = samples[0];
     const [y1, t1] = samples[samples.length - 1];
     // Holding still before lifting stops the scroll instead of flinging it.
     if (endedAt - t1 > 80) return;
     let velocity = (y0 - y1) / Math.max(1, endedAt - t0);
     let at = performance.now();
+    const startedAt = at;
     const step = now => {
         coast = 0;
         const elapsed = now - at;
         at = now;
-        velocity *= Math.pow(0.995, elapsed);
-        if (Math.abs(velocity) < 0.02) return;
-        scrollLocally(velocity * Math.min(elapsed, 32) * touchScrollSpeed);
+        velocity *= Math.pow(remote ? 0.985 : 0.995, elapsed);
+        if (Math.abs(velocity) < 0.02 || (remote && now - startedAt > 240)) return;
+        scrollLocally(velocity * Math.min(elapsed, 32) * (remote ? 1 : touchScrollSpeed));
         coast = requestAnimationFrame(step);
     };
     coast = requestAnimationFrame(step);
@@ -482,9 +523,9 @@ viewport.addEventListener('pointerdown', event => {
         touch = undefined;
         return;
     }
-    // The history toolbar keeps its native click, but cannot start a fling.
-    if (event.target.closest('button')) { touch = undefined; return; }
     blurInput();
+    const rect = screen.getBoundingClientRect();
+    scrollOrigin = {left:rect.left, top:rect.top};
     viewport.setPointerCapture(event.pointerId);
     event.preventDefault();
     touch = {
@@ -535,7 +576,7 @@ viewport.addEventListener('lostpointercapture', cancelPointer, {capture:true});
 for (const type of ['touchstart','touchmove','touchend','touchcancel']) {
     viewport.addEventListener(type, event => {
         event.stopPropagation();
-        if (!event.target.closest('button') && event.cancelable) event.preventDefault();
+        if (event.cancelable) event.preventDefault();
     }, {capture:true, passive:false});
 }
 viewport.addEventListener('wheel', event => {
@@ -543,7 +584,9 @@ viewport.addEventListener('wheel', event => {
     event.stopPropagation();
     stopScrolling();
     scrollPoint = {x:event.clientX, y:event.clientY};
-    const factor = event.deltaMode === 1 ? screen.clientHeight / terminal.rows :
+    const rect = screen.getBoundingClientRect();
+    scrollOrigin = {left:rect.left, top:rect.top};
+    const factor = event.deltaMode === 1 ? cellSize.height :
         event.deltaMode === 2 ? viewport.clientHeight : 1;
     (history.hidden ? viewport : history).scrollLeft += event.deltaX * factor;
     scrollLocally(event.deltaY * factor);
@@ -558,6 +601,7 @@ for (const type of ['mousedown','mouseup','mousemove','contextmenu']) {
 
 window.addEventListener('resize', () => {
     sizeSurface();
+    requestPhoneGrid();
     terminal.refresh(0, terminal.rows - 1);
     if (following) returnLive();
 });
@@ -587,6 +631,7 @@ window.tty7Begin = function(gen) {
         terminal.reset();
         writing = false;
         sizeSurface();
+        requestPhoneGrid();
         if (window.Tty7) window.Tty7.begun(gen);
     })).catch(error => fail(error.message));
     return true;
@@ -609,8 +654,8 @@ window.tty7Screen = function(gen, state, sequence) {
         paint += modes.app_keypad ? '\x1b=' : '\x1b>';
         paint += modes.bracketed_paste ? '\x1b[?2004h' : '\x1b[?2004l';
         paint += cursor.visible ? '\x1b[?25h' : '\x1b[?25l';
-        terminal.options.cursorStyle = cursor.shape;
-        terminal.options.cursorBlink = cursor.blink;
+        if (terminal.options.cursorStyle !== cursor.shape) terminal.options.cursorStyle = cursor.shape;
+        if (terminal.options.cursorBlink !== cursor.blink) terminal.options.cursorBlink = cursor.blink;
         writing = true;
         terminal.write(paint, () => {
             if (gen !== generation) return;
@@ -622,10 +667,8 @@ window.tty7Screen = function(gen, state, sequence) {
                     historyMore = true;
                 }
                 appliedRevision = state.revision; appliedEpoch = state.epoch;
-                if (applicationScreen?.alternate !== state.alternate) applicationScrollDebt = 0;
+                if (applicationScreen?.alternate !== state.alternate) stopScrolling();
                 applicationScreen = {alternate:state.alternate, modes:state.modes};
-                sizeSurface();
-                if (following) returnLive();
                 writing = false;
                 if (window.Tty7) window.Tty7.rendered(gen, sequence);
             } catch (error) { writing = false; fail(error.message || '终端画面更新失败'); }
@@ -641,5 +684,8 @@ terminalFontsReady.then(() => {
     terminal.options.fontFamily = terminalFontFamily;
     fontsReady = true;
     sizeSurface();
+    // The bundled font can have the fallback's exact metrics; readiness must
+    // still measure the initial phone grid when no geometry change was emitted.
+    requestPhoneGrid();
     if (window.Tty7) window.Tty7.ready();
 }).catch(error => fail(error.message));

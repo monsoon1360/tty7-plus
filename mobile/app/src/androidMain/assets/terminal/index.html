@@ -16,14 +16,13 @@ html,body{margin:0;height:100%;background:var(--background);color:var(--foregrou
 #terminal .xterm-helper-textarea{position:fixed!important;top:2px!important;left:2px!important}
 #history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:var(--background);z-index:20}
 #history-toolbar{position:sticky;top:0;left:0;background:var(--toolbar);padding:8px;font:14px sans-serif}
-#return-live{margin-left:8px;min-height:44px;padding:6px 10px;background:var(--fill);color:var(--foreground);border:0;border-radius:4px}
 #history-text,#history-screen{margin:0;padding:2px;font:14px var(--terminal-font);white-space:pre}
 </style>
 </head><body>
 <div id="viewport" aria-label="远程终端，上下滑动查看历史，左右滑动查看宽屏内容">
 <div id="terminal"></div>
 <section id="history" aria-label="已保留的主屏幕历史" hidden>
-<div id="history-toolbar"><span id="history-status">主屏幕历史（只读）</span><button id="return-live" type="button">返回实时终端</button></div>
+<div id="history-toolbar"><span id="history-status">主屏幕历史（只读）</span></div>
 <pre id="history-text"></pre>
 <pre id="history-screen" aria-label="进入历史时的终端画面"></pre>
 </section>

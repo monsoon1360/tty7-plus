@@ -164,11 +164,15 @@ foreground while connected.
    displays branches and Agent status. A loading overlay stays until the selected
    terminal's current screen has been atomically applied by its renderer.
    Synchronization does not focus the keyboard. Tap the terminal without dragging
-   to type at its cursor. **编辑消息** opens an optional message
-   editor; Enter, Ctrl-C, Tab, Esc and arrow controls remain available. Opening
-   the workspace drawer clears input focus and dismisses the keyboard from either
-   input mode. Create workspaces and terminals, switch between them, or close a
-   terminal after confirming.
+   to type at its cursor. The fixed key bar provides **回车** (Enter/CR),
+   **换行** (Ctrl-J/LF) for Codex and omp, **Esc**, **Ctrl-C** (中断), and
+   **更多** for Tab and navigation keys. Other programs show the raw **Ctrl-J**
+   name, since LF can execute a shell command. Codex's **Shift+←** lives in
+   **更多** rather than occupying its own row. The usual key bar is one row;
+   waiting agents additionally show direction keys for answering a prompt.
+   Opening the workspace drawer clears
+   input focus and dismisses the keyboard. Create workspaces and terminals,
+   switch between them, or close a terminal after confirming.
    The shared PTY uses the phone's measured grid and adapts when the keyboard changes
    the available height; it is not a horizontally clipped desktop-width terminal.
 5. Each phone saves exactly one computer. **扫描与配对管理** opens its pairing
@@ -199,17 +203,35 @@ be produced without first replaying a desktop-width terminal. While its size
 lease is held, the phone controls the shared PTY grid; release restores the
 desktop grid. Desktop takeback prevents later phone resize requests from
 reclaiming control until the terminal is explicitly reopened. Selection and
-scroll positions remain client-local. Touch scrolling sends neither mouse
-reports nor terminal-query responses to the PTY.
+normal-buffer history positions remain client-local. Alternate-screen applications
+such as Codex own their transcript: vertical gestures send mouse-wheel reports,
+or cursor keys when the application requests alternate scrolling without mouse
+tracking. Terminal-query responses remain the desktop's responsibility.
 
-Vertical touch scrolling runs at 1.8× finger travel and coasts after a flick;
-a new touch stops the coast. Horizontal panning remains 1:1. Pointer capture on
-the stable viewport keeps gestures intact when xterm replaces rendered rows.
-Drags, cancelled gestures and multi-touch never focus terminal input. An
-intentional tap restores both terminal and native keyboard focus, including
-after closing the message editor. The dark terminal sets explicit light text
-and cursor colours and enforces a 4.5:1 minimum text contrast for ANSI/truecolour
-output, so a desktop application's dark text remains readable on the phone.
+Local history scrolls at 1.8× finger travel and coasts after a flick. Remote
+application scrolling follows finger travel at 1:1, coalesces input over 32 ms,
+and sends at most 20 wheel lines per batch without discarding remaining whole
+lines. Its shorter coast ends within 240 ms; reversing direction replaces unsent
+old-direction movement. A new touch or key cancels pending scrolling and inertia.
+Horizontal panning remains 1:1. Pointer capture on the stable viewport keeps
+gestures intact when xterm replaces rendered rows. Drags, cancelled gestures and
+multi-touch never focus terminal input; only an intentional tap requests the IME.
+Screen presentation JSON is prepared off the Android UI thread, and unchanged
+screen geometry does not repeat local scroll-to-bottom layout work.
+
+When Codex shows its return-to-latest hint, use **Esc** on the phone's key bar.
+The key cancels pending scroll input and inertia before reaching the application.
+There is no additional floating return control or terminal-text hint detection.
+Esc is not “close terminal”:
+the application decides whether it cancels a dialog, returns to latest output,
+or stops a turn. Ctrl-C is a separate interrupt input. **换行** sends LF rather
+than Enter/CR; Codex and omp use it for message newlines, while a shell or another
+program may interpret it differently. Closing a terminal remains a separate,
+confirmed action.
+
+The dark terminal sets explicit light text and cursor colours and enforces a
+4.5:1 minimum text contrast for ANSI/truecolour output, so a desktop application's
+dark text remains readable on the phone.
 
 Every subscription has its own generation and ordered frame sequence. Screen
 revisions and geometry/buffer epochs are decimal strings; patches identify the
@@ -237,9 +259,9 @@ History is a separate, read-only surface opened by upward scrolling:
 - Android retains at most 2,000 rows / 2 MiB of UTF-8 row content. A bounded page
   is parsed in one batch without creating another visible terminal renderer.
   Prepending older rows preserves the reading anchor; truncation is visible.
-- Live screen patches continue while history is open. **返回实时终端** shows that
-  already-current screen immediately. An expired cursor displays an error;
-  returning live and reopening history starts a new view.
+- Live screen patches continue while history is open. Scrolling to the end of
+  history returns to the already-current screen. An expired cursor displays an
+  error; returning live and reopening history starts a new view.
 
 Clearing a screen no longer makes entry wait for the retained history behind it.
 Initial transfer cost follows the current grid rather than the number of old
