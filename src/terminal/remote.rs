@@ -7102,6 +7102,7 @@ mod tests {
                 turns: 0,
                 inferred: false,
                 readout: Default::default(),
+                since_ms: None,
             }))
             .encode(daemon)
             .unwrap();
@@ -7165,6 +7166,7 @@ mod tests {
             turns: 0,
             inferred: false,
             readout: Default::default(),
+            since_ms: None,
         }))
         .encode(&mut daemon_side)
         .unwrap();
@@ -7217,6 +7219,7 @@ mod tests {
             turns: 0,
             inferred: false,
             readout: Default::default(),
+            since_ms: None,
         }))
         .encode(&mut daemon_side)
         .unwrap();
