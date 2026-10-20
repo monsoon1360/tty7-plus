@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A client that reconnects no longer takes back a workspace someone else is
+  using** — A laptop that slept while holding a remote workspace, then woke and
+  reconnected, used to attach to it again and push the machine that had taken
+  it over in the meantime out, over and over. After a reconnect a workspace is
+  now claimed only if nobody else is holding it; otherwise the window opens
+  taken over, with Take Back, as if the notice had arrived. Opening a workspace
+  and Take Back still take it (#1193).
+
 ### Added
 
 - **AI and Git settings with editable commit drafts.** Separate local Codex
