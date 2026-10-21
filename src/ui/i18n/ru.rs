@@ -47,45 +47,6 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::SettingsDefinedIn => "Задан в",
         L10nKey::SettingsConnectInNewTab => "Подключиться в новой вкладке",
         L10nKey::SettingsCopied => "Скопировано",
-        L10nKey::SettingsNavMobile => "Телефон",
-        L10nKey::SettingsMobileAccess => "Разрешить доступ с телефона",
-        L10nKey::SettingsMobileAccessDesc => {
-            "Подключённые телефоны видят панели этого компьютера и могут вводить в них текст, даже если все окна закрыты. Соединения защищены сквозным шифрованием."
-        }
-        L10nKey::SettingsMobileStatusStarting => "Запуск…",
-        L10nKey::SettingsMobileStatusFailed => "Не работает: {error}",
-        L10nKey::SettingsMobileStartFailed => "Не удалось включить доступ с телефона: {error}",
-        L10nKey::SettingsMobileNoAnswer => {
-            "сервер tty7 не включил доступ. Перезапустите сервер в разделе «Настройки → О программе» и повторите попытку."
-        }
-        L10nKey::SettingsMobilePair => "Подключить телефон",
-        L10nKey::SettingsMobileShowCode => "Показать код",
-        L10nKey::SettingsMobilePairDesc => {
-            "Показывает одноразовый код для приложения tty7 на телефоне."
-        }
-        L10nKey::SettingsMobilePairNeedsAccess => "Сначала включите доступ с телефона.",
-        L10nKey::SettingsMobilePairScan => {
-            "Отсканируйте код в приложении tty7 на телефоне или скопируйте его и вставьте там."
-        }
-        L10nKey::SettingsMobilePairValid => "Действует ещё {time}. Подходит для одного телефона.",
-        L10nKey::SettingsMobileNewCode => "Новый код",
-        L10nKey::SettingsMobilePairExpired => {
-            "Срок действия кода истёк. Создайте новый код для подключения."
-        }
-        L10nKey::SettingsMobilePairTried => {
-            "Код уже вводили, и он больше не действует: возможно, его ввели с ошибкой или прервалась связь. Создайте новый код для подключения."
-        }
-        L10nKey::SettingsMobilePairReplaced => {
-            "Этот код заменён более новым. Создайте новый код для подключения."
-        }
-        L10nKey::SettingsMobileCopyCode => "Копировать код",
-        L10nKey::SettingsMobilePaired => "Подключено к {name}.",
-        L10nKey::SettingsMobilePhones => "Подключённые телефоны",
-        L10nKey::SettingsMobileNoPhones => "Телефоны ещё не подключены.",
-        L10nKey::SettingsMobileUnpair => "Отключить",
-        L10nKey::SettingsSearchMobileKeywords => {
-            "телефон мобильный айфон андроид айпад подключение код удалённый доступ phone mobile iphone android ipad pair qr code remote access"
-        }
         L10nKey::SettingsCopySshCommand => "Копировать команду ssh",
         L10nKey::SettingsStoredInTty7 => "Сохранён в настройках tty7",
         L10nKey::SettingsClickAgainToRemove => "Нажмите ещё раз, чтобы удалить",

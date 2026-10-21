@@ -285,14 +285,18 @@ impl ScreenMirror {
         let term = &self.state.term;
         let grid = term.normal_grid();
         let count = grid.history_size();
-        let mut lines = Vec::with_capacity(count.min(HISTORY_ROWS));
+        // Capture the retained rows and their adjoining normal screen under the
+        // same pane lock. A separately delivered live screen can be newer than
+        // this immutable view and must never be spliced onto its end.
+        if count == 0 { return HistorySnapshot { lines: Vec::new(), truncated: self.state.history_truncated }; }
+        let retained = count.min(HISTORY_ROWS);
+        let mut lines = Vec::with_capacity((retained + grid.screen_lines()).min(HISTORY_ROWS));
         let mut bytes = 0;
-        let mut truncated = self.state.history_truncated || count > HISTORY_ROWS;
-        // Retain the newest rows. Reverse once, so each immutable view is chronological.
-        for n in 1..=count.min(HISTORY_ROWS) {
-            let (text, ansi) = render_line(term, grid, Line(-(n as i32)), true);
+        let mut truncated = self.state.history_truncated || count > retained;
+        for index in (-(retained as i32)..grid.screen_lines() as i32).rev() {
+            let (text, ansi) = render_line(term, grid, Line(index), true);
             let len = text.len() + ansi.len();
-            if bytes + len > HISTORY_BYTES { truncated = true; break; }
+            if lines.len() == HISTORY_ROWS || bytes + len > HISTORY_BYTES { truncated = true; break; }
             bytes += len;
             lines.push(HistoryLine { text, ansi, cols: grid.columns() as u16 });
         }
@@ -461,6 +465,38 @@ mod tests {
         assert!(history.truncated);
         assert!(history.lines.len() <= HISTORY_ROWS);
         assert!(history.lines.iter().map(|line| line.text.len() + line.ansi.len()).sum::<usize>() <= HISTORY_BYTES);
+    }
+
+    #[test]
+    fn phone_history_keeps_the_phone_grid_width_without_losing_wrapped_text() {
+        let mut mirror = ScreenMirror::with_config(size(80, 3), false, &crate::core::config::Config::default());
+        let expected = "x".repeat(2100);
+        mirror.feed(expected.as_bytes());
+        mirror.feed(b"\r\nend");
+        mirror.resize(size(37, 3));
+        let history = mirror.history();
+        assert!(history.lines.iter().all(|line| line.cols == 37));
+        assert_eq!(history.lines.iter().filter(|line| line.text != "end").map(|line| line.text.as_str()).collect::<String>(), expected);
+        assert_eq!(history.lines.last().unwrap().text, "end");
+    }
+
+    #[test]
+    fn history_includes_the_adjoining_normal_screen_in_one_immutable_view() {
+        let mut mirror = ScreenMirror::with_config(size(16, 2), false, &crate::core::config::Config::default());
+        mirror.feed(b"first\r\nsecond");
+        assert!(mirror.history().lines.is_empty(), "one screen needs no history overlay");
+        mirror.feed(b"\r\nthird");
+        let captured = mirror.history();
+        mirror.feed(b"\r\nfourth");
+        let captured_text: Vec<_> = captured.lines.iter().map(|line| line.text.trim_end()).collect();
+        assert_eq!(captured_text, ["first", "second", "third"]);
+        let newer = mirror.history();
+        let newer_text: Vec<_> = newer.lines.iter().map(|line| line.text.trim_end()).collect();
+        assert_eq!(newer_text, ["first", "second", "third", "fourth"]);
+        mirror.feed(b"\x1b[?1049hforeign alternate screen");
+        let alternate = mirror.history();
+        let alternate_text: Vec<_> = alternate.lines.iter().map(|line| line.text.trim_end()).collect();
+        assert_eq!(alternate_text, newer_text, "shell history ends with its normal screen, not the alternate program");
     }
 
     #[test]

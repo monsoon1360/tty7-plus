@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **One desktop pairing entry.** Removed the legacy Mobile settings page,
+  its search entries and old-protocol QR controls. **Pair Devices** is now the
+  only desktop pairing entry; existing native device credentials are unchanged.
 - **Agent-aware Android terminal keys.** Added an explicit Ctrl-J/LF newline
   beside Enter/CR, clarified Esc versus Ctrl-C, and moved less frequent keys into
-  an overflow menu, including Codex's Shift+Left. The usual bar stays on one row;
-  waiting agents expose direction keys without horizontally scrolling the bar.
+  an overflow menu, including Codex's Shift+Left. Direction keys remain visible
+  on a permanent second row for editing and answering prompts.
   Keys stop pending gesture input without opening the soft keyboard.
 - **Protocol 3 synchronizes terminal state, not historical ANSI replay.** A
   continuous daemon mirror shares the desktop's terminal engine and sends only
@@ -53,8 +56,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input target is fixed onscreen while waiting for the shared PTY's new grid,
   rather than leaving the IME focused at an offscreen old cursor position.
 
+- **Android precise scrolling without widening the terminal.** Local drags track
+  finger travel 1:1 and preserve movement while the first history page loads.
+  Live output remains visible until the complete page is ready; returning to the
+  bottom cancels its pending reveal and inertia. The history toolbar retains its
+  height when its return button changes visibility. History keeps the phone's
+  terminal column width instead of joining soft wraps into desktop-width lines.
+  Fractional touch rounding cannot route a downward drag into history; only an
+  upward movement that reaches the live viewport's top can open it.
+
 ### Fixed
 
+- **Reading history does not time out after two minutes.** Keep the immutable
+  paged view while its subscription is active, rather than expiring its cursor
+  during a reading pause. Subscription teardown and the existing global view
+  count/byte limits still release retained snapshots.
+- **Android history stays continuous.** History snapshots capture retained rows
+  and their adjoining normal screen together, rather than joining an older cache
+  to newer live output. Reopening after live changes refreshes the view. The
+  bounded phone cache marks its newer edge and offers a reload action instead
+  of silently dropping rows in the middle. OMP and ordinary terminals regain
+  **回到底部** beside the history status only while scrolled away from the bottom;
+  reaching it hides the action, including while background output advances.
+  A truncated-window boundary is not the live bottom. Codex continues to use Esc.
+  Update both the Android app and desktop daemon.
+- **Android IME deletion reaches the remote editor.** Empty-buffer
+  `deleteContentBackward` events no longer disappear when an input method sends
+  key code 229 instead of Backspace. A paired Backspace event deletes only once,
+  and Chinese composition/candidate editing remains local until committed.
 - **Codex mobile scrolling and return to latest.** Full-screen gestures coalesce
   remote wheel input, retain unsent whole lines, clear old-direction movement on
   reversal, and use a shorter 1:1 coast instead of the local-history fling.

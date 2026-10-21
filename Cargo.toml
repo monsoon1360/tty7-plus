@@ -39,7 +39,7 @@ tty7-core = { path = "crates/tty7-core", features = ["gssapi", "remote-install",
 # (`core::mobile`). Lives in the GUI binary only: tty7-server is the lean static
 # binary pushed to remote machines, and must not grow iroh.
 tty7-gateway = { path = "crates/tty7-gateway" }
-# Draws the pairing code in Settings → Mobile.
+# Draws the pairing code in Settings → Pair Devices.
 qrcode = { version = "0.14", default-features = false }
 
 gpui = { workspace = true }

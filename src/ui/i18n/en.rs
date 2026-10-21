@@ -47,41 +47,6 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::SettingsDefinedIn => "Defined in",
         L10nKey::SettingsConnectInNewTab => "Connect in new tab",
         L10nKey::SettingsCopied => "Copied",
-        L10nKey::SettingsNavMobile => "Mobile",
-        L10nKey::SettingsMobileAccess => "Allow phone access",
-        L10nKey::SettingsMobileAccessDesc => {
-            "Phones you pair can see this machine's panes and type into them, even with every window closed. Connections are end-to-end encrypted."
-        }
-        L10nKey::SettingsMobileStatusStarting => "Starting…",
-        L10nKey::SettingsMobileStatusFailed => "Not running: {error}",
-        L10nKey::SettingsMobileStartFailed => "Phone access could not start: {error}",
-        L10nKey::SettingsMobileNoAnswer => {
-            "the tty7 server did not start it. Restart the server in Settings → About, then try again."
-        }
-        L10nKey::SettingsMobilePair => "Pair a phone",
-        L10nKey::SettingsMobileShowCode => "Show code",
-        L10nKey::SettingsMobilePairDesc => "Shows a one-time code for the tty7 app on your phone.",
-        L10nKey::SettingsMobilePairNeedsAccess => "Turn on phone access first.",
-        L10nKey::SettingsMobilePairScan => {
-            "Point your phone's camera at this, or scan it in the tty7 app, or copy the code and paste it there."
-        }
-        L10nKey::SettingsMobilePairValid => "Expires in {time}. Works for one phone.",
-        L10nKey::SettingsMobileNewCode => "New code",
-        L10nKey::SettingsMobilePairExpired => "This code has expired. Make a new one to pair.",
-        L10nKey::SettingsMobilePairTried => {
-            "This code was tried and no longer works — it may have been mistyped, or the connection dropped. Make a new one to pair."
-        }
-        L10nKey::SettingsMobilePairReplaced => {
-            "A newer code has replaced this one. Make a new one to pair."
-        }
-        L10nKey::SettingsMobileCopyCode => "Copy code",
-        L10nKey::SettingsMobilePaired => "Paired with {name}.",
-        L10nKey::SettingsMobilePhones => "Paired phones",
-        L10nKey::SettingsMobileNoPhones => "No phones paired yet.",
-        L10nKey::SettingsMobileUnpair => "Unpair",
-        L10nKey::SettingsSearchMobileKeywords => {
-            "phone mobile iphone android ipad pair qr code remote access"
-        }
         L10nKey::SettingsCopySshCommand => "Copy ssh command",
         L10nKey::SettingsStoredInTty7 => "Stored in tty7 settings",
         L10nKey::SettingsClickAgainToRemove => "Click again to remove",

@@ -1,6 +1,9 @@
 # tty7 mobile
 
-Watch and drive your desktop's tty7 panes and agents from a phone.
+Legacy Tauri/iroh development client for watching and driving desktop tty7 panes
+and agents from a phone. For the native Android app and desktop **Settings →
+Pair Devices**, follow [Remote Workspaces](../docs/remote/workspaces.mdx).
+That pairing flow uses `tty7://pair` and does not support this legacy client.
 
 ```
 phone (Tauri: WebView + Rust)  ──iroh──▶  tty7-gateway  ──local sockets──▶  tty7 server
@@ -27,19 +30,12 @@ phone (Tauri: WebView + Rust)  ──iroh──▶  tty7-gateway  ──local so
 
 ## Run it
 
-On the desktop: **Settings → Mobile → Allow phone access**. The local daemon
-runs the gateway from then on, with every window closed too. **Show code** there
-gives a QR code and a `tty7pair:` code, and the phones it paired are listed
-below it, each with an Unpair button.
+The old desktop **Settings → Mobile** page has been removed. This legacy
+Tauri/iroh client still uses `tty7pair:` codes; it cannot use codes from
+**Settings → Pair Devices**.
 
-Whichever daemon is running starts the gateway as its own child process and
-stops it with the switch. `tty7-app --daemon` runs itself as
-`tty7-app --mobile-gateway`. The lean `tty7-server` runs a `tty7-gateway`
-from beside it or on PATH, and without one it says so in Settings. The gateway
-exits when its daemon does, so an update never leaves an old one running.
-
-Without the GUI, the same gateway runs from the command line. It shares the
-state in `<config dir>/mobile/`, so the two never run at once:
+Run the gateway manually for legacy-client development. It shares state with
+the daemon-managed gateway in `<config dir>/mobile/`; do not run both at once:
 
 ```sh
 cargo run -p tty7-gateway -- serve     # keep this running

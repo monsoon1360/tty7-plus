@@ -249,7 +249,7 @@ fun MobileApp(
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface).testTag("terminal-surface")) {
                             Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
                                 TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
-                                    { message -> feed?.let { controller.terminalFailed(it, message) } }, shortcuts)
+                                    { message -> feed?.let { controller.terminalFailed(it, message) } }, shortcuts, agentKind)
                             }
                             if (selection == null) {
                                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
@@ -344,28 +344,17 @@ private fun TerminalKeyBar(paneId: Long?, agentKind: String?, status: String?, e
                             onClick = { more = false; if (enabled) onInput(key.input) },
                             modifier = Modifier.testTag("key-more-${key.tag}").semantics { contentDescription = key.description },
                         )
-                        if (key.tag == "Tab") {
-                            Row(Modifier.width(208.dp).padding(horizontal = 8.dp)) {
-                                directionTerminalKeys.forEach { direction ->
-                                    TerminalKeyButton(
-                                        direction, enabled,
-                                        { input -> more = false; if (enabled) onInput(input) },
-                                        Modifier.weight(1f),
-                                    )
-                                }
-                            }
-                        }
                     }
                 }
             }
         }
-        if (waiting) {
-            Row(
-                Modifier.fillMaxWidth().semantics { contentDescription = "等待选择或确认：使用方向键选择，回车确认" },
-            ) {
-                directionTerminalKeys.forEach { key ->
-                    TerminalKeyButton(key, enabled, onInput, Modifier.weight(1f))
-                }
+        Row(
+            Modifier.fillMaxWidth().testTag("terminal-direction-keys").semantics {
+                contentDescription = if (waiting) "等待选择或确认：使用方向键选择，回车确认" else "使用方向键移动光标或选择"
+            },
+        ) {
+            directionTerminalKeys.forEach { key ->
+                TerminalKeyButton(key, enabled, onInput, Modifier.weight(1f))
             }
         }
     }

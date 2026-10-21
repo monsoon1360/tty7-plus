@@ -33,7 +33,6 @@ const MAX_HISTORY_PAGE_ROWS: usize = 200;
 const MAX_HISTORY_PAGE_BYTES: usize = 128 * 1024;
 const MAX_HISTORY_VIEWS: usize = 16;
 const MAX_HISTORY_TOTAL_BYTES: usize = 32 * 1024 * 1024;
-const HISTORY_LIFETIME: Duration = Duration::from_secs(120);
 const PAIR_LIFETIME: u64 = 300;
 const HANDSHAKE_LIFETIME: Duration = Duration::from_secs(10);
 const MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(24 * 3600);
@@ -260,7 +259,6 @@ impl HistoryStore {
     }
 
     fn take(&mut self, subscription: &str, cursor: &str) -> io::Result<HistoryView> {
-        self.views.retain(|_, view| view.created.elapsed() < HISTORY_LIFETIME);
         if !self.views.get(cursor).is_some_and(|view| view.subscription == subscription) {
             return Err(io::Error::other("history cursor expired or does not belong to this subscription"));
         }
@@ -268,7 +266,6 @@ impl HistoryStore {
     }
 
     fn retain_view(&mut self, view: HistoryView) -> String {
-        self.views.retain(|_, old| old.created.elapsed() < HISTORY_LIFETIME);
         self.remove(&view.subscription);
         while self.views.len() >= MAX_HISTORY_VIEWS
             || self.views.values().map(|old| old.bytes).sum::<usize>() + view.bytes > MAX_HISTORY_TOTAL_BYTES
@@ -2164,7 +2161,7 @@ mod tests {
     }
 
     #[test]
-    fn history_limits_global_views_bytes_expiry_and_cancelled_insertion() {
+    fn history_limits_global_views_bytes_and_cancelled_insertion() {
         let store = Mutex::new(HistoryStore::default());
         let credit = OutputCredit::new();
         for index in 0..MAX_HISTORY_VIEWS + 2 {
@@ -2181,13 +2178,23 @@ mod tests {
         }
         assert!(store.lock().views.values().map(|view| view.bytes).sum::<usize>() <= MAX_HISTORY_TOTAL_BYTES);
         assert!(store.lock().views.len() <= 4);
-        let (expired, owner) = store.lock().views.iter().next()
-            .map(|(key, view)| (key.clone(), view.subscription.clone())).unwrap();
-        store.lock().views.get_mut(&expired).unwrap().created = Instant::now() - HISTORY_LIFETIME;
-        assert!(store.lock().take(&owner, &expired).is_err());
         credit.cancel();
         assert!(history_page(history_view("cancelled".into(), history_fixture(300)), &store, &credit).is_err());
         assert!(!store.lock().views.values().any(|view| view.subscription == "cancelled"));
+    }
+
+    #[test]
+    fn reading_an_active_history_view_can_pause_without_expiring_its_next_page() {
+        let store = Mutex::new(HistoryStore::default());
+        let credit = OutputCredit::new();
+        let first = history_page(history_view("reader".into(), history_fixture(600)), &store, &credit).unwrap();
+        let cursor = first["cursor"].as_str().unwrap();
+        store.lock().views.get_mut(cursor).unwrap().created = Instant::now() - Duration::from_secs(3600);
+        let view = store.lock().take("reader", cursor).unwrap();
+        let second = history_page(view, &store, &credit).unwrap();
+        assert_eq!(second["lines"][0]["text"], "row 200");
+        assert_eq!(second["lines"][199]["text"], "row 399");
+        assert!(second["has_more"].as_bool().unwrap());
     }
 
     #[tokio::test]

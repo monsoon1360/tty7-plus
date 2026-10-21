@@ -114,8 +114,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate(`window.tty7Screen(1,${JSON.stringify(state)},1)`);
   await wait('calls.rendered === 1');
   await evaluate('window.tty7Synced(1); showHistory()');
-  assert.match(await evaluate('historyScreen.textContent'), /Current screen/);
-  assert.equal(await evaluate('history.hidden'), false);
+  assert.equal(await evaluate('history.hidden'), true, 'Loading history never replaces live output with a placeholder');
   await evaluate(`window.tty7History(1,{lines:[],cursor:null,has_more:false,truncated:false})`);
   assert.equal(await evaluate('history.hidden'), true);
   const historyRequests = await evaluate('calls.history');
@@ -136,6 +135,37 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Manual black theme overrides the light system');
   assert.equal(await evaluate('getComputedStyle(document.documentElement).colorScheme'), 'dark');
   await evaluate('window.tty7Appearance(false)');
+  await evaluate(`(async () => {
+    calls.input = []; input.value = '';
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+    const deletion = new InputEvent('beforeinput', {inputType:'deleteContentBackward',bubbles:true,cancelable:true});
+    if (input.dispatchEvent(deletion)) {
+      input.dispatchEvent(new InputEvent('input', {inputType:'deleteContentBackward',bubbles:true}));
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  })()`);
+  assert.deepEqual(await evaluate('calls.input'), ['\x7f'], 'Android 229 deletion reaches the remote editor even with an empty local buffer');
+  await evaluate(`input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+    input.dispatchEvent(new InputEvent('beforeinput', {inputType:'deleteContentBackward',bubbles:true,cancelable:true}))`);
+  assert.deepEqual(await evaluate('calls.input'), ['\x7f','\x7f'], 'Repeated IME-only deletions are not lost');
+  await evaluate(`calls.input = [];
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Backspace',keyCode:8,which:8,bubbles:true,cancelable:true}));
+    input.dispatchEvent(new InputEvent('beforeinput', {inputType:'deleteContentBackward',bubbles:true,cancelable:true}));
+    input.dispatchEvent(new KeyboardEvent('keyup', {key:'Backspace',keyCode:8,bubbles:true}))`);
+  assert.deepEqual(await evaluate('calls.input'), ['\x7f'], 'Backspace plus beforeinput deletes exactly once');
+  await evaluate('calls.input = []; input.value = ""');
+  await call('Input.imeSetComposition', {text:'ni',selectionStart:2,selectionEnd:2});
+  await call('Input.imeSetComposition', {text:'n',selectionStart:1,selectionEnd:1});
+  assert.deepEqual(await evaluate('calls.input'), [], 'Editing Chinese candidates does not delete remote committed text');
+  await call('Input.insertText', {text:'你'});
+  await wait('calls.input.length > 0');
+  assert.deepEqual(await evaluate('calls.input'), ['你'], 'The final Chinese candidate is committed exactly once');
+  await evaluate(`calls.input = []; input.value = '';
+    input.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true}));
+    input.dispatchEvent(new InputEvent('beforeinput', {inputType:'deleteContentBackward',isComposing:true,bubbles:true,cancelable:true}))`);
+  assert.deepEqual(await evaluate('calls.input'), [], 'Deleting an empty composition never erases remote committed text');
+  await evaluate(`input.dispatchEvent(new CompositionEvent('compositionend', {data:'',bubbles:true}))`);
+  t.diagnostic('PASS: IME-only deletion, Backspace deduplication and Chinese candidate editing preserve remote input');
   await evaluate('calls.input = []');
   for (const [from,to] of [[200,400],[400,200]]) {
     await touch('touchStart',100,from);
@@ -153,12 +183,13 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate('showHistory()');
   assert.equal(await evaluate('calls.history'), historyRequests + 1);
   const line = {cols:40,ansi:paint('Older retained line'),text:'Older retained line'};
-  await evaluate(`window.tty7History(1,{lines:[${JSON.stringify(line)}],cursor:'older',has_more:true,truncated:false})`);
+  const capturedScreen = {cols:40,ansi:paint('Current screen'),text:'Current screen'};
+  await evaluate(`window.tty7History(1,{lines:${JSON.stringify([line, capturedScreen])},cursor:'older',has_more:true,truncated:false})`);
   assert.match(await evaluate('historyText.textContent'), /Older retained line/);
-  assert.match(await evaluate('historyScreen.textContent'), /Current screen/);
+  assert.match(await evaluate('historyText.textContent'), /Current screen/);
   assert.equal(await evaluate('history.hidden'),false);
   await evaluate('requestHistory(); window.tty7HistoryError(1,"模拟加载失败")');
-  assert.match(await evaluate('historyScreen.textContent'), /Current screen/);
+  assert.match(await evaluate('historyText.textContent'), /Current screen/, 'An older-page failure keeps the coherent window visible');
   await evaluate('returnLive()');
   assert.equal(await evaluate('history.hidden'),true);
   t.diagnostic('PASS: retained history and error recovery keep the current screen available');
@@ -169,21 +200,28 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   state.rows = 70;
   await evaluate(`window.tty7Screen(1,${JSON.stringify(state)},3)`);
   await wait('calls.rendered === 3');
+  await evaluate('viewport.scrollTop = 20; scrollLocally(0.6)');
+  assert.equal(await evaluate('history.hidden'),true,
+    'Rounding a downward subpixel movement cannot open history');
+  await evaluate('viewport.scrollTop = 20; scrollLocally(-0.3)');
+  assert.equal(await evaluate('history.hidden'),true,
+    'Unconsumed subpixel rounding before the live viewport top is not a history gesture');
+  await evaluate('returnLive()');
   await evaluate('showHistory()');
   const lines = Array.from({length:250}, (_,index) => ({
     cols:40,ansi:paint(`History row ${index}`),text:`History row ${index}`,
   }));
   await evaluate(`window.tty7History(1,{lines:${JSON.stringify(lines)},cursor:'oldest',has_more:true,truncated:false})`);
-  const retainedText = await evaluate('historyText.textContent + historyScreen.textContent');
+  const retainedText = await evaluate('historyText.textContent');
   const retainedRequests = await evaluate('calls.history');
   for (const dark of [true, false]) {
     await evaluate(`window.tty7Appearance(${dark})`);
     assert.equal(await evaluate('history.hidden'), false, 'Theme changes keep history open');
-    assert.equal(await evaluate('historyText.textContent + historyScreen.textContent'), retainedText);
+    assert.equal(await evaluate('historyText.textContent'), retainedText);
     assert.equal(await evaluate('calls.history'), retainedRequests, 'Theme changes reuse cached history');
     assert.equal(await evaluate(`(() => {
       const hex = rgb => '#' + rgb.match(/\\d+/g).slice(0,3).map(n => Number(n).toString(16).padStart(2,'0')).join('');
-      return [...historyText.querySelectorAll('span'), ...historyScreen.querySelectorAll('span')].every(span => {
+      return [...historyText.querySelectorAll('span')].every(span => {
         const style = getComputedStyle(span);
         const fg = luminance(hex(style.color)), bg = luminance(hex(style.backgroundColor));
         return (Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05) >= 4.5;
@@ -196,11 +234,9 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate('history.scrollTop = 300; historyScrollTop = history.scrollTop; requestHistory()');
   await evaluate('window.tty7History(1,{lines:[],cursor:null,has_more:false,truncated:false})');
   assert.equal(await evaluate('history.hidden'),false, 'Loading history does not leave the read-only view');
-  assert.notEqual(await evaluate('historyStatus.textContent'),'已到历史起点', 'An exhausted page does not imply the viewport is at the top');
   await evaluate('history.scrollTop = 0');
-  await wait('historyStatus.textContent === "已到历史起点"');
+  await wait('history.scrollTop === 0');
   await evaluate('scrollLocally(300)');
-  assert.notEqual(await evaluate('historyStatus.textContent'),'已到历史起点', 'The start label disappears when scrolling away from the top');
 
   // A real downward gesture reaches live mode without opening the keyboard;
   // the following tap may immediately focus and send input.
@@ -217,6 +253,43 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await call('Input.insertText', {text:'after history'});
   assert.deepEqual(await evaluate('calls.input'),['after history']);
 
+  // Loading history must preserve finger travel without replacing live output
+  // before the coherent page is ready.
+  const delayedRows = Array.from({length:100}, (_,index) => ({
+    cols:40, ansi:paint(`detail ${index}`), text:`detail ${index}`,
+  }));
+  await evaluate('returnLive(); resetHistory(); showHistory(); scrollLocally(-90)');
+  assert.equal(await evaluate('history.hidden'),true, 'An in-flight history request leaves live output visible');
+  await evaluate('scrollLocally(90)');
+  await evaluate(`window.tty7History(1,{lines:${JSON.stringify(delayedRows)},cursor:null,has_more:false,truncated:false})`);
+  assert.equal(await evaluate('history.hidden && following'),true,
+    'Returning to bottom while loading prevents a late page from flashing over live output');
+  await evaluate('returnLive(); resetHistory(); showHistory(); scrollLocally(-90); scrollLocally(-45); scrollLocally(10)');
+  await evaluate(`window.tty7History(1,{lines:${JSON.stringify(delayedRows)},cursor:null,has_more:false,truncated:false})`);
+  assert.equal(await evaluate('history.scrollHeight - history.clientHeight - history.scrollTop'),125,
+    'The first history page preserves all pending finger travel in both directions');
+  await evaluate('history.scrollTop = history.scrollHeight; historyScrollTop = history.scrollTop; updateHistoryStatus()');
+  const bottomBarHeight = await evaluate('document.getElementById("history-toolbar").getBoundingClientRect().height');
+  await evaluate('scrollLocally(-1)');
+  assert.equal(await evaluate('document.getElementById("history-toolbar").getBoundingClientRect().height'),bottomBarHeight,
+    'Revealing return-to-bottom cannot move the history viewport');
+  assert.equal(await evaluate('history.scrollHeight - history.clientHeight - history.scrollTop'),1);
+  await evaluate('scrollLocally(1)');
+  await wait('history.hidden && following');
+  await evaluate('scrollLocally(30); scrollLocally(30)');
+  assert.equal(await evaluate('history.hidden'),true, 'Continued scrolling at live bottom never reopens history');
+
+  await evaluate('showHistory(); scrollLocally(-300)');
+  const detailTop = await evaluate('history.scrollTop');
+  await touch('touchStart',100,300);
+  await touch('touchMove',100,270);
+  await wait(`Math.abs(history.scrollTop - ${detailTop} - 30) < 1`);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  await touch('touchEnd',100,270);
+  assert.ok(Math.abs(await evaluate('history.scrollTop') - detailTop - 30) < 1,
+    'A slow drag positions table details at 1:1 finger travel, without a release jump');
+  await evaluate('returnLive()');
+  t.diagnostic('PASS: delayed first-page travel, stable bottom boundary, and precise 1:1 detail positioning');
   // Native scroll events (for example a scrollbar or accessibility scroll)
   // follow the same boundary rule, while opening cached history stays open.
   await evaluate('showHistory()');
@@ -225,10 +298,9 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate('scrollLocally(-300)');
   await evaluate('history.scrollTop = history.scrollHeight');
   await wait('history.hidden && following && isAtLive()');
-  t.diagnostic('PASS: history start follows viewport position; dragging or scrolling to the bottom restores live mode and tap input');
+  t.diagnostic('PASS: dragging or scrolling to the bottom restores live mode and tap input');
 
   await evaluate('window.tty7Begin(2)');
-  assert.equal(await evaluate('historyScreen.childElementCount'),0);
   assert.equal(await evaluate('input.readOnly'),true);
   t.diagnostic('PASS: switching terminal clears history snapshot and input focus');
   await wait('!writing && generation === 2');
@@ -261,7 +333,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate(`window.tty7Screen(2,${JSON.stringify(fullScreen)},6)`);
   await wait('calls.rendered === 6');
   await evaluate('calls.input = []; scrollLocally(-10000)');
-  assert.equal(await evaluate('history.hidden'),false, 'Returning to the main screen restores paged terminal history');
+  assert.equal(await evaluate('historyLoading'),true, 'Returning to the main screen restores paged terminal history');
   assert.deepEqual(await evaluate('calls.input'),[]);
   t.diagnostic('PASS: full-screen gestures route to application mouse/arrows; main-screen history stays local');
 
@@ -369,6 +441,105 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate(`window.tty7Key(${appGeneration},${JSON.stringify(shortcut)})`);
   assert.deepEqual(await evaluate('calls.input'), [shortcut], 'The same shortcut works after the current pane is synced');
   t.diagnostic('PASS: native Esc stops current inertia, while stale and unsynced keys cannot affect the pane');
+
+  // A fresh immutable server view contains its adjoining screen; a reopened
+  // cache may only be reused while the live revision still matches.
+  await startApp();
+  await evaluate(`window.tty7AgentKind(${appGeneration},'omp'); showHistory()`);
+  const coherentPage = [
+    {cols:40,ansi:paint('retained end'),text:'retained end'},
+    {cols:40,ansi:paint('captured screen'),text:'captured screen'},
+  ];
+  await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(coherentPage)},cursor:'older-a',has_more:true,truncated:false})`);
+  assert.match(await evaluate('historyText.textContent'), /captured screen/);
+  const coherentRequests = await evaluate('calls.history');
+  await evaluate('returnLive(); showHistory()');
+  assert.equal(await evaluate('calls.history'),coherentRequests, 'An unchanged revision reuses its entire coherent snapshot');
+  const nextLive = {...fullScreen, revision:'fresh-history-screen', epoch:String(appGeneration), base_revision:null, alternate:false};
+  const previousRendered = await evaluate('calls.rendered');
+  await evaluate(`returnLive(); window.tty7Screen(${appGeneration},${JSON.stringify(nextLive)},${++appSequence})`);
+  await wait(`calls.rendered === ${previousRendered + 1}`);
+  await evaluate('showHistory()');
+  assert.equal(await evaluate('calls.history'),coherentRequests + 1, 'New live output refreshes the complete snapshot rather than attaching a new screen to an old suffix');
+  assert.equal(await evaluate('historyText.childElementCount'),0, 'Old retained rows are absent while a fresh snapshot loads');
+  await evaluate('returnLive(); showHistory()');
+  assert.equal(await evaluate('calls.history'),coherentRequests + 1, 'Reopening a pending request does not overlap generation-only callbacks');
+  await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(coherentPage)},cursor:'older-b',has_more:true,truncated:false})`);
+  await evaluate(`window.tty7AgentKind(${appGeneration},'codex')`);
+  assert.equal(await evaluate('historyLive.hidden'),true, 'Codex keeps its native Esc instead of the history return button');
+  await evaluate(`window.tty7AgentKind(${appGeneration - 1},'omp')`);
+  assert.equal(await evaluate('historyLive.hidden'),true, 'An old pane cannot change the current agent action');
+  const scrollablePage = Array.from({length:100}, (_,index) => ({
+    cols:40,ansi:paint(`navigation ${index}`),text:`navigation ${index}`,
+  }));
+  await evaluate('resetHistory(); showHistory()');
+  await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(scrollablePage)},cursor:'navigation-older',has_more:true,truncated:false})`);
+  for (const kind of ['omp', null]) {
+    await evaluate(`window.tty7AgentKind(${appGeneration},${JSON.stringify(kind)}); showHistory()`);
+    assert.equal(await evaluate('historyLive.hidden'),true, 'The current snapshot bottom has no redundant return action');
+    await evaluate('scrollLocally(-200)');
+    assert.equal(await evaluate('historyLive.hidden'),false, 'Scrolling away from the bottom reveals the return action');
+    const beforeButton = await evaluate('({focus:calls.focus,input:calls.input.slice()})');
+    const point = await evaluate(`(() => {const r=historyLive.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+    await touch('touchStart',point.x,point.y); await touch('touchEnd',point.x,point.y);
+    await wait('history.hidden && following && isAtLive()');
+    assert.deepEqual(await evaluate('({focus:calls.focus,input:calls.input.slice()})'),beforeButton, 'Return-to-bottom touch never opens the keyboard or sends PTY input');
+    assert.equal(await evaluate('input.readOnly'),true);
+    assert.equal(await evaluate('historyLive.hidden'),true, 'Returning live hides the action immediately');
+  }
+  await evaluate('showHistory()');
+  const newerWhileReading = {...nextLive, revision:'output-while-at-history-bottom'};
+  const renderedBeforeNewOutput = await evaluate('calls.rendered');
+  await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(newerWhileReading)},${++appSequence})`);
+  await wait(`calls.rendered === ${renderedBeforeNewOutput + 1}`);
+  assert.equal(await evaluate('historyLive.hidden'),true, 'Background output does not reveal a redundant action while the reader remains at the bottom');
+  await evaluate('returnLive()');
+  t.diagnostic('PASS: immutable snapshots replace loading screens; reopening refreshes changed revisions; OMP/Terminal return button is read-only while Codex keeps Esc');
+
+  await evaluate('resetHistory(); showHistory()');
+  for (let page = 0; page < 11; ++page) {
+    if (page) await evaluate('requestHistory()');
+    const start = 2200 - (page + 1) * 200;
+    const pageRows = Array.from({length:200}, (_,i) => ({cols:40,ansi:paint(`bounded ${start+i}`),text:`bounded ${start+i}`}));
+    await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(pageRows)},cursor:'row-page-${page}',has_more:true,truncated:false})`);
+  }
+  assert.equal(await evaluate('historyText.childElementCount'),2000);
+  assert.match(await evaluate('historyText.firstElementChild.textContent'),/bounded 0/);
+  assert.match(await evaluate('historyText.lastElementChild.textContent'),/bounded 1999/);
+  assert.deepEqual(await evaluate(`Array.from(historyText.children, row => Number(row.textContent.trim().slice('bounded '.length)))`),
+    Array.from({length:2000}, (_,index) => index), 'Every retained numbered row remains in order with no interior holes');
+  assert.equal(await evaluate('historyBoundary.hidden'),false, 'Evicted newer rows have an explicit navigable lower boundary');
+  await evaluate('scrollLocally(100000)');
+  assert.equal(await evaluate('history.hidden'),false, 'The lower window boundary is not falsely treated as live');
+  assert.equal(await evaluate('historyLive.hidden'),false, 'A truncated window bottom is not the latest output');
+  const beforeNewer = await evaluate('calls.history');
+  await evaluate('document.getElementById("history-newer").click()');
+  assert.equal(await evaluate('calls.history'),beforeNewer + 1, 'The lower boundary can reload a fresh newer window');
+  assert.equal(await evaluate('historyText.childElementCount'),0);
+  assert.equal(await evaluate('historyBoundary.hidden'),true);
+  await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(coherentPage)},cursor:'newest-again',has_more:true,truncated:false})`);
+  assert.match(await evaluate('historyText.textContent'),/captured screen/);
+
+  await evaluate('resetHistory(); showHistory()');
+  for (let page = 0; page < 23; ++page) {
+    if (page) await evaluate('requestHistory()');
+    const pageRows = Array.from({length:10}, (_,i) => ({cols:40,ansi:paint(`bytes ${page}-${i}`),text:'x'.repeat(10000)}));
+    await evaluate(`window.tty7History(${appGeneration},{lines:${JSON.stringify(pageRows)},cursor:'byte-page-${page}',has_more:true,truncated:false})`);
+  }
+  assert.ok(await evaluate('historyBytes <= maxHistoryBytes && historyText.childElementCount < maxHistoryRows'));
+  assert.equal(await evaluate('historyBoundary.hidden'),false, 'The UTF-8 byte cap exposes the same browsable boundary as the row cap');
+  await evaluate('requestHistory()');
+  await evaluate(`window.tty7History(${appGeneration},{lines:[],cursor:null,has_more:false,truncated:true}); history.scrollTop=0; updateHistoryStatus()`);
+  const oldestRequests = await evaluate('calls.history');
+  await evaluate('scrollLocally(-10000); requestHistory()');
+  assert.equal(await evaluate('calls.history'),oldestRequests, 'Reaching the server retained boundary does not retry unavailable older rows');
+  t.diagnostic('PASS: row/byte eviction preserves a bounded contiguous window with explicit reload-newer navigation and a distinct oldest retained boundary');
+
+  // A callback already awaiting the parser must not populate the next pane.
+  await evaluate(`resetHistory(); showHistory(); window.lateHistory = window.tty7History(${appGeneration},{lines:${JSON.stringify(coherentPage)},cursor:null,has_more:false,truncated:false}); window.tty7Begin(${++appGeneration})`);
+  await evaluate('window.lateHistory');
+  assert.equal(await evaluate('historyText.childElementCount'),0);
+  assert.equal(await evaluate('history.hidden'),true);
   await call('Page.navigate', {url:url + '?theme=dark'});
   await wait('typeof window.tty7Appearance === "function" && document.documentElement.dataset.theme === "dark"');
   assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Saved native theme applies on initial page load');

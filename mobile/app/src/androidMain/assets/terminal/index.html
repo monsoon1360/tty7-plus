@@ -15,16 +15,19 @@ html,body{margin:0;height:100%;background:var(--background);color:var(--foregrou
 /* Keep the invisible IME target onscreen while the shared PTY resize is pending. */
 #terminal .xterm-helper-textarea{position:fixed!important;top:2px!important;left:2px!important}
 #history{position:fixed;inset:0;overflow:auto;overscroll-behavior:contain;background:var(--background);z-index:20}
-#history-toolbar{position:sticky;top:0;left:0;background:var(--toolbar);padding:8px;font:14px sans-serif}
-#history-text,#history-screen{margin:0;padding:2px;font:14px var(--terminal-font);white-space:pre}
+#history-toolbar{position:sticky;top:0;left:0;background:var(--toolbar);padding:8px;box-sizing:border-box;height:52px;font:14px/20px sans-serif;display:flex;align-items:center;justify-content:space-between;gap:8px;z-index:1}
+#history-status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#history button{font:inherit;color:inherit;background:var(--fill);border:0;border-radius:6px;padding:8px 12px;white-space:nowrap;touch-action:manipulation}
+#history-boundary{padding:12px;font:14px sans-serif;background:var(--toolbar);white-space:normal}
+#history-text{margin:0;padding:2px;font:14px var(--terminal-font);white-space:pre}
 </style>
 </head><body>
 <div id="viewport" aria-label="远程终端，上下滑动查看历史，左右滑动查看宽屏内容">
 <div id="terminal"></div>
 <section id="history" aria-label="已保留的主屏幕历史" hidden>
-<div id="history-toolbar"><span id="history-status">主屏幕历史（只读）</span></div>
+<div id="history-toolbar"><span id="history-status">主屏幕历史（只读）</span><button id="history-live" type="button" hidden>回到底部</button></div>
 <pre id="history-text"></pre>
-<pre id="history-screen" aria-label="进入历史时的终端画面"></pre>
+<div id="history-boundary" hidden>较新的内容已移出此历史窗口，可重新加载查看。<button id="history-newer" type="button">查看较新历史</button></div>
 </section>
 </div>
 <script src="xterm.js"></script><script src="screen-widths.js"></script><script src="terminal.js"></script></body></html>

@@ -60,16 +60,16 @@ private fun WebView.addTerminalBridge(bridge: TerminalBridge) {
 
 @Composable
 actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit,
-    shortcuts: Flow<String>) {
+    shortcuts: Flow<String>, agentKind: String?) {
     var rendererVersion by remember { mutableIntStateOf(0) }
     key(rendererVersion) {
-        AndroidTerminalSurface(feed, synced, onInput, onResize, onFailure, shortcuts) { rendererVersion++ }
+        AndroidTerminalSurface(feed, synced, onInput, onResize, onFailure, shortcuts, agentKind) { rendererVersion++ }
     }
 }
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit,
-    onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: Flow<String>, onRendererGone: () -> Unit) {
+    onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: Flow<String>, agentKind: String?, onRendererGone: () -> Unit) {
     val context = LocalContext.current
     val dark = LocalMobileDarkTheme.current
     val focusManager = LocalFocusManager.current
@@ -158,6 +158,9 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
     LaunchedEffect(pageReady, dark) {
         web.setBackgroundColor(if (dark) android.graphics.Color.rgb(30, 30, 32) else android.graphics.Color.rgb(252, 252, 251))
         if (pageReady) web.evaluateJavascript("window.tty7Appearance($dark)", null)
+    }
+    LaunchedEffect(pageReady, generation, agentKind) {
+        if (pageReady) web.evaluateJavascript("window.tty7AgentKind($generation,${JsonPrimitive(agentKind)})", null)
     }
     DisposableEffect(web) {
         onDispose { bridge.dispose(); web.stopLoading(); web.removeJavascriptInterface("Tty7"); web.destroy(); events.close() }

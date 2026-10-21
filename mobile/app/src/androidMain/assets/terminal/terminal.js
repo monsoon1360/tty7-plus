@@ -10,7 +10,6 @@ window.addEventListener('unhandledrejection', () => fail('终端渲染任务失�
 const viewport = document.getElementById('viewport');
 const history = document.getElementById('history');
 const historyText = document.getElementById('history-text');
-const historyScreen = document.getElementById('history-screen');
 const terminalFontFamily = getComputedStyle(document.documentElement).getPropertyValue('--terminal-font').trim();
 // Finish loading both weights and symbol fallbacks before reporting ready or
 // measuring the phone grid. The first fallback measurement otherwise persists.
@@ -68,12 +67,10 @@ function applyAppearance() {
     terminal.options.theme = terminalTheme();
     // History is a styled DOM cache; recolour it without clearing its contents
     // or requesting remote history again when the user changes themes.
-    for (const container of [historyText, historyScreen]) {
-        for (const span of container.querySelectorAll('span[data-fg]')) {
-            const bg = resolveColor(span.dataset.bg);
-            span.style.color = readable(resolveColor(span.dataset.fg), bg);
-            span.style.backgroundColor = bg;
-        }
+    for (const span of historyText.querySelectorAll('span[data-fg]')) {
+        const bg = resolveColor(span.dataset.bg);
+        span.style.color = readable(resolveColor(span.dataset.fg), bg);
+        span.style.backgroundColor = bg;
     }
 }
 function installCanonicalWidths(target) {
@@ -99,6 +96,36 @@ function blurInput() {
     terminal.blur();
 }
 
+let composingInput = false;
+let backspaceKeyActive = false;
+let backspaceKeyHandled = false;
+// Observe on the ancestor before xterm's textarea keydown listener runs.
+terminal.element.addEventListener('keydown', event => {
+    backspaceKeyActive = event.key === 'Backspace' || event.keyCode === 8;
+    backspaceKeyHandled = false;
+}, {capture:true});
+input.addEventListener('keyup', () => {
+    backspaceKeyActive = backspaceKeyHandled = false;
+});
+input.addEventListener('blur', () => {
+    backspaceKeyActive = backspaceKeyHandled = false;
+});
+input.addEventListener('compositionstart', () => { composingInput = true; });
+input.addEventListener('compositionend', () => { composingInput = false; });
+input.addEventListener('beforeinput', event => {
+    // Android may send only keyCode 229 plus deleteContentBackward. xterm
+    // detects 229 deletion by a textarea length change, which cannot happen
+    // when its local IME buffer is empty but the remote editor still has text.
+    // Leave nonempty buffers and composition (including candidate deletion)
+    // entirely to xterm. Cancel the empty edit so no second path can emit DEL.
+    if (event.inputType !== 'deleteContentBackward' || !event.cancelable ||
+        event.isComposing || composingInput || input.value !== '' ||
+        input.readOnly || !inputReady) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!backspaceKeyHandled) terminal.input('\x7f', true);
+}, {capture:true});
+
 // This is an observer: the desktop terminal, not a replay on the phone, owns
 // protocol replies. Keep keyboard/IME/paste input, but never answer PTY queries.
 for (const id of [
@@ -112,6 +139,7 @@ for (const id of [4,10,11,12]) {
 }
 terminal.onData(data => {
     if (data === '\x1b[I' || data === '\x1b[O') return; // Local focus is not desktop focus.
+    if (backspaceKeyActive && data === '\x7f') backspaceKeyHandled = true;
     stopScrolling();
     if (inputReady && window.Tty7) window.Tty7.input(generation, data);
 });
@@ -170,17 +198,23 @@ function sizeSurface() {
     if (following) returnLive();
 }
 function isAtLive() {
-    return history.hidden &&
+    return !historyOpening && history.hidden &&
         // DOM scrollTop changes immediately; xterm's viewportY catches up later.
         scrollback.scrollTop >= scrollback.scrollHeight - scrollback.clientHeight - 1 &&
         viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - 1;
 }
 function returnLive() {
     history.hidden = true;
+    historyOpening = false;
+    cancelAnimationFrame(coast);
+    coast = 0;
+    if (touch?.axis === 'y') touch.blocked = true;
+    historyPendingScroll = 0;
     terminal.scrollToBottom();
     scrollback.scrollTop = scrollback.scrollHeight;
     viewport.scrollTop = viewport.scrollHeight;
     following = true;
+    updateHistoryLive();
 }
 window.tty7Key = function(gen, text) {
     if (gen !== generation || !inputReady) return;
@@ -196,25 +230,61 @@ terminal.onRender(() => {
 });
 
 const historyStatus = document.getElementById('history-status');
+const historyLive = document.getElementById('history-live');
+const historyBoundary = document.getElementById('history-boundary');
+let historyAgentKind = null;
+window.tty7AgentKind = function(gen, kind) {
+    if (gen !== generation) return;
+    historyAgentKind = kind;
+    updateHistoryLive();
+};
+for (const button of [historyLive, document.getElementById('history-newer')]) {
+    button.addEventListener('pointerdown', event => event.preventDefault());
+    button.addEventListener('click', event => {
+        event.preventDefault();
+        stopScrolling();
+        blurInput();
+        if (button === historyLive) returnLive();
+        else if (!historyLoading) { resetHistory(); showHistory(); }
+    });
+}
 const historyParser = new Terminal({cols:80, rows:1, scrollback:0, allowProposedApi:false});
 const historyWidths = installCanonicalWidths(historyParser);
 let historyCursor = null;
 let historyMore = true;
 let historyLoading = false;
 let historyLoaded = false;
+let historyOpening = false;
 let historyBytes = 0;
 let historyTruncated = false;
 let historyError = null;
 let historyScrollTop = 0;
+let historyPendingScroll = 0;
+let historyRevision = null;
+let historyNewerBoundary = false;
+function resetHistory() {
+    historyText.replaceChildren();
+    historyCursor = null; historyMore = true; historyLoaded = false; historyBytes = 0;
+    historyTruncated = false; historyError = null; historyScrollTop = 0;
+    historyPendingScroll = 0;
+    historyOpening = false;
+    historyRevision = null; historyNewerBoundary = false;
+    historyBoundary.hidden = true;
+}
 // A separate read-only styled cache, at most 2,000 rows / 2 MiB UTF-8.
 const maxHistoryRows = 2000;
 const maxHistoryBytes = 2 * 1024 * 1024;
+function updateHistoryLive() {
+    historyLive.hidden = history.hidden || historyAgentKind === 'codex' ||
+        (!historyError && !historyNewerBoundary && isAtHistoryBottom());
+}
 function updateHistoryStatus() {
     historyStatus.textContent = historyLoading ? '正在加载历史…' :
         historyError ? historyError + '；返回实时后重试' :
-        historyTruncated ? '已保留历史（有边界截断）' :
-        !historyMore && history.scrollTop <= 1 ? '已到历史起点' :
+        !historyMore && history.scrollTop <= 1 ? (historyTruncated ? '已到保留历史边界（更早内容已不再保留）' : '已到历史起点') :
+        historyNewerBoundary ? '连续历史窗口（较新内容可重新加载）' :
         historyMore ? '向上滚动加载更多' : '主屏幕历史（只读）';
+    updateHistoryLive();
 }
 function isAtHistoryBottom() {
     return history.scrollTop >= history.scrollHeight - history.clientHeight - 1;
@@ -222,19 +292,26 @@ function isAtHistoryBottom() {
 function requestHistory() {
     if (!inputReady || historyLoading || !historyMore) return;
     historyLoading = true;
+    if (!historyLoaded) historyRevision = appliedRevision;
     historyError = null;
     updateHistoryStatus();
     if (window.Tty7) window.Tty7.history(generation, historyCursor || '');
 }
 function showHistory() {
+    // Reopening must not attach today's screen to yesterday's cached suffix.
+    // A pending response owns its snapshot until it completes; do not overlap
+    // requests, whose native callbacks are generation-scoped rather than tagged.
+    if (!historyLoading && (historyRevision !== appliedRevision || historyNewerBoundary || historyError)) resetHistory();
     if (historyLoaded && !historyMore && !historyText.childElementCount) return false;
     following = false;
-    // Retained history excludes the current screen. Preserve that screen while
-    // loading and at the bottom of history, rather than displaying an empty layer.
-    historyScreen.replaceChildren();
-    for (let row = 0; row < terminal.rows; ++row) {
-        const text = terminal.buffer.active.getLine(row).translateToString(false);
-        historyScreen.appendChild(historyRow({cols:terminal.cols, ansi:'', text}, row, terminal));
+    // Keep the live renderer visible until the immutable page is fully parsed.
+    // A placeholder has different wrapping/geometry and flashes at the boundary.
+    if (!historyLoaded) {
+        historyOpening = true;
+        blurInput();
+        historyMore = true;
+        requestHistory();
+        return true;
     }
     history.hidden = false;
     history.scrollLeft = viewport.scrollLeft;
@@ -244,14 +321,13 @@ function showHistory() {
     historyScrollTop = history.scrollTop;
     updateHistoryStatus();
     blurInput();
-    if (!historyLoaded) { historyMore = true; requestHistory(); }
     return true;
 }
 history.addEventListener('scroll', () => {
-    if (history.hidden) return;
+    if (history.hidden || historyOpening) return;
     const movedDown = history.scrollTop > historyScrollTop;
     historyScrollTop = history.scrollTop;
-    if (movedDown && isAtHistoryBottom()) { returnLive(); return; }
+    if (movedDown && isAtHistoryBottom() && !historyNewerBoundary && !historyLoading) { returnLive(); return; }
     updateHistoryStatus();
     if (history.scrollTop < 160) requestHistory();
 });
@@ -317,6 +393,7 @@ function historyRow(line, rowIndex, source = historyParser) {
 }
 window.tty7History = async function(gen, page) {
     if (gen !== generation || !historyLoading) return;
+    const firstPage = !historyLoaded;
     try {
         if (page.lines.length) {
             // Parse a bounded page in one write. Per-row asynchronous writes
@@ -345,7 +422,6 @@ window.tty7History = async function(gen, page) {
         const anchorTop = first ? first.getBoundingClientRect().top : 0;
         historyText.prepend(fragment);
         if (first) history.scrollTop += first.getBoundingClientRect().top - anchorTop;
-        else history.scrollTop = history.scrollHeight;
         let evicted = false;
         while (historyText.childElementCount > maxHistoryRows || historyBytes > maxHistoryBytes) {
             const last = historyText.lastElementChild;
@@ -353,11 +429,22 @@ window.tty7History = async function(gen, page) {
             last.remove();
             evicted = true;
         }
+        if (evicted) {
+            historyNewerBoundary = true;
+            historyBoundary.hidden = false;
+        }
+        if (firstPage && historyOpening && historyText.childElementCount) {
+            history.hidden = false;
+            history.scrollLeft = viewport.scrollLeft;
+            historyOpening = false;
+        }
+        if (!first) history.scrollTop = Math.max(0, history.scrollHeight - history.clientHeight + historyPendingScroll);
+        historyPendingScroll = 0;
         historyCursor = page.cursor;
         historyMore = page.has_more;
         historyLoaded = true;
         historyLoading = false;
-        historyTruncated = historyTruncated || page.truncated || evicted;
+        historyTruncated = historyTruncated || page.truncated;
         historyScrollTop = history.scrollTop;
         updateHistoryStatus();
         if (!historyMore && !historyText.childElementCount) returnLive();
@@ -365,13 +452,13 @@ window.tty7History = async function(gen, page) {
 };
 window.tty7HistoryError = function(gen, message) {
     if (gen !== generation) return;
+    if (historyOpening) { historyOpening = false; history.hidden = false; }
     historyLoading = false;
     historyError = message;
     historyMore = false;
     historyCursor = null;
-    historyLoaded = false;
-    historyText.replaceChildren();
-    historyBytes = 0;
+    // Keep the already rendered, coherent window available on page failure.
+    // The next reopening starts a fresh snapshot because cursors are single-use.
     historyScrollTop = history.scrollTop;
     updateHistoryStatus();
 };
@@ -404,14 +491,19 @@ function flushApplicationScroll() {
     if (Math.abs(applicationScrollDebt) >= 1) applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
 }
 function scrollLocally(amount) {
+    if (historyOpening) {
+        historyPendingScroll = Math.min(0, historyPendingScroll + amount);
+        if (amount > 0 && historyPendingScroll === 0) { returnLive(); return false; }
+        return true;
+    }
     if (!history.hidden) {
-        moveScroll(history, amount);
-        if (amount > 0 && isAtHistoryBottom()) { returnLive(); return; }
+        const remaining = moveScroll(history, amount);
+        if (amount > 0 && isAtHistoryBottom() && !historyNewerBoundary) { returnLive(); return false; }
         historyScrollTop = history.scrollTop;
         updateHistoryStatus();
         if (amount < 0 && history.scrollTop < 160) requestHistory();
         following = false;
-        return;
+        return remaining !== amount;
     }
     // Full-screen programs own their transcript (Codex, vim, less, tmux).
     // Match the desktop's wheel route rather than opening shell history.
@@ -423,19 +515,19 @@ function scrollLocally(amount) {
         if (!applicationScrollTimer && Math.abs(applicationScrollDebt) >= 1) {
             applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
         }
-        return;
+        return true;
     }
-    if (amount < 0) {
-        amount = moveScroll(viewport, amount);
-        if (amount < 0 && inputReady && showHistory()) moveScroll(history, amount);
-    } else moveScroll(viewport, amount);
+    const remaining = moveScroll(viewport, amount);
+    // scrollTop rounds fractional touch deltas; a negative remainder alone
+    // does not mean the reader moved upward or reached the top.
+    if (amount < 0 && remaining < 0 && viewport.scrollTop === 0 && inputReady && showHistory()) return scrollLocally(remaining);
     following = isAtLive();
+    return remaining !== amount;
 }
 
 // A drag scrolls locally or tells a full-screen program to scroll, and never
 // focuses the IME. Only an intentional tap may focus it.
 const touchSlop = 8;
-const touchScrollSpeed = 1.8;
 const activePointers = new Set();
 let touch;
 let interrupted = false;
@@ -466,7 +558,10 @@ function flushScroll() {
     const vertical = pendingY;
     pendingX = pendingY = 0;
     if (horizontal) (history.hidden ? viewport : history).scrollLeft += horizontal;
-    if (vertical) scrollLocally(vertical * (applicationScrolls() ? 1 : touchScrollSpeed));
+    if (vertical) {
+        const moved = scrollLocally(vertical);
+        if (touch?.axis === 'y') touch.blocked = !moved;
+    }
 }
 function trackTouch(point, time) {
     scrollPoint = {x:point.clientX, y:point.clientY};
@@ -502,7 +597,7 @@ function glide(samples, endedAt) {
         at = now;
         velocity *= Math.pow(remote ? 0.985 : 0.995, elapsed);
         if (Math.abs(velocity) < 0.02 || (remote && now - startedAt > 240)) return;
-        scrollLocally(velocity * Math.min(elapsed, 32) * (remote ? 1 : touchScrollSpeed));
+        if (!scrollLocally(velocity * Math.min(elapsed, 32))) return;
         coast = requestAnimationFrame(step);
     };
     coast = requestAnimationFrame(step);
@@ -511,6 +606,7 @@ function glide(samples, endedAt) {
 // that detached row, so its later moves/end never reach this viewport. Capture
 // PointerEvents on the stable viewport instead of tracking the rendered cells.
 viewport.addEventListener('pointerdown', event => {
+    if (event.target.closest('button')) return;
     if (event.pointerType === 'mouse') return;
     event.stopPropagation();
     stopScrolling();
@@ -558,8 +654,8 @@ viewport.addEventListener('pointerup', event => {
     trackTouch(event, event.timeStamp);
     event.preventDefault();
     flushScroll();
-    if (touch.axis === 'y') glide(touch.samples, event.timeStamp);
-    else if (!touch.axis && history.hidden && inputReady) focusInput();
+    if (touch.axis === 'y' && !touch.blocked) glide(touch.samples, event.timeStamp);
+    else if (!touch.axis && history.hidden && !historyOpening && inputReady) focusInput();
     touch = undefined;
 }, {capture:true});
 const cancelPointer = event => {
@@ -575,11 +671,13 @@ viewport.addEventListener('lostpointercapture', cancelPointer, {capture:true});
 // xterm's own touch recognizer must not also scroll or produce PTY input.
 for (const type of ['touchstart','touchmove','touchend','touchcancel']) {
     viewport.addEventListener(type, event => {
+        if (event.target.closest('button')) return;
         event.stopPropagation();
         if (event.cancelable) event.preventDefault();
     }, {capture:true, passive:false});
 }
 viewport.addEventListener('wheel', event => {
+    if (event.target.closest('button')) return;
     event.preventDefault();
     event.stopPropagation();
     stopScrolling();
@@ -618,11 +716,11 @@ window.tty7Begin = function(gen) {
     touch = undefined;
     activePointers.clear();
     history.hidden = true;
-    historyText.replaceChildren();
-    historyScreen.replaceChildren();
+    resetHistory();
+    historyAgentKind = null;
+    historyLive.hidden = true;
     blurInput();
-    historyCursor = null; historyMore = true; historyLoading = false; historyLoaded = false; historyBytes = 0;
-    historyTruncated = false; historyError = null; historyScrollTop = 0;
+    historyLoading = false;
     following = true;
     appliedRevision = appliedEpoch = null;
     // Drain at most the previous current-state write, never historical replay.

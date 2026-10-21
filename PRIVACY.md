@@ -17,8 +17,8 @@ between your phone and a computer you paired it with yourself.
   goes directly between your devices and is not stored by us.
 - **Pairing information.** To connect, the app keeps a device key and the list
   of computers you paired with on your phone. Your computer keeps the list of
-  phones it trusts. Both stay on your devices. You can unpair a phone from the
-  desktop app at any time (Settings → Mobile).
+  phones it trusts. Both stay on your devices. For this legacy iroh client,
+  remove a phone's access with the gateway CLI (`tty7-gateway revoke <name>`).
 - **Camera.** The camera is used only to scan the pairing QR code shown on your
   computer. Images are processed on the phone and never stored or sent anywhere.
 - **Local network.** The app may look for your computer on the local network to
