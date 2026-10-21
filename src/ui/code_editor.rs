@@ -44,6 +44,13 @@ const EDITORCONFIG_DEPTH: usize = 16;
 /// buffer's life, and already what every async landing looks it up by.
 pub(crate) type BufferId = gpui::EntityId;
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExternalEditorTab {
+    pub path: PathBuf,
+    pub tab: TabId,
+    pub terminal: Option<TabId>,
+}
+
 /// What a buffer's text looked like the last time it matched the disk.
 ///
 /// Dirtiness is a comparison against this rather than a flag set by the first
@@ -445,6 +452,74 @@ pub(crate) fn language_for_path(path: &Path) -> &'static str {
         "cs" => "csharp",
         "cmake" | "mk" => "cmake",
         _ => "text",
+    }
+}
+
+/// The shell line that opens `path` in `mode`, quoted for the local shell.
+fn is_external_editor_program(program: &str) -> bool {
+    matches!(
+        Path::new(program).file_name().and_then(|s| s.to_str()),
+        Some("hx" | "helix" | "vim" | "nvim")
+    )
+}
+
+pub(crate) fn external_editor_command(
+    mode: crate::core::config::FileOpenWith,
+    path: &Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> String {
+    use crate::core::config::FileOpenWith;
+    match mode {
+        FileOpenWith::Helix => {
+            let spec = match line {
+                Some(line) => format!("{}:{}:{}", path.display(), line, column.unwrap_or(1)),
+                None => path.display().to_string(),
+            };
+            format!(
+                "hx {}",
+                crate::core::shell_quote::quote_for_shell(&spec, None)
+            )
+        }
+        FileOpenWith::Vim => {
+            let quoted = crate::core::shell_quote::quote_for_shell(&path.to_string_lossy(), None);
+            match line {
+                Some(line) => format!("vim +{line} {quoted}"),
+                None => format!("vim {quoted}"),
+            }
+        }
+        FileOpenWith::BuiltIn => String::new(),
+    }
+}
+
+fn external_editor_shell(
+    mode: crate::core::config::FileOpenWith,
+    path: &Path,
+    line: Option<u32>,
+    column: Option<u32>,
+) -> crate::daemon::protocol::ShellSpec {
+    use crate::core::config::FileOpenWith;
+    let (program, args) = match mode {
+        FileOpenWith::Helix => (
+            "hx",
+            vec![match line {
+                Some(line) => format!("{}:{}:{}", path.display(), line, column.unwrap_or(1)),
+                None => path.display().to_string(),
+            }],
+        ),
+        FileOpenWith::Vim => (
+            "vim",
+            line.map(|line| format!("+{line}"))
+                .into_iter()
+                .chain(std::iter::once(path.display().to_string()))
+                .collect(),
+        ),
+        FileOpenWith::BuiltIn => unreachable!("built-in files do not spawn a process"),
+    };
+    crate::daemon::protocol::ShellSpec {
+        program: program.to_string(),
+        args,
+        args_are_tty7_defaults: false,
     }
 }
 
@@ -872,6 +947,37 @@ impl Tty7App {
         self.tab_code().is_some_and(|c| c.visible)
     }
 
+    /// Whether the active tab's document is on its way out. The layout keeps
+    /// drawing it at a shrinking width until the slide ends, so this is what
+    /// tells the columns the close is in progress.
+    pub(crate) fn document_closing_active(&self) -> bool {
+        self.tabs
+            .get(self.active)
+            .zip(self.document_closing)
+            .is_some_and(|(tab, (id, _))| tab.tree_id.get() == id)
+    }
+
+    /// The end of a close slide: hide the panel, but only if this is still the
+    /// close that was started — a timer that outlived a reopen must not hide
+    /// the panel the reader asked for.
+    fn finish_document_close(
+        &mut self,
+        tab: tty7_core::core::machine::TabId,
+        seq: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.document_closing != Some((tab, seq)) {
+            return;
+        }
+        if let Some(ix) = self.tab_index_of(tab) {
+            if let Some(code) = self.tabs[ix].code.as_mut() {
+                code.visible = false;
+            }
+        }
+        self.document_closing = None;
+        cx.notify();
+    }
+
     fn buffer(&self, id: BufferId) -> Option<&OpenFile> {
         self.editor.buffers.iter().find(|b| b.id() == id)
     }
@@ -1158,6 +1264,127 @@ impl Tty7App {
         self.editor_open_on_host(host, path, window, cx);
     }
 
+    pub(crate) fn is_external_editor_tab(&self, index: usize, cx: &gpui::App) -> bool {
+        let Some(tab) = self.tabs.get(index) else {
+            return false;
+        };
+        if self
+            .external_editor_tabs
+            .iter()
+            .any(|editor| editor.tab == tab.tree_id.get())
+        {
+            return true;
+        }
+        // Foreground facts survive a GUI restart, unlike the launch links.
+        // This also recognizes Helix tabs opened by the previous app build.
+        tab.pane.terminals().iter().any(|pane| {
+            let pane = pane.read(cx);
+            if pane
+                .shell_spec()
+                .is_some_and(|shell| is_external_editor_program(&shell.program))
+            {
+                return true;
+            }
+            if crate::core::cli_agent::launch_program(&pane.terminal.running_command())
+                .is_some_and(|program| is_external_editor_program(&program))
+            {
+                return true;
+            }
+            let host = pane.host_id();
+            crate::ui::machine_mirror::MachineMirrors::machine(cx, host)
+                .and_then(|machine| {
+                    machine
+                        .panes
+                        .iter()
+                        .find(|record| record.id == pane.pane_id)
+                })
+                .is_some_and(|record| is_external_editor_program(&record.title))
+        })
+    }
+
+    pub(crate) fn external_editor_terminal(&self, cx: &gpui::App) -> Option<usize> {
+        let active = self.tabs.get(self.active)?.tree_id.get();
+        self.external_editor_tabs
+            .iter()
+            .find(|editor| editor.tab == active)
+            .and_then(|editor| editor.terminal)
+            .and_then(|id| self.tab_index_of(id))
+            .filter(|index| !self.is_external_editor_tab(*index, cx))
+            .or_else(|| {
+                (0..self.active)
+                    .rev()
+                    .chain(self.active + 1..self.tabs.len())
+                    .find(|index| !self.is_external_editor_tab(*index, cx))
+            })
+    }
+
+    /// Opens a file the way the `file_open_with` setting asks. The built-in
+    /// editor is the fallback for remote hosts, which have no local `hx`/`vim`.
+    pub(crate) fn open_file_preferred(
+        &mut self,
+        path: &Path,
+        line: Option<u32>,
+        column: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mode = cx.global::<crate::core::config::Config>().file_open_with;
+        let local = self
+            .active_host(cx)
+            .is_some_and(|host| host.id().is_local());
+        if mode == crate::core::config::FileOpenWith::BuiltIn || !local {
+            self.open_file_in_editor_at(path, line, column, window, cx);
+            return;
+        }
+        let command = external_editor_command(mode, path, line, column);
+        // A file already open in its editor tab comes back rather than
+        // spawning a second one: the readers' repeat gesture is "show me that
+        // again", not "new tab".
+        let live: Vec<_> = self.tabs.iter().map(|tab| tab.tree_id.get()).collect();
+        self.external_editor_tabs
+            .retain(|editor| live.contains(&editor.tab));
+        if let Some(id) = self
+            .external_editor_tabs
+            .iter()
+            .find(|editor| editor.path == path)
+            .map(|editor| editor.tab)
+            && let Some(ix) = self.tab_index_of(id)
+        {
+            // The reader just asked for this file: its tab has to be on
+            // screen, even if the terminal area was hidden when it was last
+            // used.
+            self.terminal_visible = true;
+            self.activate(ix, window, cx);
+            return;
+        }
+        let cwd = self.tabs.get(self.active).and_then(|tab| {
+            tab.pane
+                .focused_or_first(window, cx)
+                .and_then(|leaf| leaf.read(cx).spawnable_cwd())
+        });
+        let terminal = if self.is_external_editor_tab(self.active, cx) {
+            self.external_editor_terminal(cx)
+                .and_then(|index| self.tabs.get(index))
+                .map(|tab| tab.tree_id.get())
+        } else {
+            self.tabs.get(self.active).map(|tab| tab.tree_id.get())
+        };
+        let shell = external_editor_shell(mode, path, line, column);
+        let Some(_slot) = self.new_tab_slot(cwd, Some(shell), window, cx) else {
+            log::warn!("no tab opened for {command:?}");
+            return;
+        };
+        if let Some(tab) = self.tabs.get(self.active) {
+            let editor = ExternalEditorTab {
+                path: path.to_path_buf(),
+                tab: tab.tree_id.get(),
+                terminal,
+            };
+            editor_session::put_external_editor(cx, editor.clone());
+            self.external_editor_tabs.push(editor);
+        }
+    }
+
     /// [`Self::open_file_in_editor`] against an explicit host — the SFTP
     /// browser's files live on a host that is never the active one.
     pub(crate) fn editor_open_on_host(
@@ -1271,6 +1498,11 @@ impl Tty7App {
         let Some(tab_ix) = self.tab_index_of(tab).or(Some(self.active)) else {
             return;
         };
+        // Showing something in a tab that is sliding closed reopens it: the
+        // close timer must not hide what was just put in front of the reader.
+        if self.document_closing.is_some_and(|(id, _)| id == tab) {
+            self.document_closing = None;
+        }
         let Some(t) = self.tabs.get_mut(tab_ix) else {
             return;
         };
@@ -1486,15 +1718,87 @@ impl Tty7App {
     }
 
     pub(crate) fn toggle_code_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        if self.is_external_editor_tab(self.active, cx) {
+            self.toggle_terminal_area(window, cx);
+            return;
+        }
+        if let Some(active) = self.tabs.get(self.active).map(|tab| tab.tree_id.get())
+            && cx.global::<crate::core::config::Config>().file_open_with
+                != crate::core::config::FileOpenWith::BuiltIn
+        {
+            let editor = self
+                .external_editor_tabs
+                .iter()
+                .rev()
+                .find(|editor| editor.terminal == Some(active))
+                .and_then(|editor| self.tab_index_of(editor.tab))
+                .or_else(|| {
+                    (cx.global::<crate::core::config::Config>().file_open_with
+                        != crate::core::config::FileOpenWith::BuiltIn)
+                        .then(|| {
+                            (0..self.tabs.len())
+                                .find(|index| self.is_external_editor_tab(*index, cx))
+                        })
+                        .flatten()
+                });
+            if let Some(index) = editor {
+                self.terminal_visible = true;
+                self.activate(index, window, cx);
+                return;
+            }
+        }
+        // Ctrl+3 (or Esc) again while the panel is sliding away is the reader
+        // asking for it back: the files are still there until the slide ends,
+        // so this cancels the close rather than reopening over it.
+        if self.document_closing_active() {
+            self.document_closing = None;
+            self.focus_editor(window, cx);
+            cx.notify();
+            return;
+        }
+        let Some(tab_id) = self.tabs.get(self.active).map(|t| t.tree_id.get()) else {
             return;
         };
-        let buried = tab.overlay_top == crate::ui::app::OverlayTop::Diff
-            && tab.diff_overlay.is_some()
-            && tab.code.as_ref().is_some_and(|c| c.visible);
-        tab.overlay_top = crate::ui::app::OverlayTop::Code;
+        let buried = self.tabs.get(self.active).is_some_and(|tab| {
+            tab.overlay_top == crate::ui::app::OverlayTop::Diff
+                && tab.diff_overlay.is_some()
+                && tab.code.as_ref().is_some_and(|c| c.visible)
+        });
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.overlay_top = crate::ui::app::OverlayTop::Code;
+        }
         if buried {
             self.focus_editor(window, cx);
+            cx.notify();
+            return;
+        }
+        let visible = self.tab_code().is_some_and(|c| c.visible);
+        if visible && crate::ui::panel_anim::PANEL_ANIMATIONS {
+            // The panel keeps its files, and its last frame, while the column
+            // clips it away: hiding it now would blank it mid-slide.
+            self.document_close_seq += 1;
+            let seq = self.document_close_seq;
+            self.document_closing = Some((tab_id, seq));
+            self.editor.had_focus = None;
+            self.editor.bar = None;
+            self.file_tree.editing = None;
+            // Only where there is something on screen to type into: with the
+            // terminal area hidden the panes are not drawn, and focus put on
+            // one would swallow every keystroke.
+            if self.terminal_visible {
+                self.focus_active(window, cx);
+            } else {
+                self.workspace_focus.focus(window, cx);
+            }
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        crate::ui::panel_anim::PANEL_ANIM_MS,
+                    ))
+                    .await;
+                let _ = this.update(cx, |this, cx| this.finish_document_close(tab_id, seq, cx));
+            })
+            .detach();
             cx.notify();
             return;
         }
@@ -1507,18 +1811,23 @@ impl Tty7App {
             self.editor.had_focus = None;
             self.editor.bar = None;
             self.file_tree.editing = None;
-            self.focus_active(window, cx);
+            if self.terminal_visible {
+                self.focus_active(window, cx);
+            } else {
+                self.workspace_focus.focus(window, cx);
+            }
             cx.notify();
             return;
         }
         code.visible = true;
+        self.document_closing = None;
         self.file_tree_refresh_roots(window, cx);
         if self.active_buffer().is_some() {
             self.focus_editor(window, cx);
         } else {
             // With no file to show, the panel says "Open a file from the file
             // tree" and hands the tree the focus — but nothing was putting the
-            // tree on screen, so ⌘⇧E on a fresh tab opened an empty editor
+            // tree on screen, so Ctrl+3 on a fresh tab opened an empty editor
             // pointing at a panel the reader could not see or reach from
             // there. Reveal it, then focus it.
             if !self.file_tree_on_screen(cx) {
@@ -1529,13 +1838,27 @@ impl Tty7App {
         cx.notify();
     }
 
+    pub(crate) fn hide_code_panel(&mut self) {
+        if let Some(code) = self
+            .tabs
+            .get_mut(self.active)
+            .and_then(|tab| tab.code.as_mut())
+        {
+            code.visible = false;
+        }
+        self.document_closing = None;
+        self.editor.had_focus = None;
+        self.editor.bar = None;
+        self.file_tree.editing = None;
+    }
+
     fn raise_code_overlay(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.overlay_top = crate::ui::app::OverlayTop::Code;
         }
     }
 
-    fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(f) = self.active_buffer() {
             f.input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -2523,7 +2846,7 @@ impl Tty7App {
         let empty = self
             .tab_code()
             .is_some_and(|c| c.visible && c.files.is_empty());
-        // ⌘⇧E on an empty panel hands the focus to the file tree, so from
+        // Ctrl+3 on an empty panel hands the focus to the file tree, so from
         // there ⌘W is the empty panel's too.
         let tree = empty && self.file_tree.focus_handle.contains_focused(window, cx);
         if !(tree || self.editor_panel_has_focus(window, cx)) {
@@ -2534,10 +2857,13 @@ impl Tty7App {
         };
         if code.files.is_empty() {
             code.visible = false;
+            self.document_closing = None;
             self.editor.had_focus = None;
             self.editor.bar = None;
             self.file_tree.editing = None;
-            self.focus_active(window, cx);
+            if self.terminal_visible {
+                self.focus_active(window, cx);
+            }
             cx.notify();
             return true;
         }
@@ -3436,7 +3762,6 @@ impl Tty7App {
             )
             // Whatever is left of the bar stays a place to drag the window by.
             .child(div().flex_1().h_full())
-            .child(self.render_layout_switch(chrome, cx))
             .child(
                 div().occlude().flex_none().ml(px(4.)).child(
                     crate::ui::tab_strip::chrome_tile_sized(
@@ -3874,6 +4199,53 @@ impl Tty7App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_editor_commands_quote_paths_and_carry_the_line() {
+        use crate::core::config::FileOpenWith;
+        assert_eq!(
+            external_editor_command(
+                FileOpenWith::Helix,
+                Path::new("/tmp/a b.rs"),
+                Some(12),
+                Some(3)
+            ),
+            "hx '/tmp/a b.rs:12:3'"
+        );
+        assert_eq!(
+            external_editor_command(FileOpenWith::Helix, Path::new("/tmp/a.rs"), None, None),
+            "hx /tmp/a.rs"
+        );
+        assert_eq!(
+            external_editor_command(
+                FileOpenWith::Vim,
+                Path::new("/tmp/a b.rs"),
+                Some(12),
+                Some(3)
+            ),
+            "vim +12 '/tmp/a b.rs'"
+        );
+        assert_eq!(
+            external_editor_command(FileOpenWith::Vim, Path::new("a.rs"), None, None),
+            "vim a.rs"
+        );
+    }
+
+    #[test]
+    fn external_editors_spawn_as_the_recorded_program_with_literal_arguments() {
+        use crate::core::config::FileOpenWith;
+        let file = Path::new("/project/a b'$(echo no).rs");
+        let helix = external_editor_shell(FileOpenWith::Helix, file, Some(12), Some(3));
+        assert_eq!(helix.program, "hx");
+        assert_eq!(helix.args, ["/project/a b'$(echo no).rs:12:3"]);
+        let vim = external_editor_shell(FileOpenWith::Vim, file, Some(12), None);
+        assert_eq!(vim.program, "vim");
+        assert_eq!(vim.args, ["+12", "/project/a b'$(echo no).rs"]);
+        let restored: crate::daemon::protocol::ShellSpec =
+            serde_json::from_str(&serde_json::to_string(&helix).unwrap()).unwrap();
+        assert_eq!(restored, helix);
+        assert!(is_external_editor_program(&restored.program));
+    }
 
     /// A temp dir as the editor will see paths under it: through the local
     /// host's `canonicalize`, the call `load_file` makes. That resolves

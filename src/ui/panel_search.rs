@@ -624,7 +624,8 @@ impl Tty7App {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
-                    this.open_linked_file(&path, Some(line), Some(column), false, window, cx);
+                    this.open_file_preferred(&path, Some(line), Some(column), window, cx);
+                    this.file_tree_reveal_path(&path, cx);
                 }),
             )
             .into_any_element()

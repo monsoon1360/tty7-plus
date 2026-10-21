@@ -79,6 +79,7 @@ actions!(
         ToggleFullscreen,
         ToggleTabSidebar,
         ToggleLeftPanel,
+        ToggleTerminalArea,
         ToggleRightPanel,
         ShowRightPanelInfo,
         // Keeps its old name even though the panel is now "Source Control":

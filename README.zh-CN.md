@@ -55,7 +55,7 @@ macOS、Windows、Linux 的原生构建都在 [**Releases**](https://github.com/
 | **CLI + Skills** | 安装包自带 `tty7` CLI · [agent skill](skills/tty7/SKILL.md) · `run` 转发命令输出并原样返回退出码 · `split` · `send` · `wait --until free` · `capture` |
 | **编辑器级输入** | 基于历史的内联补全建议 · Tab 补全附带说明 · 语法高亮 · 多行编辑 · 点击定位光标 · <kbd>⌃ R</kbd> 模糊搜索历史 |
 | **窗口** | 标签页与分屏 · <kbd>⌘ P</kbd> 随处搜索 · <kbd>⌘ F</kbd> 回滚搜索 · 休眠标签页以释放内存 · 输入法 |
-| **侧边面板** | <kbd>⌘ J</kbd> · 进程树与监听端口 · 文件树 · 改动与 diff · 在文件中查找 · GitHub issue 与 PR（只读，通过 `gh` 登录） |
+| **侧边面板** | <kbd>Ctrl 4</kbd> · 进程树与监听端口 · 文件树 · 改动与 diff · 在文件中查找 · GitHub issue 与 PR（只读，通过 `gh` 登录） |
 | **Shell 集成** | pane 启动时自动注入，不用你装什么 · 提示符边界 · 工作目录 · 退出码 · 命令跑完发通知 · 覆盖 zsh、bash、fish、PowerShell、WSL 和远程 pane |
 | **远程工作区** | 远端的文件、仓库、改动、diff、worktree、标签页和 pane · 从任意客户端重连，接着离开时的位置继续 |
 | **Android 终端** | [配对、构建与部署指南](docs/remote/workspaces.mdx#android-remote-terminals) · 扫描五分钟有效的二维码，核对验证码并在桌面批准 · 已批准电脑自动重连 · 中文界面、分组会话抽屉与 Agent 实时输出 · 最新快照加载与断网重连遮罩 · TLS 证书固定与端到端加密 · 关闭桌面 GUI 后后台 daemon 仍在线 |

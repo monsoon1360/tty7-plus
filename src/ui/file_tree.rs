@@ -1020,7 +1020,7 @@ impl Tty7App {
         if is_dir {
             self.file_tree_toggle_expand(row_path, cx);
         } else {
-            self.open_file_in_editor(row_path, window, cx);
+            self.open_file_preferred(row_path, None, None, window, cx);
         }
         cx.notify();
     }
@@ -2237,7 +2237,9 @@ impl Tty7App {
                     let app = app.clone();
                     let p = p.clone();
                     move |_, window, cx| {
-                        let _ = app.update(cx, |this, cx| this.open_file_in_editor(&p, window, cx));
+                        let _ = app.update(cx, |this, cx| {
+                            this.open_file_preferred(&p, None, None, window, cx)
+                        });
                     }
                 }),
             );

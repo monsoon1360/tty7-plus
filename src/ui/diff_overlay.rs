@@ -666,7 +666,6 @@ impl Tty7App {
         let subject = source_subject(&overlay.source, branch);
         let subject_takes_the_slack =
             chrome.is_dock() && !subject.is_rev && subject.label.is_none();
-        let menu_app = cx.entity().downgrade();
         let hover = gpui::rgb(cx.global::<crate::ui::presets::Surfaces>().window.hover);
         let row = h_flex().id("diff-overlay-header");
         let row = if chrome.header_is_title_strip() {
@@ -893,9 +892,6 @@ impl Tty7App {
                     })),
                 ),
             )
-            .context_menu(move |menu, _window, cx| {
-                Tty7App::document_header_menu(menu, &menu_app, cx)
-            })
     }
 
     /// The two views, as a switch rather than a control.

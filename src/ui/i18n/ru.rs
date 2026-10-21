@@ -1418,6 +1418,16 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsNone => "В открытых файлах нет проблем.",
         L10nKey::EditorProblemsMore => "…и ещё {n}",
         L10nKey::SettingsEditor => "Редактор",
+        L10nKey::SettingsDocumentLayout => "Расположение документов",
+        L10nKey::SettingsDocumentLayoutDesc => "Общий параметр для всех вкладок и окон: встроенный редактор и сравнение рядом с терминалом или во всё окно.",
+        L10nKey::SettingsSearchDocumentLayoutKeywords => "документ расположение глобальный окно document layout dock fill",
+        L10nKey::SettingsFileOpenWith => "Способ открытия файлов",
+        L10nKey::SettingsFileOpenWithDesc => {
+            "Редактор, в котором открывается файл, выбранный в дереве файлов, быстром открытии или поиске. Helix и Vim открываются в новой вкладке; удалённые файлы всегда открываются встроенным редактором."
+        }
+        L10nKey::SettingsFileOpenWithHelix => "Helix",
+        L10nKey::SettingsFileOpenWithVim => "Vim",
+        L10nKey::SettingsSearchFileOpenWithKeywords => "редактор файл открыть внешний helix vim editor file open",
         L10nKey::SettingsEditorGitGutter => "Метки изменений Git",
         L10nKey::SettingsEditorGitGutterDesc => {
             "Отмечать строки, которые отличаются от версии в индексе, рядом с номерами строк и на полосе прокрутки."
@@ -1748,6 +1758,7 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::AppMenuIncreaseFontSize => "Увеличить шрифт",
         L10nKey::AppMenuDecreaseFontSize => "Уменьшить шрифт",
         L10nKey::AppMenuResetFontSize => "Сбросить размер шрифта",
+        L10nKey::AppMenuTerminalArea => "Область терминала",
         L10nKey::AppMenuLeftSidebar => "Левая панель",
         L10nKey::AppMenuRightPanel => "Правая панель",
         L10nKey::AppMenuCodePanel => "Панель кода",
@@ -2044,6 +2055,8 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdStopWorkspaceSubtitle => "завершить оболочки, сохранить расположение",
         L10nKey::CmdDeleteWorkspace => "Удалить рабочую область…",
         L10nKey::CmdDeleteWorkspaceSubtitle => "завершить оболочки и удалить расположение",
+        L10nKey::CmdShowTerminalArea => "Показать область терминала",
+        L10nKey::CmdHideTerminalArea => "Скрыть область терминала",
         L10nKey::CmdShowLeftSidebar => "Показать левую панель",
         L10nKey::CmdHideLeftSidebar => "Скрыть левую панель",
         L10nKey::CmdHideRightPanel => "Скрыть правую панель",

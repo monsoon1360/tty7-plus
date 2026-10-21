@@ -56,7 +56,7 @@ Native builds for macOS, Windows, and Linux on [**Releases**](https://github.com
 | **CLI + Skills** | bundled `tty7` CLI · [agent skill](skills/tty7/SKILL.md) · `run` streams a command and exits with its code · `split` · `send` · `wait --until free` · `capture` |
 | **Editor-grade input** | ghost suggestions from history · explained tab completion · syntax highlighting · multi-line editing · click places the caret · <kbd>⌃ R</kbd> fuzzy history |
 | **Window** | tabs & splits · <kbd>⌘ P</kbd> Search Everywhere · <kbd>⌘ F</kbd> scrollback search · hibernate a tab to free its memory · IME |
-| **Side panel** | <kbd>⌘ J</kbd> · process tree and listening ports · file tree · changes and diffs · find in files · GitHub issues and pull requests, read-only, signed in through `gh` |
+| **Side panel** | <kbd>Ctrl 4</kbd> · process tree and listening ports · file tree · changes and diffs · find in files · GitHub issues and pull requests, read-only, signed in through `gh` |
 | **Shell integration** | injected when a pane starts, nothing to install · prompt marks · working directory · exit codes · command-finished notifications · zsh, bash, fish, PowerShell, WSL, remote panes |
 | **Remote workspaces** | remote files, repos, changes, diffs, worktrees, tabs, and panes · reconnect from any client and continue where you left off |
 | **Android terminals** | [Pair, build and deploy](docs/remote/workspaces.mdx#android-remote-terminals) · scan a five-minute QR, compare codes and approve on desktop · automatic saved-computer reconnect · grouped session drawer and live Agent output · latest-snapshot loading/reconnect overlay · pinned TLS and end-to-end encryption · daemon stays online without the GUI |

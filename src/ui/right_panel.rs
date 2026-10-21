@@ -534,12 +534,18 @@ impl Tty7App {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let panel_open = self.right_panel_open(cx);
+        // A closing panel keeps drawing its last frame: the wrapper clips it
+        // away over the slide, so the content must not blank first.
+        let drawing = panel_open
+            || self
+                .panel_anim
+                .active(crate::ui::panel_anim::PanelSlot::Details);
         if let Some(open) = self.sftp_panel.open_pane_id
             && (!panel_open || self.remote_files_pane(window, cx).map(|(id, _)| id) != Some(open))
         {
             self.sftp_close_browser(cx);
         }
-        if !panel_open {
+        if !drawing {
             self.sftp_panel.panel_was_closed = true;
             return None;
         }

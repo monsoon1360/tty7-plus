@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Files can open in Helix or Vim.** Settings → General → Editor gains **File
+  open method**: the built-in editor (the default), Helix or Vim. The choice
+  covers files picked in the file tree, quick open and search results, and the
+  external editors run in a new terminal tab — `hx path:line:column` or
+  `vim +line path`, so a search hit lands on its line. Files on a remote host
+  always open in the built-in editor, which is the only one that can read
+  them. Asking for a file that is already open in its editor tab switches to
+  that tab instead of opening a second one.
 - **The Files panel can show dotfiles, and remembers the choice.** An eye in
   the panel's title bar — alongside the row menu's existing **Show Dotfiles**
   switch — lists dotfiles and dot-directories. The preference is saved to
@@ -27,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Ctrl+1`..`Ctrl+4` toggle the four regions, and each one slides.** The
+  sidebar, the terminal area, the editor and the details panel are now
+  `Ctrl+1`, `Ctrl+2`, `Ctrl+3` and `Ctrl+4` — in the order they are laid out —
+  replacing `⌘B`/`⌘J`/`⌘⇧E` and their off-macOS equivalents. `Ctrl+2` is the
+  terminal area, which was not on a shortcut at all before. Every one of the
+  four animates its width over 140 ms as it appears or disappears. The cost is
+  explicit: `Ctrl+2`, `Ctrl+3` and `Ctrl+4` are NUL, ESC and FS to the shell,
+  and these bindings take those bytes away from the PTY by default. Each is a
+  line of `config.json` away from being moved or unbound.
 - **One desktop pairing entry.** Removed the legacy Mobile settings page,
   its search entries and old-protocol QR controls. **Pair Devices** is now the
   only desktop pairing entry; existing native device credentials are unchanged.
@@ -72,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Helix/Vim return to the terminal with `Ctrl+2`.** External editor tabs remember their originating terminal; `Ctrl+3` returns to the editor. The only content area can no longer be hidden into a blank window.
+- **Document layout is a global setting.** Settings → General → Editor → Document layout selects Dock beside terminal or Fill window for every tab and window, with persistence across relaunches.
+- **Terminal layout and region shortcuts after a local install.** The terminal
+  column fills its animation wrapper vertically again. Hidden terminals and
+  editors hand focus to the workspace, so `Ctrl+1` through `Ctrl+4` keep working
+  after the focused region closes, including when the terminal is hidden.
 - **Reading history does not time out after two minutes.** Keep the immutable
   paged view while its subscription is active, rather than expiring its cursor
   during a reading pause. Subscription teardown and the existing global view

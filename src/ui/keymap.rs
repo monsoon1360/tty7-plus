@@ -383,6 +383,13 @@ fn control_code_binding_allowed(action: &str, chord: &str) -> bool {
         // Ctrl+_ (US) there.
         || action_context(action) == Some(crate::ui::code_editor::NAV_KEY_CONTEXT)
         || (cfg!(not(target_os = "macos")) && chord == "ctrl-v")
+        // The panel toggles are window chrome, bound globally by request:
+        // Ctrl+2 (NUL), Ctrl+3 (ESC) and Ctrl+4 (FS) no longer reach the shell
+        // by default. They always act, with no fall-through.
+        || matches!(
+            action,
+            "ToggleTerminalArea" | "ToggleCodePanel" | "ToggleRightPanel"
+        )
 }
 
 fn per_platform(mac: &'static str, other: &'static str) -> &'static str {
@@ -557,14 +564,14 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
         // `f11_is_the_only_default_on_a_bare_function_key`.
         ("ToggleFullscreen", per_platform("secondary-enter", "f11")),
         ("ToggleTabSidebar", ""),
-        (
-            "ToggleLeftPanel",
-            per_platform("secondary-b", "secondary-shift-b"),
-        ),
-        (
-            "ToggleRightPanel",
-            per_platform("secondary-j", "secondary-shift-j"),
-        ),
+        // The four workspace regions, in the order they are laid out, on
+        // Ctrl+1..4. Ctrl+2, Ctrl+3 and Ctrl+4 are NUL, ESC and FS to the
+        // shell, and this rebinding is the product decision to spend them on
+        // window chrome: they always act, with no fall-through. See
+        // `control_code_binding_allowed`.
+        ("ToggleLeftPanel", "ctrl-1"),
+        ("ToggleTerminalArea", "ctrl-2"),
+        ("ToggleRightPanel", "ctrl-4"),
         (
             "FindInTerminal",
             if cfg!(target_os = "macos") {
@@ -663,7 +670,7 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
         ("ToggleDiffViewMode", ""),
         ("ToggleSftp", ""),
         ("ShowSshForwards", ""),
-        ("ToggleCodePanel", "secondary-shift-e"),
+        ("ToggleCodePanel", "ctrl-3"),
         // Deliberately unbound. Docking is the default and Esc already gets the
         // terminal back, so a default chord here would only be one more thing
         // competing for a two-key combination nobody asked for.
@@ -945,6 +952,10 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
         "ToggleLeftPanel" => (
             CommandGroup::View,
             t(L10nKey::AppMenuLeftSidebar).to_string(),
+        ),
+        "ToggleTerminalArea" => (
+            CommandGroup::View,
+            t(L10nKey::AppMenuTerminalArea).to_string(),
         ),
         "ToggleRightPanel" => (
             CommandGroup::View,
@@ -1796,6 +1807,7 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "ToggleFullscreen" => KeyBinding::new(keystroke, ToggleFullscreen, None),
         "ToggleTabSidebar" => KeyBinding::new(keystroke, ToggleTabSidebar, None),
         "ToggleLeftPanel" => KeyBinding::new(keystroke, ToggleLeftPanel, None),
+        "ToggleTerminalArea" => KeyBinding::new(keystroke, ToggleTerminalArea, None),
         "ToggleRightPanel" => KeyBinding::new(keystroke, ToggleRightPanel, None),
         "ShowRightPanelInfo" => KeyBinding::new(keystroke, ShowRightPanelInfo, None),
         "ShowRightPanelChanges" => KeyBinding::new(keystroke, ShowRightPanelChanges, None),
@@ -2463,6 +2475,26 @@ mod tests {
         }
     }
 
+    /// The four regions ship on Ctrl+1..4, in layout order. Ctrl+2, Ctrl+3
+    /// and Ctrl+4 are control codes the shell used to receive; the rebinding
+    /// is the product decision that spends them, and
+    /// `control_code_binding_allowed` carries the matching exception.
+    #[test]
+    fn the_four_panels_ship_on_ctrl_digits() {
+        let defaults = default_bindings();
+        for (action, chord) in [
+            ("ToggleLeftPanel", "ctrl-1"),
+            ("ToggleTerminalArea", "ctrl-2"),
+            ("ToggleCodePanel", "ctrl-3"),
+            ("ToggleRightPanel", "ctrl-4"),
+        ] {
+            assert!(
+                defaults.iter().any(|(a, c)| *a == action && *c == chord),
+                "{action} should ship on {chord}"
+            );
+        }
+    }
+
     /// F1..F12 now encode (#834), so a default sitting on one takes it away
     /// from the shell the same way a Ctrl binding takes a control code: gpui
     /// matches bindings before the pane's key handler runs, so a bound
@@ -2815,6 +2847,29 @@ mod gpui_tests {
     use super::*;
     use crate::core::config::Config;
     use gpui::TestAppContext;
+
+    /// The four region chords in a terminal with the focus, which is the half
+    /// of the rebinding that costs the PTY: there they are the action a real
+    /// keypress runs, not a byte handed to the shell.
+    #[gpui::test]
+    fn the_region_chords_act_where_the_terminal_has_focus(cx: &mut TestAppContext) {
+        use gpui::Action as _;
+        cx.update(|cx| {
+            running_on_json(cx, "{}");
+            for (chord, name) in [
+                ("ctrl-1", ToggleLeftPanel::name_for_type()),
+                ("ctrl-2", ToggleTerminalArea::name_for_type()),
+                ("ctrl-3", ToggleCodePanel::name_for_type()),
+                ("ctrl-4", ToggleRightPanel::name_for_type()),
+            ] {
+                assert_eq!(
+                    fired(cx, chord).first(),
+                    Some(&name),
+                    "{chord} in a terminal should run {name}"
+                );
+            }
+        });
+    }
 
     #[gpui::test]
     fn init_then_rebind_installs_the_merged_table(cx: &mut TestAppContext) {

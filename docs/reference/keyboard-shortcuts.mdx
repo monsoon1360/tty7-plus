@@ -37,11 +37,20 @@ it shows what *your* copy is bound to. This is the shipped default.
 | Action | macOS | Windows / Linux |
 |---|---|---|
 | Search Everywhere | <kbd>⌘ P</kbd> | <kbd>Ctrl ⇧ P</kbd> |
-| Toggle Left Sidebar | <kbd>⌘ B</kbd> | <kbd>Ctrl ⇧ B</kbd> |
-| Toggle Right Panel | <kbd>⌘ J</kbd> | <kbd>Ctrl ⇧ J</kbd> |
-| Toggle Code Panel | <kbd>⌘ ⇧ E</kbd> | <kbd>Ctrl ⇧ E</kbd> |
+| Toggle Left Sidebar | <kbd>Ctrl 1</kbd> | <kbd>Ctrl 1</kbd> |
+| Toggle Terminal Area | <kbd>Ctrl 2</kbd> | <kbd>Ctrl 2</kbd> |
+| Toggle Code Panel | <kbd>Ctrl 3</kbd> | <kbd>Ctrl 3</kbd> |
+| Toggle Right Panel | <kbd>Ctrl 4</kbd> | <kbd>Ctrl 4</kbd> |
 | Font Size Up · Down · Reset | <kbd>⌘ +</kbd> · <kbd>⌘ −</kbd> · <kbd>⌘ 0</kbd> | <kbd>Ctrl +</kbd> · <kbd>Ctrl −</kbd> · <kbd>Ctrl 0</kbd> |
 | Zoom the font | <kbd>⌘</kbd> + wheel | <kbd>Ctrl</kbd> + wheel |
+
+The four regions are the physical <kbd>Ctrl</kbd> key on every platform, in
+layout order, and each animates its width as it opens and closes. On macOS
+<kbd>⌘ 1</kbd>..<kbd>⌘ 9</kbd> still activate tabs. Because these are window
+chrome rather than terminal input, <kbd>Ctrl 2</kbd>, <kbd>Ctrl 3</kbd> and
+<kbd>Ctrl 4</kbd> no longer deliver NUL, ESC and FS to the shell; any of the
+four can be moved or unbound from **Settings → Keybindings** (or
+`keybindings` in `config.json`).
 
 ## Terminal
 

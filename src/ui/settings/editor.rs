@@ -6,11 +6,54 @@ use super::*;
 impl Tty7App {
     pub(super) fn render_editor_group(&self, cx: &mut Context<Self>) -> AnyElement {
         let cfg = cx.global::<Config>();
-        let (git_gutter, lsp, soft_wrap, markdown) = (
+        let (git_gutter, lsp, soft_wrap, markdown, file_open_with, layout) = (
             cfg.editor_git_gutter,
             cfg.editor_lsp,
             cfg.editor_soft_wrap,
             cfg.editor_markdown_preview,
+            cfg.file_open_with,
+            cfg.document_layout,
+        );
+        let file_open_with = self.settings_choice(
+            "wt-file-open-with",
+            &[
+                t(L10nKey::SettingsOpenFilesInternal),
+                t(L10nKey::SettingsFileOpenWithHelix),
+                t(L10nKey::SettingsFileOpenWithVim),
+            ],
+            match file_open_with {
+                crate::core::config::FileOpenWith::BuiltIn => 0,
+                crate::core::config::FileOpenWith::Helix => 1,
+                crate::core::config::FileOpenWith::Vim => 2,
+            },
+            cx,
+            |this, ix, _window, cx| {
+                use crate::core::config::FileOpenWith;
+                this.set_file_open_with(
+                    match ix {
+                        0 => FileOpenWith::BuiltIn,
+                        1 => FileOpenWith::Helix,
+                        _ => FileOpenWith::Vim,
+                    },
+                    cx,
+                );
+            },
+        );
+        let document_layout = self.settings_choice(
+            "wt-document-layout",
+            &[t(L10nKey::DocumentDock), t(L10nKey::DocumentFill)],
+            usize::from(layout == crate::core::config::DocumentLayout::Fill),
+            cx,
+            |this, ix, _, cx| {
+                this.set_document_layout(
+                    if ix == 0 {
+                        crate::core::config::DocumentLayout::Dock
+                    } else {
+                        crate::core::config::DocumentLayout::Fill
+                    },
+                    cx,
+                );
+            },
         );
         let git_gutter =
             self.settings_switch("wt-editor-git-gutter", git_gutter, cx, |this, on, _, cx| {
@@ -31,6 +74,18 @@ impl Tty7App {
             Some(t(L10nKey::SettingsEditor)),
             None,
             [
+                self.settings_row(
+                    t(L10nKey::SettingsDocumentLayout),
+                    t(L10nKey::SettingsDocumentLayoutDesc),
+                    document_layout,
+                    cx,
+                ),
+                self.settings_row(
+                    t(L10nKey::SettingsFileOpenWith),
+                    t(L10nKey::SettingsFileOpenWithDesc),
+                    file_open_with,
+                    cx,
+                ),
                 self.settings_row(
                     t(L10nKey::SettingsEditorGitGutter),
                     t(L10nKey::SettingsEditorGitGutterDesc),

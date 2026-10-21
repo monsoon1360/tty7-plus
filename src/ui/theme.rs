@@ -119,6 +119,7 @@ pub(crate) fn set_menus(cx: &mut App) {
             MenuItem::action(t(L10nKey::AppMenuResetFontSize), ResetFontSize),
             MenuItem::separator(),
             MenuItem::action(t(L10nKey::AppMenuLeftSidebar), ToggleLeftPanel),
+            MenuItem::action(t(L10nKey::AppMenuTerminalArea), ToggleTerminalArea),
             MenuItem::action(t(L10nKey::AppMenuRightPanel), ToggleRightPanel),
             MenuItem::action(t(L10nKey::AppMenuCodePanel), ToggleCodePanel),
             MenuItem::action(t(L10nKey::AppMenuTabBarPosition), ToggleTabSidebar),

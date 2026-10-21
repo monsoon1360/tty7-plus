@@ -62,6 +62,8 @@ struct Entry {
 struct Doc {
     #[serde(default)]
     tabs: HashMap<TabId, Entry>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    external_editors: HashMap<TabId, crate::ui::code_editor::ExternalEditorTab>,
 }
 
 #[derive(Default)]
@@ -108,6 +110,15 @@ pub(crate) fn get(cx: &mut App, tab: TabId) -> Option<TabEditor> {
     store(cx).doc.tabs.get(&tab).map(|e| e.state.clone())
 }
 
+pub(crate) fn external_editors(cx: &mut App) -> Vec<crate::ui::code_editor::ExternalEditorTab> {
+    store(cx).doc.external_editors.values().cloned().collect()
+}
+
+pub(crate) fn put_external_editor(cx: &mut App, editor: crate::ui::code_editor::ExternalEditorTab) {
+    store(cx).doc.external_editors.insert(editor.tab, editor);
+    schedule_write(cx);
+}
+
 /// Records a tab's editor. Writing is deferred and coalesced: this is called
 /// whenever the set of open files changes, which a burst of opens makes often.
 pub(crate) fn put(cx: &mut App, tab: TabId, state: TabEditor) {
@@ -128,7 +139,9 @@ pub(crate) fn put(cx: &mut App, tab: TabId, state: TabEditor) {
 
 /// Forgets a tab that was closed.
 pub(crate) fn remove(cx: &mut App, tab: TabId) {
-    if store(cx).doc.tabs.remove(&tab).is_some() {
+    let s = store(cx);
+    let removed_editor = s.doc.external_editors.remove(&tab).is_some();
+    if s.doc.tabs.remove(&tab).is_some() || removed_editor {
         schedule_write(cx);
     }
 }
@@ -225,6 +238,19 @@ mod tests {
             serde_json::from_str(r#"{"files": ["/a.rs"], "active": 0, "visible": true}"#).unwrap();
         assert_eq!(state.split, None);
         assert!(!serde_json::to_string(&state).unwrap().contains("split"));
+    }
+
+    #[test]
+    fn external_editor_links_survive_relaunch_and_old_records() {
+        let mut doc: Doc = serde_json::from_str(r#"{"tabs":{}}"#).unwrap();
+        let editor = crate::ui::code_editor::ExternalEditorTab {
+            path: PathBuf::from("/project/a b.rs"),
+            tab: TabId::new(),
+            terminal: Some(TabId::new()),
+        };
+        doc.external_editors.insert(editor.tab, editor.clone());
+        let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back.external_editors.get(&editor.tab), Some(&editor));
     }
 
     #[test]

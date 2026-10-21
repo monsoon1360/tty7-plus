@@ -59,6 +59,7 @@ pub enum CommandKind {
     ToggleFullscreen,
     ToggleTabSidebar,
     ToggleLeftPanel,
+    ToggleTerminalArea,
     ToggleRightPanel,
     ShowRightPanel(RightPanelTab),
     ClearTerminal,
@@ -235,6 +236,7 @@ impl CommandKind {
             ToggleFullscreen => "full-screen",
             ToggleTabSidebar => "tab-bar-position",
             ToggleLeftPanel => "left-sidebar",
+            ToggleTerminalArea => "terminal-area",
             ToggleRightPanel => "right-panel",
             ShowRightPanel(RightPanelTab::Info) => "right-panel-info",
             // Frecency is keyed by this string, so it stays `right-panel-changes`
@@ -386,6 +388,7 @@ impl CommandKind {
             ToggleFullscreen => "ToggleFullscreen",
             ToggleTabSidebar => "ToggleTabSidebar",
             ToggleLeftPanel => "ToggleLeftPanel",
+            ToggleTerminalArea => "ToggleTerminalArea",
             ToggleRightPanel => "ToggleRightPanel",
             ShowRightPanel(tab) => match tab {
                 RightPanelTab::Info => "ShowRightPanelInfo",
@@ -520,10 +523,10 @@ impl CommandGroup {
 pub struct ChromeState {
     pub rail_collapsed: bool,
     pub right_panel_visible: bool,
-    /// Whether the *active tab's* document is filling the window. Passed in
-    /// rather than read off the config here: `document_layout` in the config is
-    /// only what a tab that has never been told starts from, so a tab that was
-    /// told would have had the row offer it the state it is already in.
+    /// Whether the terminal region is on screen. Window state, offered as a
+    /// Show/Hide row the same way the two side panels are.
+    pub terminal_visible: bool,
+    /// The global document layout, shared by all tabs and windows.
     pub document_filled: bool,
     /// The machine this window's workspace lives on, named for the search, when
     /// it runs a server this build installs there. `None` for this computer and
@@ -630,6 +633,7 @@ impl Item {
         let sidebar_hidden = chrome.rail_collapsed || !tab_bar_left;
         let right_panel_open = chrome.right_panel_visible;
         let document_filled = chrome.document_filled;
+        let terminal_visible = chrome.terminal_visible;
 
         let tabs = [
             Item::localized(L10nKey::CmdNewTab, NewTab),
@@ -687,6 +691,14 @@ impl Item {
                     L10nKey::CmdHideLeftSidebar
                 },
                 ToggleLeftPanel,
+            ),
+            Item::localized(
+                if terminal_visible {
+                    L10nKey::CmdHideTerminalArea
+                } else {
+                    L10nKey::CmdShowTerminalArea
+                },
+                ToggleTerminalArea,
             ),
             Item::localized(
                 if right_panel_open {
@@ -1009,6 +1021,7 @@ mod gpui_tests {
                 rail_collapsed: false,
                 right_panel_visible: false,
                 document_filled: false,
+                terminal_visible: true,
                 remote_server: None,
             };
             let mut seen = std::collections::HashSet::new();
@@ -1035,6 +1048,7 @@ mod gpui_tests {
                 rail_collapsed: false,
                 right_panel_visible: false,
                 document_filled: false,
+                terminal_visible: true,
                 remote_server: None,
             };
             let cmds = Item::actions(cx, chrome);
@@ -1054,6 +1068,7 @@ mod gpui_tests {
             rail_collapsed: false,
             right_panel_visible: false,
             document_filled: false,
+            terminal_visible: true,
             remote_server: remote_server.map(str::to_string),
         }
     }

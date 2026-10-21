@@ -3,11 +3,12 @@ title: "The side panel"
 description: "Info, Files, Search, Source Control and GitHub — plus the built-in editor."
 ---
 
-<kbd>⌘ J</kbd> opens a panel on the right of the window. It is hidden by
+<kbd>Ctrl 4</kbd> opens a panel on the right of the window. It is hidden by
 default; whichever tab you leave it on is where it opens next time.
 
 The tabs at the top switch what the panel shows; the current one sits on a
-pill. <kbd>⌘ J</kbd> or the panel tile in the title bar puts it away.
+pill. <kbd>Ctrl 4</kbd> or the panel tile in the title bar puts it away — the
+panel slides its width away over 140 ms either way.
 
 <Frame caption="The Info tab beside a terminal: session, processes, listening ports">
   <img src="/images/side-panel.webp" alt="The tty7 side panel" />
@@ -142,7 +143,7 @@ disabled. See [what leaves your machine](/reference/privacy#what-leaves-your-mac
 
 ## The editor
 
-<kbd>⌘ ⇧ E</kbd> toggles the code panel; clicking a file in the Files tab opens
+<kbd>Ctrl 3</kbd> toggles the code panel; clicking a file in the Files tab opens
 it there. It is a real editor — syntax highlighting, line and column readout,
 wrap toggle, and a Markdown preview — meant for the edit you would otherwise
 have opened `vim` for.
@@ -151,6 +152,14 @@ have opened `vim` for.
 |---|---|
 | <kbd>⌘ S</kbd> | Save |
 | <kbd>Esc</kbd> | Back to the terminal |
+
+The four regions are <kbd>Ctrl 1</kbd> (sidebar), <kbd>Ctrl 2</kbd> (the
+terminal area), <kbd>Ctrl 3</kbd> (this editor) and <kbd>Ctrl 4</kbd> (the
+right panel). <kbd>Ctrl 2</kbd>, <kbd>Ctrl 3</kbd> and <kbd>Ctrl 4</kbd> are
+<kbd>Ctrl</kbd> with a digit, not the macOS <kbd>⌘</kbd>: they are window
+chrome, and on the other side of them the shell no longer receives NUL, ESC and
+FS. Every one of the four animates its width as it appears or disappears. Any
+of them is a line of `config.json` away from a different chord.
 
 Files are watched on disk: a change underneath you is picked up, and closing
 with unsaved edits asks before discarding them. Files over 4 MB and anything
@@ -169,15 +178,37 @@ and two thirds. **Document: Third / Half / Two-Thirds Width** in Search
 Everywhere do the same. On a narrow window the terminal's own floor stops the
 divider sooner.
 
-Right-click the document's header for **Fill window**, which is the old
-full-workspace overlay, unchanged. **Document: Fill Window** and **Document:
-Dock Beside Terminal** in Search Everywhere are the same switch.
-
-Fill or dock is **per tab**: read a long file over the whole window in one tab
-while an agent keeps half of another, and neither moves the other. A fresh tab
-starts from `document_layout` in `config.json`. The width is shared, and
-persists as `document_ratio`.
+Choose **Settings → General → Editor → Document layout** to **Dock beside
+terminal** or **Fill window**. The choice is global: existing and new tabs,
+all open windows, and the next app launch use the same layout. The divider's
+width persists as `document_ratio`.
 
 A window too narrow to give both the terminal and the document a readable width
 fills for that file only — widen it and the column comes back, without your
 setting having changed.
+
+## Opening files somewhere else
+
+**Settings → General → Editor → File open method** decides what a file picked
+in the file tree, in quick open or in a search result opens in:
+
+| Method | What happens |
+|---|---|
+| **Built-in editor** | The column above. The default. |
+| **Helix** | A new editor tab running `hx <path>` — `hx <path>:<line>:<column>` from a search hit. |
+| **Vim** | A new editor tab running `vim <path>`, or `vim +<line> <path>` from a search hit. |
+
+The tab opens in the current pane's directory, so a relative path means the
+same thing there as in the terminal beside it. Opening the same file again
+switches to the tab it already has rather than starting a second editor.
+Press **Ctrl+2** in Helix or Vim to return to the originating terminal;
+**Ctrl+3** returns to the editor. The association and editor launch arguments
+survive app relaunches. A terminal is never hidden while it is the
+only content in the workspace.
+
+Files on a remote host always open in the built-in editor: `hx` and `vim` are
+programs on this machine, and the file is not. The setting covers the file
+tree, quick open and search results only — a link in the terminal grid follows
+**File links in the grid**, and source-control changes, the SFTP browser and
+the problems list open in the built-in editor, which can honour a line and a
+column on either machine.

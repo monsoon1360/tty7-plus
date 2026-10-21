@@ -27,6 +27,7 @@ use crate::ui::forwards::{ForwardFields, added_forward, rule_of};
 use crate::ui::host_registry::HostId;
 use crate::ui::i18n::{L10nKey, set_locale, t, t_fmt, t_plural};
 use crate::ui::pane::{CloseOutcome, Dir, Pane, PaneSlot};
+use crate::ui::panel_anim::PanelSlot;
 use crate::ui::presets::Fill;
 use crate::ui::scm::ScmIntent;
 use crate::ui::search::{
@@ -508,16 +509,6 @@ pub struct Tab {
     /// on the way *in* — see [`crate::core::group_key::EntryWatch`].
     pub(crate) folder_watch: std::cell::Cell<crate::core::group_key::EntryWatch>,
     pub(crate) overlay_top: OverlayTop,
-    /// Whether this tab's document fills the workspace or docks beside the
-    /// terminal, once the tab has been told. `None` follows `document_layout`
-    /// in the config, which is the default a fresh tab starts from and the
-    /// last explicit choice anyone made.
-    ///
-    /// Per tab rather than per window because what you are doing differs per
-    /// tab: reading a long file in one while an agent works in another wants
-    /// the whole window here and half of it there, and a global switch made
-    /// each of those flip the other.
-    pub(crate) document_layout: Option<crate::core::config::DocumentLayout>,
     pub(crate) tree_id: std::cell::Cell<tty7_core::core::machine::TabId>,
     /// Monotonic stamp of when this tab was last activated, used to order the
     /// switcher's tab column most-recently-used first. Zero means never.
@@ -578,7 +569,6 @@ impl Tab {
             diff_overlay: None,
             code: None,
             overlay_top: OverlayTop::default(),
-            document_layout: None,
             group: std::cell::Cell::new(None),
             auto_group: std::cell::RefCell::new(None),
             folder_watch: std::cell::Cell::new(crate::core::group_key::EntryWatch::fresh()),
@@ -598,7 +588,6 @@ impl Tab {
             diff_overlay: None,
             code: None,
             overlay_top: OverlayTop::default(),
-            document_layout: None,
             group: std::cell::Cell::new(tree.group),
             auto_group: std::cell::RefCell::new(tree.last_auto.clone()),
             // Only ever built for a tab that was just created elsewhere — by
@@ -966,6 +955,7 @@ pub struct Tty7App {
     pub(crate) mod_hint_gen: u64,
     pub(crate) record_gen: u64,
     pub(crate) home_focus: gpui::FocusHandle,
+    pub(crate) workspace_focus: gpui::FocusHandle,
     /// Whether the home page's cursor block is on this half-second.
     ///
     /// A `bool` a timer flips, not a per-frame animation — the same shape the
@@ -1027,6 +1017,19 @@ pub struct Tty7App {
     pub(crate) document_dragging: Rc<Cell<bool>>,
     pub(crate) right_panel_visible: bool,
     pub(crate) right_panel_tab: RightPanelTab,
+    /// Whether the main terminal region is on screen. Window state, not a
+    /// config value: every new window starts with its panes showing.
+    pub(crate) terminal_visible: bool,
+    /// The eased widths of the four regions.
+    pub(crate) panel_anim: crate::ui::panel_anim::PanelAnimator,
+    /// The tab whose document is animating closed, with the sequence number
+    /// of the close that started it, so a stale timer cannot close a tab the
+    /// user reopened in the meantime.
+    pub(crate) document_closing: Option<(tty7_core::core::machine::TabId, u64)>,
+    pub(crate) document_close_seq: u64,
+    /// Files `hx`/`vim` were opened on, with the tab each one got, so asking
+    /// for the same file twice activates its tab instead of spawning another.
+    pub(crate) external_editor_tabs: Vec<crate::ui::code_editor::ExternalEditorTab>,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
     /// The tab whose sidebar row is brought into view the next time it is
@@ -1654,6 +1657,7 @@ impl Tty7App {
             mod_hint_gen: 0,
             record_gen: 0,
             home_focus: cx.focus_handle(),
+            workspace_focus: cx.focus_handle(),
             home_cursor_on: true,
             working_dot_on: true,
             shells: ShellInventory::default(),
@@ -1701,6 +1705,11 @@ impl Tty7App {
             document_dragging: Rc::new(Cell::new(false)),
             right_panel_visible,
             right_panel_tab,
+            terminal_visible: true,
+            panel_anim: Default::default(),
+            document_closing: None,
+            document_close_seq: 0,
+            external_editor_tabs: crate::ui::editor_session::external_editors(cx),
             sidebar_collapsed,
             sidebar_scroll: gpui::ScrollHandle::new(),
             sidebar_reveal: Rc::new(Cell::new(None)),
@@ -2222,8 +2231,7 @@ impl Tty7App {
                 diff_overlay: None,
                 code: None,
                 overlay_top: OverlayTop::default(),
-                document_layout: None,
-                group: std::cell::Cell::new(st.group),
+                    group: std::cell::Cell::new(st.group),
                 auto_group: std::cell::RefCell::new(st.last_auto),
                 // Reopened here, so it is this window's new tab: walking into
                 // a pinned folder files it there like any other.
@@ -3274,6 +3282,14 @@ impl Tty7App {
         self.update_config(cx, |cfg| cfg.link_file_open = Some(mode));
     }
 
+    pub(crate) fn set_file_open_with(
+        &mut self,
+        mode: crate::core::config::FileOpenWith,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_config(cx, |cfg| cfg.file_open_with = mode);
+    }
+
     pub(crate) fn set_ssh_loopback_forward(&mut self, on: bool, cx: &mut Context<Self>) {
         self.update_config(cx, |cfg| cfg.ssh_loopback_forward = on);
     }
@@ -3860,6 +3876,59 @@ impl Tty7App {
         cx.notify();
     }
 
+    /// Return from an editor to the terminal. A focused terminal can be hidden
+    /// only while another document remains visible.
+    pub(crate) fn toggle_terminal_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let from_external_editor = self.is_external_editor_tab(self.active, cx);
+        if from_external_editor {
+            self.terminal_visible = true;
+            if let Some(index) = self.external_editor_terminal(cx) {
+                self.activate(index, window, cx);
+            } else {
+                let cwd = self
+                    .tabs
+                    .get(self.active)
+                    .and_then(|tab| tab.pane.focused_or_first(window, cx))
+                    .and_then(|pane| pane.read(cx).spawnable_cwd());
+                self.new_tab_slot(cwd, None, window, cx);
+                cx.notify();
+                return;
+            }
+        }
+        let document = self.document_front().is_some() && !self.document_closing_active();
+        let covered = document && self.document_dock_px(window, cx).is_none();
+        let terminal_focused = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|tab| tab.pane.focused_leaf(window, cx).is_some());
+        self.terminal_visible = from_external_editor
+            || !self.terminal_visible
+            || !terminal_focused
+            || !document
+            || covered;
+        if covered {
+            // Return to the terminal without changing the global layout or
+            // discarding any editor buffers. Ctrl+3 reopens the document.
+            self.hide_code_panel();
+            if let Some(tab) = self.tabs.get_mut(self.active) {
+                tab.diff_overlay = None;
+            }
+        }
+        if self.terminal_visible {
+            if let Some(target) = self.tabs.get(self.active).and_then(Tab::focus_target) {
+                window.focus(&target.focus_handle(cx), cx);
+            } else {
+                self.focus_active(window, cx);
+            }
+        } else {
+            self.workspace_focus.focus(window, cx);
+            if self.code_panel_visible() {
+                self.focus_editor(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn left_panel_open(&self, cx: &gpui::App) -> bool {
         matches!(cx.global::<Config>().tab_bar_position, TabBarPosition::Left)
             && !self.sidebar_collapsed
@@ -4021,6 +4090,13 @@ impl Tty7App {
             .is_none_or(|(settings, _)| settings == window.window_handle());
         if let Some(settings) = self.settings.as_ref().filter(|_| settings_here) {
             window.focus(&settings.focus_handle, cx);
+            return;
+        }
+        // The focus-lost listener also calls this when a panel disappears.
+        // A hidden terminal has no dispatch node; focusing it again would
+        // leave every workspace shortcut unreachable.
+        if !self.terminal_visible && !self.tabs.is_empty() {
+            window.focus(&self.workspace_focus, cx);
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -4389,6 +4465,9 @@ impl Tty7App {
         group.seat(&new_tab);
         self.tabs.insert(insert_at, new_tab);
         self.active = insert_at;
+        // A tab (or a file launched into one) is never created into a region
+        // the reader has hidden.
+        self.terminal_visible = true;
         self.focus_active(window, cx);
         self.save_session(cx);
         cx.notify();
@@ -4583,6 +4662,7 @@ impl Tty7App {
             return None;
         }
         self.maximized = None;
+        self.terminal_visible = true;
         self.focus_leaf(&new, window, cx);
         self.save_session(cx);
         cx.notify();
@@ -6368,6 +6448,7 @@ impl Tty7App {
             ChromeState {
                 rail_collapsed: self.sidebar_collapsed,
                 right_panel_visible: self.right_panel_visible,
+                terminal_visible: self.terminal_visible,
                 document_filled: self.document_layout(cx)
                     == crate::core::config::DocumentLayout::Fill,
                 remote_server: WorkspaceStore::remote_ref(cx, self.workspace)
@@ -6757,6 +6838,7 @@ impl Tty7App {
             ToggleFullscreen => self.toggle_fullscreen(window, cx),
             ToggleTabSidebar => self.toggle_tab_sidebar(cx),
             ToggleLeftPanel => self.toggle_left_panel(cx),
+            ToggleTerminalArea => self.toggle_terminal_area(window, cx),
             ToggleRightPanel => self.toggle_right_panel(cx),
             ShowRightPanel(tab) => self.set_right_panel_tab(tab, cx),
             ResetFontSize => self.reset_font_size(cx),
@@ -6937,7 +7019,7 @@ impl Tty7App {
             }
             GoToSymbol { line, column } => self.editor_go_to_position(line, column, window, cx),
             GoToLocation { path, line, column } => {
-                self.open_file_in_editor_at(&path, Some(line + 1), Some(column + 1), window, cx)
+                self.open_file_preferred(&path, Some(line + 1), Some(column + 1), window, cx)
             }
             GoToTab { workspace, tab } => self.go_to_tab(workspace, tab, false, window, cx),
             ResumeSession {
@@ -7078,6 +7160,12 @@ impl Tty7App {
             }
             L10nKey::SettingsSidebarGrouping => {
                 self.set_sidebar_auto_grouping(defaults.sidebar_auto_grouping, cx)
+            }
+            L10nKey::SettingsDocumentLayout => {
+                self.set_document_layout(defaults.document_layout, cx);
+            }
+            L10nKey::SettingsFileOpenWith => {
+                self.update_config(cx, |cfg| cfg.file_open_with = defaults.file_open_with);
             }
             L10nKey::SettingsEditorGitGutter => {
                 self.set_editor_git_gutter(defaults.editor_git_gutter, cx)
@@ -9439,44 +9527,156 @@ impl Render for Tty7App {
         // what to draw, and a pane held over *them* is measured against where
         // they put their tabs last frame — which is what they are about to
         // blank and write again.
+
+        // -- eased panel widths ------------------------------------------------
+        // Every region's width for this frame, read before anything is built:
+        // the four of them share the body, and the terminal's own width has to
+        // be known before the pane tree is laid out.
+        let viewport_w = window.viewport_size().width.as_f32();
+        // The home screen lives in the terminal region, so a window with no
+        // tabs keeps it whatever the toggle last said — hiding the panes with
+        // the last tab closed would otherwise leave a window with nothing in
+        // it and no way back.
+        let terminal_open = self.terminal_visible || self.document_front().is_none();
+        let sidebar_open = rail;
+        let sidebar_target = if sidebar_open {
+            self.sidebar_px(window, cx)
+        } else {
+            0.
+        };
+        let sidebar_w =
+            self.panel_anim
+                .width(PanelSlot::Sidebar, sidebar_open, sidebar_target, window);
+        let sidebar_present = sidebar_open || self.panel_anim.active(PanelSlot::Sidebar);
+
+        let right_open = self.right_panel_open(cx);
+        let right_target = if right_open {
+            self.right_panel_px(window, cx)
+        } else {
+            0.
+        };
+        let right_w =
+            self.panel_anim
+                .width(PanelSlot::Details, right_open, right_target, window);
+        let right_present = right_open || self.panel_anim.active(PanelSlot::Details);
+
+        let body_w = (viewport_w - sidebar_w - right_w).max(0.);
+
+        // The docked column's steady width, or `None` when there is no
+        // document to draw — too narrow a window included, where the surface
+        // falls back to the filling overlay (which is not width-animated: it
+        // covers the workspace rather than splitting it).
+        let closing_document = self.document_closing_active();
+        let dock_steady = (self.document_layout(cx) == crate::core::config::DocumentLayout::Dock
+            && self.document_front().is_some())
+        .then(|| document_column_px(body_w, self.document_ratio.get()))
+        .flatten();
+        let document_open = dock_steady.is_some() && !closing_document;
+        let document_target = if !document_open {
+            0.
+        } else if terminal_open {
+            dock_steady.unwrap_or(body_w)
+        } else {
+            body_w
+        };
+        let mut document_w =
+            self.panel_anim
+                .width(PanelSlot::Document, document_open, document_target, window);
+
+        let terminal_target = if terminal_open {
+            (body_w - document_w).max(0.)
+        } else {
+            0.
+        };
+        let terminal_w = self.panel_anim.width(
+            PanelSlot::Terminal,
+            terminal_open,
+            terminal_target,
+            window,
+        );
+        if document_open && self.panel_anim.active(PanelSlot::Terminal) {
+            // The terminal's slide owns the split for these 140ms: give the
+            // document exactly the width the terminal gave up.
+            document_w = (body_w - terminal_w).max(0.);
+            self.panel_anim.set_drawn(PanelSlot::Document, document_w);
+        }
+        let document_opening_or_closing = self.panel_anim.active(PanelSlot::Document);
+        // The terminal lays itself out at a width that does not move during a
+        // slide — its PTY size is read off the laid-out bounds, so animating
+        // *it* would reflow the shell on every frame. The wrapper clips
+        // instead, and the one reflow happens when the slide ends.
+        let terminal_inner = if terminal_open {
+            if document_opening_or_closing {
+                body_w
+            } else {
+                (body_w - document_target).max(0.)
+            }
+        } else {
+            self.panel_anim
+                .slide_from(PanelSlot::Terminal)
+                .unwrap_or(0.)
+                .max(0.)
+        };
+        let terminal_present = terminal_open || self.panel_anim.active(PanelSlot::Terminal);
+        let document_present = dock_steady.is_some()
+            && (document_open || self.panel_anim.active(PanelSlot::Document));
+
         let tab_landing = self.tab_landing(window, cx);
         let detach_caret = self.detach_caret(window, cx);
         let strip = self.tab_strip(!vertical, window, cx);
-        let sidebar = rail.then(|| self.tab_sidebar(window, cx));
+        let sidebar = sidebar_present.then(|| {
+            let sliding = self.panel_anim.active(PanelSlot::Sidebar);
+            div()
+                .flex_none()
+                .w(px(sidebar_w.max(0.)))
+                .h_full()
+                // Only while it is sliding: the rail's own resize handle hangs
+                // half a handle past its edge, and a permanent clip would cut
+                // both that target and the hairline at the edge of it.
+                .when(sliding, |d| d.overflow_hidden())
+                .child(self.tab_sidebar(window, cx))
+                .into_any_element()
+        });
         let ssh_status = self
             .tabs
             .get(self.active)
             .and_then(|t| t.pane.focused_or_first(window, cx))
             .and_then(|leaf| self.render_ssh_status_strip(&leaf, cx));
-        let body = match self.tabs.get(self.active) {
-            None => self.render_home(cx).into_any_element(),
-            Some(active_tab) => {
-                let maximized = self.maximized.as_ref().filter(|leaf| {
-                    active_tab
-                        .pane
-                        .leaves()
-                        .iter()
-                        .any(|l| l.entity_id() == leaf.entity_id())
-                });
-                match maximized {
-                    Some(leaf) => div()
-                        .size_full()
-                        .overflow_hidden()
-                        .child(leaf.clone())
-                        .into_any_element(),
-                    None => {
-                        let several = active_tab.pane.leaves().len() > 1;
-                        let chrome = crate::ui::pane::PaneChrome {
-                            dim_inactive: several && cx.global::<Config>().dim_inactive_panes,
-                            rearrangeable: several,
-                            hovered: self.pane_hover.clone(),
-                            lifted: crate::ui::pane_drag::lifted(&self.pane_drag),
-                            drag: self.pane_drag.clone(),
-                        };
-                        active_tab.pane.render(&chrome, window, cx)
+        let body = if terminal_present {
+            match self.tabs.get(self.active) {
+                None => self.render_home(cx).into_any_element(),
+                Some(active_tab) => {
+                    let maximized = self.maximized.as_ref().filter(|leaf| {
+                        active_tab
+                            .pane
+                            .leaves()
+                            .iter()
+                            .any(|l| l.entity_id() == leaf.entity_id())
+                    });
+                    match maximized {
+                        Some(leaf) => div()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(leaf.clone())
+                            .into_any_element(),
+                        None => {
+                            let several = active_tab.pane.leaves().len() > 1;
+                            let chrome = crate::ui::pane::PaneChrome {
+                                dim_inactive: several && cx.global::<Config>().dim_inactive_panes,
+                                rearrangeable: several,
+                                hovered: self.pane_hover.clone(),
+                                lifted: crate::ui::pane_drag::lifted(&self.pane_drag),
+                                drag: self.pane_drag.clone(),
+                            };
+                            active_tab.pane.render(&chrome, window, cx)
+                        }
                     }
                 }
             }
+        } else {
+            // Hidden, and no slide left to draw: the panes are not laid out at
+            // all, which is also what keeps their PTY sizes where they were.
+            div().size_full().into_any_element()
         };
 
         // No window buttons in fullscreen, where they cannot work: the window
@@ -9551,13 +9751,6 @@ impl Render for Tty7App {
                 |this, el| this.child(el),
             );
 
-        // One decision for the whole document surface. Docked, exactly one of
-        // the two surfaces is drawn — a column has one child, and two `flex_1`
-        // siblings would split it and fight — so `overlay_top` stops ordering a
-        // pair and starts choosing between them. Filling, nothing changes: both
-        // are rendered, ordered by `overlay_top`, and the front one wins on
-        // paint order as it always has.
-        let document_dock_px = self.document_dock_px(window, cx);
         // Where the docked header sits. Everywhere but macOS the title bar
         // spans the workspace and leaves the strip above the column empty, so
         // the header goes up into it; on macOS the column already reaches the
@@ -9567,16 +9760,26 @@ impl Render for Tty7App {
         } else {
             crate::ui::document_column::DocumentChrome::DockHoisted
         };
-        let document_header = document_dock_px
-            .is_some()
+        let document_header = (document_present && dock_steady.is_some())
             .then(|| self.render_document_header(document_chrome, window, cx))
             .flatten();
-        let (overlays, document_column) = match document_dock_px {
-            Some(w) => (
-                Vec::new(),
-                self.render_document_column(w, document_chrome, window, cx),
-            ),
-            None => {
+        // One decision for the whole document surface. Docked, exactly one of
+        // the two surfaces is drawn — a column has one child, and two `flex_1`
+        // siblings would split it and fight — so `overlay_top` stops ordering a
+        // pair and starts choosing between them. Filling, nothing changes: both
+        // are rendered, ordered by `overlay_top`, and the front one wins on
+        // paint order as it always has.
+        let (overlays, document_column) =
+            if dock_steady.is_some() || self.panel_anim.active(PanelSlot::Document) {
+                (
+                    Vec::new(),
+                    document_present
+                        .then(|| {
+                            self.render_document_column(document_w, document_chrome, window, cx)
+                        })
+                        .flatten(),
+                )
+            } else {
                 let diff_overlay = self.render_diff_overlay(
                     crate::ui::document_column::DocumentChrome::Fill,
                     window,
@@ -9604,19 +9807,38 @@ impl Render for Tty7App {
                         .collect::<Vec<gpui::AnyElement>>(),
                     None,
                 )
-            }
-        };
-        let document_px = document_column
-            .as_ref()
-            .map_or(0., |_| document_dock_px.unwrap_or_default());
+            };
+        let document_px = if document_present { document_w } else { 0. };
 
-        let right_panel = self.render_right_panel(window, cx);
+        // The panel draws its own content at its steady width; the wrapper is
+        // what shrinks, so a slide reveals it rather than reflowing it.
+        let right_panel = right_present
+            .then(|| self.render_right_panel(window, cx))
+            .flatten()
+            .map(|panel| {
+                let sliding = self.panel_anim.active(PanelSlot::Details);
+                div()
+                    .flex_none()
+                    .w(px(right_w.max(0.)))
+                    .h_full()
+                    // Clipped only mid-slide: the panel's resize handle hangs
+                    // half a handle past its left edge, and a permanent clip
+                    // would take that half and its hairline away.
+                    .when(sliding, |d| d.overflow_hidden())
+                    .child(panel)
+                    .into_any_element()
+            });
         // A docked document takes the same fork the right panel does: on
         // Windows and Linux the window controls live at the right end of the
         // title bar, so the bar has to span the workspace rather than sit
         // inside the terminal column with a column drawn to the right of it.
-        let panel_below_title_bar =
-            (right_panel.is_some() || document_column.is_some()) && !cfg!(target_os = "macos");
+        // The same goes for a hidden terminal area: with no panes to hold the
+        // strip, it moves up to the window and stays put while the region
+        // slides away.
+        let panel_below_title_bar = ((right_present || document_present)
+            && !cfg!(target_os = "macos"))
+            || !terminal_open
+            || self.panel_anim.active(PanelSlot::Terminal);
         let (column_title_bar, spanning_title_bar) = if panel_below_title_bar {
             (None, Some(title_bar))
         } else {
@@ -9627,13 +9849,11 @@ impl Render for Tty7App {
         } else {
             (overlays, Vec::new())
         };
-        let panel_px = if right_panel.is_some() {
-            self.right_panel_px(window, cx)
-        } else {
-            0.
-        };
+        let panel_px = if right_present { right_w } else { 0. };
         let terminal_column = div()
-            .flex_1()
+            .flex_none()
+            .w(px(terminal_inner.max(0.)))
+            .h_full()
             .min_w_0()
             .flex()
             .flex_col()
@@ -9641,14 +9861,27 @@ impl Render for Tty7App {
             .when_some(column_title_bar, |this, bar| this.child(bar))
             .child(body_area)
             .children(column_overlays);
+        let terminal_wrap = terminal_present.then(|| {
+            div()
+                .flex_none()
+                .w(px(terminal_w.max(0.)))
+                .h_full()
+                .overflow_hidden()
+                .child(terminal_column)
+                .into_any_element()
+        });
         let panel_row = div()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .flex()
             .flex_row()
-            .child(terminal_column)
+            .when_some(terminal_wrap, |this, column| this.child(column))
             .when_some(document_column, |this, column| this.child(column))
+            // Zero-width whenever the explicit widths already fill the body;
+            // it takes the remainder when the terminal is hidden and no
+            // document is open, so the row still spans the window.
+            .child(div().flex_1().h_full())
             .when_some(right_panel, |this, panel| this.child(panel));
         let main_layout = div()
             .flex_1()
@@ -9761,6 +9994,7 @@ impl Render for Tty7App {
         let root =
             div()
                 .id("tty7-root")
+                .track_focus(&self.workspace_focus)
                 .size_full()
                 .flex()
                 .flex_col()
@@ -9944,6 +10178,9 @@ impl Render for Tty7App {
                         this.toggle_left_panel(cx)
                     }),
                 )
+                .on_action(cx.listener(|this, _: &ToggleTerminalArea, window, cx| {
+                    this.toggle_terminal_area(window, cx)
+                }))
                 .on_action(cx.listener(|this, _: &ToggleRightPanel, _window, cx| {
                     this.toggle_right_panel(cx)
                 }))
@@ -10563,7 +10800,6 @@ fn tabs_from_session(
             diff_overlay: None,
             code: None,
             overlay_top: OverlayTop::default(),
-            document_layout: None,
             group: std::cell::Cell::new(st.group),
             // The hint the tree kept: the tab is drawn in its auto group from
             // the first frame, not parked in Ungrouped until its probe lands.

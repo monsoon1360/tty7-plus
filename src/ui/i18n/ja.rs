@@ -1367,6 +1367,16 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsNone => "開いているファイルに問題はありません。",
         L10nKey::EditorProblemsMore => "…ほか {n} 件",
         L10nKey::SettingsEditor => "エディタ",
+        L10nKey::SettingsDocumentLayout => "ドキュメントの配置",
+        L10nKey::SettingsDocumentLayoutDesc => "すべてのタブとウィンドウで共有します。内蔵エディタと差分をターミナル横に配置するか、ウィンドウ全体に表示します。",
+        L10nKey::SettingsSearchDocumentLayoutKeywords => "文書 配置 全体 ドック ウィンドウ document layout dock fill",
+        L10nKey::SettingsFileOpenWith => "ファイルを開く方法",
+        L10nKey::SettingsFileOpenWithDesc => {
+            "ファイルツリー、クイックオープン、検索で選んだファイルを開くエディタ。Helix と Vim は新しいタブで開きます。リモートのファイルは常に内蔵エディタを使います。"
+        }
+        L10nKey::SettingsFileOpenWithHelix => "Helix",
+        L10nKey::SettingsFileOpenWithVim => "Vim",
+        L10nKey::SettingsSearchFileOpenWithKeywords => "エディタ ファイル 開く 外部 helix vim editor file open",
         L10nKey::SettingsEditorGitGutter => "Git 変更マーカー",
         L10nKey::SettingsEditorGitGutterDesc => {
             "ステージ済みの版と異なる行を、行番号の横とスクロールバーに示します。"
@@ -1876,6 +1886,8 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdStopWorkspaceSubtitle => "シェルを終了し、レイアウトを保持",
         L10nKey::CmdDeleteWorkspace => "ワークスペースを削除…",
         L10nKey::CmdDeleteWorkspaceSubtitle => "シェルを終了し、レイアウトを消去",
+        L10nKey::CmdShowTerminalArea => "ターミナル領域を表示",
+        L10nKey::CmdHideTerminalArea => "ターミナル領域を隠す",
         L10nKey::CmdShowLeftSidebar => "左サイドバーを表示",
         L10nKey::CmdHideLeftSidebar => "左サイドバーを非表示",
         L10nKey::CmdHideRightPanel => "右パネルを非表示",
@@ -2264,6 +2276,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::AppMenuIncreaseFontSize => "フォントサイズを拡大",
         L10nKey::AppMenuDecreaseFontSize => "フォントサイズを縮小",
         L10nKey::AppMenuResetFontSize => "フォントサイズをリセット",
+        L10nKey::AppMenuTerminalArea => "ターミナル領域",
         L10nKey::AppMenuLeftSidebar => "左サイドバー",
         L10nKey::AppMenuRightPanel => "右パネル",
         L10nKey::AppMenuCodePanel => "コードパネル",

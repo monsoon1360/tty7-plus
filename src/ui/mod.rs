@@ -28,6 +28,7 @@ pub mod notice;
 pub(crate) mod palette;
 pub mod pane;
 pub mod pane_drag;
+pub mod panel_anim;
 pub mod panel_github;
 pub mod panel_search;
 pub mod path_display;

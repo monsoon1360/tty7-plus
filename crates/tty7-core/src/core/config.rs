@@ -237,11 +237,7 @@ pub struct Config {
     /// `diffEditor.renderSideBySide` makes.
     #[serde(default, deserialize_with = "de_lenient")]
     pub diff_view: DiffViewMode,
-    /// How the code / diff surface shares the window with the terminal — for a
-    /// tab that has not been told otherwise. The choice itself is per tab, made
-    /// on the document header's context menu; this is the value a fresh tab
-    /// starts from, and therefore the one every untold tab is still reading,
-    /// which is why the menu never writes it.
+    /// Global document layout, configured in Settings → General → Editor.
     #[serde(default, deserialize_with = "de_lenient")]
     pub document_layout: DocumentLayout,
     /// The share of the terminal column — the flex area between the sidebar and
@@ -291,6 +287,10 @@ pub struct Config {
     /// [`Self::editor_soft_wrap`].
     #[serde(default = "default_true")]
     pub editor_git_gutter: bool,
+    /// Which editor opens a file picked in the file tree, quick open or a
+    /// search result. Remote files ignore it and use the built-in editor.
+    #[serde(default, deserialize_with = "de_lenient")]
+    pub file_open_with: FileOpenWith,
     /// Whether the sidebar files tabs nobody pinned into groups of its own —
     /// by repository, and by host for an SSH pane. Off, those tabs sit in one
     /// flat list below the pinned groups, which are the user's and show
@@ -833,6 +833,7 @@ impl Default for Config {
             editor_markdown_preview: false,
             editor_lsp: true,
             editor_git_gutter: true,
+            file_open_with: FileOpenWith::BuiltIn,
             sidebar_auto_grouping: true,
             notify_on_command_finish: NotifyMode::Unfocused,
             check_for_updates: false,
@@ -1602,6 +1603,16 @@ pub enum LinkFileOpen {
     Command,
 }
 
+/// The editor a file picked in-app opens in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileOpenWith {
+    #[default]
+    BuiltIn,
+    Helix,
+    Vim,
+}
+
 /// How the diff overlay lays a file out. Side-by-side is the default because
 /// that is what everyone already sees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1919,6 +1930,27 @@ mod tests {
         // Unknown values fall back rather than refusing the whole file.
         let garbage: Config = serde_json::from_str(r#"{"link_file_open":"emacs"}"#).unwrap();
         assert_eq!(garbage.file_open_mode(), LinkFileOpen::Internal);
+    }
+
+    /// The file open method is a plain three-way choice, and an unrecognised
+    /// value (a hand edit, a future variant) must not refuse the whole file.
+    #[test]
+    fn file_open_with_parses_defaults_and_round_trips() {
+        let helix: Config = serde_json::from_str(r#"{"file_open_with":"helix"}"#).unwrap();
+        assert_eq!(helix.file_open_with, FileOpenWith::Helix);
+
+        let garbage: Config = serde_json::from_str(r#"{"file_open_with":"nano"}"#).unwrap();
+        assert_eq!(garbage.file_open_with, FileOpenWith::BuiltIn);
+
+        let absent: Config = serde_json::from_str(r#"{"font_size": 15.0}"#).unwrap();
+        assert_eq!(absent.file_open_with, FileOpenWith::BuiltIn);
+
+        let mut cfg = Config::default();
+        cfg.file_open_with = FileOpenWith::Vim;
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"file_open_with\":\"vim\""), "persisted");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.file_open_with, FileOpenWith::Vim);
     }
 
     #[test]

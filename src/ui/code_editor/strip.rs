@@ -8,9 +8,9 @@
 //! so nothing jumps about as you switch between them — and a `+N` button at
 //! its end lists everything, hidden files first, with a filter box.
 //!
-//! **Dock / Fill** is a two-cell switch rather than a menu entry, and a filled
-//! editor leads with a pill naming the terminal it covers, which docks it back
-//! beside that terminal.
+//! Layout is a global preference in Settings. A filled editor leads with a
+//! pill naming the terminal it covers, which returns to that terminal without
+//! changing the layout preference.
 
 use gpui::prelude::*;
 use gpui::{
@@ -24,7 +24,6 @@ use super::{BufferId, TabCode};
 use crate::ui::app::Tty7App;
 use crate::ui::document_column::DocumentChrome;
 use crate::ui::i18n::{L10nKey, t, t_fmt};
-use tty7_core::core::config::DocumentLayout;
 
 /// Height of a strip cell — a file, the `+N` button, the terminal pill.
 pub(super) const CELL_H: f32 = 28.;
@@ -579,98 +578,8 @@ impl Tty7App {
             .collect()
     }
 
-    /// Dock / Fill, as a two-cell switch: a raised cell on a sunken track.
-    pub(super) fn render_layout_switch(
-        &self,
-        chrome: DocumentChrome,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let theme = cx.theme();
-        let sf = cx.global::<crate::ui::presets::Surfaces>().window;
-        let dark = theme.mode.is_dark();
-        // What is on screen, not what was asked for: a window too narrow for
-        // a column fills even when set to dock.
-        let current = if chrome.is_dock() {
-            DocumentLayout::Dock
-        } else {
-            DocumentLayout::Fill
-        };
-        let cell = |i: usize, layout: DocumentLayout, tip: L10nKey| {
-            let live = layout == current;
-            let ink = if live {
-                theme.foreground
-            } else {
-                theme.muted_foreground
-            };
-            // The glyph: the window, with the column the editor takes in it.
-            let frame = div()
-                .relative()
-                .w(px(14.))
-                .h(px(11.))
-                .border_1()
-                .border_color(ink)
-                .rounded(px(2.));
-            let glyph = match layout {
-                DocumentLayout::Dock => frame.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(4.))
-                        .w(px(1.))
-                        .bg(ink),
-                ),
-                DocumentLayout::Fill => frame.child(
-                    div()
-                        .absolute()
-                        .top(px(1.5))
-                        .bottom(px(1.5))
-                        .left(px(1.5))
-                        .right(px(1.5))
-                        .rounded(px(0.8))
-                        .bg(ink),
-                ),
-            };
-            div()
-                .id(("editor-layout", i))
-                .w(px(24.))
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.))
-                .when(live, |d| {
-                    d.bg(if dark {
-                        gpui::rgb(sf.selected).into()
-                    } else {
-                        theme.background
-                    })
-                    .shadow_xs()
-                })
-                .child(glyph)
-                .tooltip(move |window, cx| {
-                    gpui_component::tooltip::Tooltip::new(t(tip)).build(window, cx)
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_document_layout(layout, cx);
-                }))
-        };
-        h_flex()
-            .id("editor-layout-switch")
-            .occlude()
-            .flex_none()
-            .ml(px(8.))
-            .p(px(2.))
-            .gap(px(2.))
-            .rounded(px(CELL_RADIUS))
-            .bg(gpui::rgb(sf.hover))
-            .child(cell(0, DocumentLayout::Dock, L10nKey::DocumentDock))
-            .child(cell(1, DocumentLayout::Fill, L10nKey::DocumentFill))
-            .into_any_element()
-    }
-
     /// A filled editor's lead: the terminal it covers, by name, and a way back
-    /// to it that keeps the file open beside it.
+    /// to it that keeps the file in memory without changing the layout.
     pub(super) fn render_back_to_terminal(
         &self,
         window: &Window,
@@ -722,11 +631,11 @@ impl Tty7App {
                             .child(name),
                     )
                     .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new(t(L10nKey::DocumentDock))
+                        gpui_component::tooltip::Tooltip::new(t(L10nKey::EditorBackToTerminal))
                             .build(window, cx)
                     })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_document_layout(DocumentLayout::Dock, cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_terminal_area(window, cx);
                     })),
             )
             .child(

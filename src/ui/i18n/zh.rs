@@ -1227,6 +1227,16 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsNone => "打开的文件中没有问题。",
         L10nKey::EditorProblemsMore => "……另有 {n} 项",
         L10nKey::SettingsEditor => "编辑器",
+        L10nKey::SettingsDocumentLayout => "文档布局",
+        L10nKey::SettingsDocumentLayoutDesc => "所有标签页和窗口共用。选择内置编辑器及差异视图停靠在终端旁，或铺满窗口。",
+        L10nKey::SettingsSearchDocumentLayoutKeywords => "文档 布局 全局 停靠 铺满 窗口 document layout dock fill",
+        L10nKey::SettingsFileOpenWith => "文件打开方式",
+        L10nKey::SettingsFileOpenWithDesc => {
+            "在文件树、快速打开和搜索结果中打开文件时使用的编辑器。Helix 和 Vim 会在新标签页中打开；远程文件始终使用内置编辑器。"
+        }
+        L10nKey::SettingsFileOpenWithHelix => "Helix",
+        L10nKey::SettingsFileOpenWithVim => "Vim",
+        L10nKey::SettingsSearchFileOpenWithKeywords => "编辑器 文件 打开 外部 helix vim editor file open",
         L10nKey::SettingsEditorGitGutter => "Git 更改标记",
         L10nKey::SettingsEditorGitGutterDesc => "在行号旁和滚动条上标出与暂存版本不同的行。",
         L10nKey::SettingsEditorLsp => "语言服务器",
@@ -1692,6 +1702,8 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdStopWorkspaceSubtitle => "结束其 shell，保留布局",
         L10nKey::CmdDeleteWorkspace => "删除工作区…",
         L10nKey::CmdDeleteWorkspaceSubtitle => "结束其 shell，清除布局",
+        L10nKey::CmdShowTerminalArea => "显示终端区域",
+        L10nKey::CmdHideTerminalArea => "隐藏终端区域",
         L10nKey::CmdShowLeftSidebar => "显示左侧边栏",
         L10nKey::CmdHideLeftSidebar => "隐藏左侧边栏",
         L10nKey::CmdHideRightPanel => "隐藏右侧面板",
@@ -2054,6 +2066,7 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::AppMenuIncreaseFontSize => "增大字号",
         L10nKey::AppMenuDecreaseFontSize => "减小字号",
         L10nKey::AppMenuResetFontSize => "重置字号",
+        L10nKey::AppMenuTerminalArea => "终端区域",
         L10nKey::AppMenuLeftSidebar => "左侧边栏",
         L10nKey::AppMenuRightPanel => "右侧面板",
         L10nKey::AppMenuCodePanel => "代码面板",

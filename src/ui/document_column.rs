@@ -18,7 +18,6 @@
 //! saved.
 
 use gpui::{AnyElement, Context, Window, div, prelude::*, px};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme as _, InteractiveElementExt as _, v_flex};
 use std::cell::Cell as StdCell;
 use std::rc::Rc;
@@ -27,7 +26,7 @@ use crate::core::config::{
     Config, DOCUMENT_RATIO_MAX, DOCUMENT_RATIO_MIN, DOCUMENT_RATIO_STOPS, DocumentLayout,
 };
 use crate::ui::app::{DOCUMENT_MIN_W, OverlayTop, TERMINAL_MIN_W, Tty7App, document_column_px};
-use crate::ui::i18n::{L10nKey, t};
+use crate::ui::i18n::t;
 use crate::ui::right_panel::RESIZE_HANDLE_WIDTH;
 
 /// Which wrapper a document surface is being asked to paint itself in.
@@ -84,17 +83,9 @@ impl DocumentChrome {
 }
 
 impl Tty7App {
-    /// The layout the active tab's document was asked for, which is not always
-    /// the one it gets — see [`Tty7App::document_dock_px`].
-    ///
-    /// A tab that has never been told follows the config, which holds the last
-    /// explicit choice anyone made and is therefore what a fresh tab starts
-    /// from. Telling one tab never moves another.
+    /// The layout is shared by all documents and windows.
     pub(crate) fn document_layout(&self, cx: &gpui::App) -> DocumentLayout {
-        self.tabs
-            .get(self.active)
-            .and_then(|t| t.document_layout)
-            .unwrap_or_else(|| cx.global::<Config>().document_layout)
+        cx.global::<Config>().document_layout
     }
 
     /// Which of the two surfaces the docked column shows.
@@ -157,7 +148,7 @@ impl Tty7App {
         document_column_px(self.document_body_px(window, cx), self.document_ratio.get())
     }
 
-    /// Fill ↔ dock, for the active tab. One of the two writers of the layout;
+    /// Fill ↔ dock, for all documents. One of the two writers of the layout;
     /// the narrow window fallback is not, on purpose — running this while the
     /// fallback is showing is the user saying they meant the overlay, and that
     /// is worth keeping.
@@ -187,58 +178,9 @@ impl Tty7App {
         self.set_document_ratio(nearest, cx);
     }
 
-    /// Point the active tab at a layout, and only that tab.
-    ///
-    /// Deliberately not written back to `document_layout` in the config: that
-    /// key is the value a tab starts from, and a tab that has not been told is
-    /// still reading it. Writing it here would reach every one of those at
-    /// once, which is the window-wide switch this is not.
-    ///
-    /// The narrow-window fallback does not come through here either — it is
-    /// derived at render time and stored nowhere.
     pub(crate) fn set_document_layout(&mut self, layout: DocumentLayout, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.get_mut(self.active) {
-            tab.document_layout = Some(layout);
-        }
-        cx.notify();
-    }
-
-    /// What right-clicking a document's header offers: where it sits.
-    ///
-    /// On the header rather than in Settings because this is where the question
-    /// comes up — the moment a file covers the terminal is the moment you want
-    /// it not to, and a preference three pages into a settings panel is not an
-    /// answer to that. On the header rather than on a tile beside the close
-    /// button because the row already carries a file name, a dirty dot and, for
-    /// a diff, a view toggle; a fifth control in a column's width is one too
-    /// many for something you set once.
-    ///
-    pub(crate) fn document_header_menu(
-        menu: PopupMenu,
-        app: &gpui::WeakEntity<Self>,
-        cx: &gpui::App,
-    ) -> PopupMenu {
-        let docked = app
-            .upgrade()
-            .is_none_or(|this| this.read(cx).document_layout(cx) == DocumentLayout::Dock);
-        let mut menu = menu.min_w(px(220.));
-
-        for (label, layout) in [
-            (L10nKey::DocumentDock, DocumentLayout::Dock),
-            (L10nKey::DocumentFill, DocumentLayout::Fill),
-        ] {
-            menu = menu.item(
-                PopupMenuItem::new(t(label))
-                    .checked(docked == (layout == DocumentLayout::Dock))
-                    .on_click({
-                        let app = app.clone();
-                        move |_, _window, cx| {
-                            let _ = app.update(cx, |this, cx| this.set_document_layout(layout, cx));
-                        }
-                    }),
-            );
-        }
-        menu
+        self.update_config(cx, |cfg| cfg.document_layout = layout);
+        cx.refresh_windows();
     }
 
     /// The column itself: the surface `overlay_top` selects, sized, bordered,
@@ -609,8 +551,7 @@ mod gpui_tests {
         app.update_in(vcx, |app, window, cx| app.document_dock_px(window, cx))
     }
 
-    /// The config value: the default under tabs that were never told, not
-    /// necessarily what the active tab is doing.
+    /// The shared preference.
     fn layout(vcx: &mut VisualTestContext) -> DocumentLayout {
         vcx.update(|_, cx| cx.global::<Config>().document_layout)
     }
@@ -620,49 +561,39 @@ mod gpui_tests {
         app.update_in(vcx, |app, _, cx| app.document_layout(cx))
     }
 
-    /// Fill is one tab's answer, not the window's. Reading a long file in one
-    /// tab while an agent works in another wants the whole window here and half
-    /// of it there, and a global switch made each of those flip the other.
     #[gpui::test]
-    fn one_tabs_fill_leaves_the_other_docked(cx: &mut TestAppContext) {
+    fn document_layout_is_shared_by_existing_and_new_tabs(cx: &mut TestAppContext) {
         let (app, mut vcx) = window_with(cx, 1440., 2);
-
-        // A file open in each tab, both docked to start with.
-        for i in [0, 1] {
+        for index in [0, 1] {
             app.update_in(&mut vcx, |app, window, cx| {
-                app.active = i;
+                app.active = index;
                 app.toggle_code_panel(window, cx);
             });
         }
-        vcx.run_until_parked();
-
         app.update_in(&mut vcx, |app, _, cx| {
-            app.active = 1;
-            app.toggle_document_fill(cx);
+            app.set_document_layout(DocumentLayout::Fill, cx)
         });
         vcx.run_until_parked();
-        assert_eq!(dock_px(&app, &mut vcx), None, "the tab that asked, fills");
-
-        app.update_in(&mut vcx, |app, _, _cx| app.active = 0);
-        vcx.run_until_parked();
-        assert!(
-            dock_px(&app, &mut vcx).is_some(),
-            "the tab that did not ask, does not"
-        );
-
-        // The config is untouched — it is what every tab that was never told is
-        // still reading, so writing it would have reached all of them at once.
-        assert_eq!(layout(&mut vcx), DocumentLayout::Dock);
+        assert_eq!(layout(&mut vcx), DocumentLayout::Fill);
+        for index in [0, 1] {
+            app.update_in(&mut vcx, |app, _, _| app.active = index);
+            assert_eq!(dock_px(&app, &mut vcx), None);
+        }
         app.update_in(&mut vcx, |app, window, cx| {
             push_tab(app, cx);
             app.active = 2;
             app.toggle_code_panel(window, cx);
         });
         vcx.run_until_parked();
-        assert!(
-            dock_px(&app, &mut vcx).is_some(),
-            "a fresh tab starts from the config, not from what tab 1 chose"
-        );
+        assert_eq!(dock_px(&app, &mut vcx), None);
+        app.update_in(&mut vcx, |app, _, cx| {
+            app.set_document_layout(DocumentLayout::Dock, cx)
+        });
+        vcx.run_until_parked();
+        for index in [0, 1, 2] {
+            app.update_in(&mut vcx, |app, _, _| app.active = index);
+            assert!(dock_px(&app, &mut vcx).is_some());
+        }
     }
 
     /// A docked column takes width off the tab strip too, and the strip has to
@@ -715,12 +646,9 @@ mod gpui_tests {
         );
     }
 
-    /// The palette row has to name what running it will do. Fill is per tab, so
-    /// a tab told to fill must be offered "Dock" — even though the config, which
-    /// every tab that was never told is still reading, still says dock. Reading
-    /// the config here offered "Fill" to a tab that was already filling.
+    /// Every window offers the inverse of the shared document layout.
     #[gpui::test]
-    fn the_palette_offers_the_active_tabs_layout_not_the_configs(cx: &mut TestAppContext) {
+    fn the_palette_tracks_the_global_layout(cx: &mut TestAppContext) {
         use crate::ui::i18n::L10nKey;
         use crate::ui::search::CommandKind;
 
@@ -749,16 +677,16 @@ mod gpui_tests {
         );
         assert_eq!(
             layout(&mut vcx),
-            DocumentLayout::Dock,
-            "and the config it did not write still reads dock"
+            DocumentLayout::Fill,
+            "the global configuration remembers the choice"
         );
 
         app.update_in(&mut vcx, |app, _, _| app.active = 0);
         vcx.run_until_parked();
         assert_eq!(
             row(&app, &mut vcx),
-            t(L10nKey::CmdDocumentFill).to_string(),
-            "the other tab is untouched, and is still offered fill"
+            t(L10nKey::CmdDocumentDock).to_string(),
+            "the other tab follows the global setting"
         );
     }
 
@@ -819,6 +747,248 @@ mod gpui_tests {
             app.update_in(&mut vcx, |app, _, cx| app.document_floor(cx)),
             0.,
             "a closed surface reserves nothing from the panels"
+        );
+    }
+
+    /// Ctrl+2's region. With the panes hidden the body area is not in the tree
+    /// at all, so the last rectangle they were laid out at is the one they come
+    /// back to: hiding the terminal must not reflow its PTY to nothing. The tab
+    /// strip stays, because the bar spans the window while the region is gone.
+    #[gpui::test]
+    fn hiding_the_terminal_area_leaves_the_panes_at_their_size(cx: &mut TestAppContext) {
+        let (app, mut vcx) = window(cx, 1440.);
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_code_panel(window, cx);
+            app.focus_active(window, cx);
+        });
+        vcx.run_until_parked();
+        let before = app
+            .update_in(&mut vcx, |app, _, _| app.pane_area.get())
+            .expect("the body area painted");
+        assert!(before.size.width.as_f32() > 0.);
+        assert!(
+            before.size.height.as_f32() > 800.,
+            "the terminal must fill the window below the title bar: {before:?}"
+        );
+
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_terminal_area(window, cx)
+        });
+        vcx.run_until_parked();
+        assert!(!app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+        assert_eq!(
+            app.update_in(&mut vcx, |app, _, _| app.pane_area.get()),
+            Some(before),
+            "nothing is laid out while the panes are hidden"
+        );
+        let chips = app.update_in(&mut vcx, |app, _, _| app.strip_slots.borrow().clone());
+        assert!(!chips.is_empty(), "the tab strip is still on screen");
+
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_terminal_area(window, cx)
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            app.update_in(&mut vcx, |app, _, _| app.pane_area.get()),
+            Some(before),
+            "and they come back at the width they left"
+        );
+    }
+
+    #[gpui::test]
+    fn region_shortcuts_survive_hiding_the_focused_region(cx: &mut TestAppContext) {
+        let (app, mut vcx) = window(cx, 1440.);
+        app.update_in(&mut vcx, |app, window, cx| app.focus_active(window, cx));
+        vcx.run_until_parked();
+
+        let sidebar = app.update_in(&mut vcx, |app, _, cx| app.left_panel_open(cx));
+        vcx.simulate_keystrokes("ctrl-1");
+        assert_eq!(
+            app.update_in(&mut vcx, |app, _, cx| app.left_panel_open(cx)),
+            !sidebar
+        );
+        vcx.simulate_keystrokes("ctrl-1");
+        assert_eq!(
+            app.update_in(&mut vcx, |app, _, cx| app.left_panel_open(cx)),
+            sidebar
+        );
+
+        vcx.simulate_keystrokes("ctrl-3");
+        app.update_in(&mut vcx, |app, window, cx| app.focus_active(window, cx));
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("ctrl-2");
+        assert!(!app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+        assert!(app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+        assert!(app.update_in(&mut vcx, |app, _, cx| app.right_panel_open(cx)));
+        vcx.simulate_keystrokes("ctrl-4");
+        assert!(!app.update_in(&mut vcx, |app, _, cx| app.right_panel_open(cx)));
+        vcx.simulate_keystrokes("ctrl-4");
+        assert!(app.update_in(&mut vcx, |app, _, cx| app.right_panel_open(cx)));
+        vcx.simulate_keystrokes("ctrl-3");
+        assert!(!app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+        vcx.simulate_keystrokes("ctrl-2");
+        assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+    }
+
+    #[gpui::test]
+    fn ctrl_2_keeps_the_only_content_visible(cx: &mut TestAppContext) {
+        let (app, mut vcx) = window(cx, 1440.);
+        app.update_in(&mut vcx, |app, window, cx| app.focus_active(window, cx));
+        vcx.run_until_parked();
+        for _ in 0..3 {
+            vcx.simulate_keystrokes("ctrl-2");
+            assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+            let bounds = app
+                .update_in(&mut vcx, |app, _, _| app.pane_area.get())
+                .unwrap();
+            assert!(bounds.size.width.as_f32() > 300.);
+            assert!(bounds.size.height.as_f32() > 800.);
+        }
+    }
+
+    #[gpui::test]
+    fn external_editor_and_terminal_shortcuts_return_to_each_other(cx: &mut TestAppContext) {
+        use crate::ui::code_editor::ExternalEditorTab;
+        let (app, mut vcx) = window_with(cx, 1440., 3);
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_code_panel(window, cx);
+            app.set_document_layout(DocumentLayout::Fill, cx);
+            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::Helix;
+            let terminal = app.tabs[0].tree_id.get();
+            let editor = app.tabs[2].tree_id.get();
+            app.external_editor_tabs.push(ExternalEditorTab {
+                path: "/project/hello.rs".into(),
+                tab: editor,
+                terminal: Some(terminal),
+            });
+            app.active = 2;
+            app.focus_active(window, cx);
+        });
+        vcx.run_until_parked();
+        for _ in 0..3 {
+            vcx.simulate_keystrokes("ctrl-2");
+            assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
+            assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+            assert!(!app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+            assert_eq!(layout(&mut vcx), DocumentLayout::Fill);
+            vcx.simulate_keystrokes("ctrl-3");
+            assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 2);
+        }
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.tabs.remove(0);
+            app.active = 1;
+            app.focus_active(window, cx);
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("ctrl-2");
+        assert_eq!(
+            app.update_in(&mut vcx, |app, _, _| app.active),
+            0,
+            "a closed origin falls back to another terminal"
+        );
+    }
+
+    #[gpui::test]
+    fn restored_helix_is_recognized_without_a_launch_link(cx: &mut TestAppContext) {
+        use std::io::Write as _;
+        let (app, mut vcx, mut streams) = test_window::harness_with_tabs(cx, 2);
+        app.update_in(&mut vcx, |app, window, cx| {
+            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::Helix;
+            app.active = 1;
+            app.focus_active(window, cx);
+        });
+        crate::daemon::protocol::DaemonMsg::Output(b"\x1b]133;C;hx '/project/a b.rs'\x07".to_vec())
+            .encode(&mut streams[1])
+            .unwrap();
+        streams[1].flush().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.update_in(&mut vcx, |app, _, cx| app.is_external_editor_tab(1, cx)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the restored command must identify Helix"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("ctrl-2");
+        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
+        vcx.simulate_keystrokes("ctrl-3");
+        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 1);
+        vcx.simulate_keystrokes("ctrl-2");
+        vcx.update(|_, cx| {
+            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::BuiltIn
+        });
+        vcx.simulate_keystrokes("ctrl-3");
+        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
+        assert!(app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+    }
+
+    #[gpui::test]
+    fn ctrl_2_reveals_a_terminal_covered_by_a_filled_document(cx: &mut TestAppContext) {
+        let (app, mut vcx) = window(cx, 1440.);
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.set_document_layout(DocumentLayout::Fill, cx);
+            app.toggle_code_panel(window, cx);
+        });
+        vcx.run_until_parked();
+        vcx.simulate_keystrokes("ctrl-2");
+        assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+        assert!(!app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+        assert_eq!(layout(&mut vcx), DocumentLayout::Fill);
+        vcx.simulate_keystrokes("ctrl-3");
+        assert!(app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+    }
+
+    #[gpui::test]
+    fn document_layout_is_shared_by_windows(cx: &mut TestAppContext) {
+        let (app, mut first) = window(cx, 1440.);
+        let (other, mut second) = window(cx, 1440.);
+        app.update_in(&mut first, |app, _, cx| {
+            app.set_document_layout(DocumentLayout::Fill, cx)
+        });
+        assert_eq!(
+            other.update_in(&mut second, |app, _, cx| app.document_layout(cx)),
+            DocumentLayout::Fill
+        );
+        other.update_in(&mut second, |app, _, cx| {
+            app.set_document_layout(DocumentLayout::Dock, cx)
+        });
+        assert_eq!(
+            app.update_in(&mut first, |app, _, cx| app.document_layout(cx)),
+            DocumentLayout::Dock
+        );
+    }
+
+    /// The home screen lives inside the terminal region, so a hidden region
+    /// must not outlive the last tab: closing the last one leaves the window
+    /// with the home screen at full width, not an empty body.
+    #[gpui::test]
+    fn the_home_screen_outlasts_a_hidden_terminal_area(cx: &mut TestAppContext) {
+        let (app, mut vcx) = window(cx, 1440.);
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_code_panel(window, cx);
+            app.focus_active(window, cx);
+        });
+        vcx.run_until_parked();
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.toggle_terminal_area(window, cx)
+        });
+        vcx.run_until_parked();
+        assert!(!app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+
+        app.update_in(&mut vcx, |app, _, cx| {
+            app.tabs.clear();
+            app.active = 0;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let area = app
+            .update_in(&mut vcx, |app, _, _| app.pane_area.get())
+            .expect("the home screen drew");
+        assert!(
+            (area.size.width.as_f32() - 1440.).abs() < 1.5,
+            "the home screen gets the window: {}",
+            area.size.width.as_f32()
         );
     }
 

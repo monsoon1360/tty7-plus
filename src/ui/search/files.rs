@@ -426,7 +426,7 @@ impl Tty7App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_file_in_editor_at(path, line, column, window, cx);
+        self.open_file_preferred(path, line, column, window, cx);
         self.file_tree_reveal_path(path, cx);
     }
 

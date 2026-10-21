@@ -1309,6 +1309,16 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::EditorProblemsNone => "No problems in the open files.",
         L10nKey::EditorProblemsMore => "…and {n} more",
         L10nKey::SettingsEditor => "Editor",
+        L10nKey::SettingsDocumentLayout => "Document layout",
+        L10nKey::SettingsDocumentLayoutDesc => "Shared by all tabs and windows. Dock the built-in editor and diff view beside the terminal, or fill the window.",
+        L10nKey::SettingsSearchDocumentLayoutKeywords => "document layout global dock fill window",
+        L10nKey::SettingsFileOpenWith => "File open method",
+        L10nKey::SettingsFileOpenWithDesc => {
+            "Which editor opens a file picked in the file tree, quick open or search. Helix and Vim open in a new tab; remote files always use the built-in editor."
+        }
+        L10nKey::SettingsFileOpenWithHelix => "Helix",
+        L10nKey::SettingsFileOpenWithVim => "Vim",
+        L10nKey::SettingsSearchFileOpenWithKeywords => "editor file open external helix vim",
         L10nKey::SettingsEditorGitGutter => "Git change markers",
         L10nKey::SettingsEditorGitGutterDesc => {
             "Mark lines that differ from the staged version beside the line numbers and on the scrollbar."
@@ -1823,6 +1833,8 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::CmdStopWorkspaceSubtitle => "ends its shells, keeps the layout",
         L10nKey::CmdDeleteWorkspace => "Delete Workspace…",
         L10nKey::CmdDeleteWorkspaceSubtitle => "ends its shells and forgets the layout",
+        L10nKey::CmdShowTerminalArea => "Show Terminal Area",
+        L10nKey::CmdHideTerminalArea => "Hide Terminal Area",
         L10nKey::CmdShowLeftSidebar => "Show Left Sidebar",
         L10nKey::CmdHideLeftSidebar => "Hide Left Sidebar",
         L10nKey::CmdHideRightPanel => "Hide Right Panel",
@@ -2205,6 +2217,7 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::AppMenuIncreaseFontSize => "Increase Font Size",
         L10nKey::AppMenuDecreaseFontSize => "Decrease Font Size",
         L10nKey::AppMenuResetFontSize => "Reset Font Size",
+        L10nKey::AppMenuTerminalArea => "Terminal Area",
         L10nKey::AppMenuLeftSidebar => "Left Sidebar",
         L10nKey::AppMenuRightPanel => "Right Panel",
         L10nKey::AppMenuCodePanel => "Code Panel",

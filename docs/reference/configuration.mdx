@@ -101,10 +101,11 @@ their id from the file name. [More about themes →](/customization/themes)
 | `right_panel_width` | number | `260` | Pixels (100–2000). |
 | `right_panel_tab` | enum | `"info"` | `info`, `changes`, `files`. |
 | `diff_view` | enum | `"split"` | Or `unified`. Global, not per file. |
-| `document_layout` | enum | `"dock"` | Where an open file or diff is drawn: `dock` beside the terminal, or `fill` over the workspace. What a fresh tab starts as — each tab keeps its own from there. |
+| `document_layout` | enum | `"dock"` | Global layout for the built-in editor and diff view: `"dock"` or `"fill"`. Settings → General → Editor → Document layout; shared by all tabs and windows. |
 | `document_ratio` | number | `0.5` | The docked column’s share of the terminal column (0.2–0.8). Named widths are `0.333`, `0.5`, `0.667`. |
 | `scm_graph_expanded` | bool | `false` | Whether the history section starts open. |
 | `editor_soft_wrap` | bool | `false` | Whether files open in the code panel with soft wrap on. Follows the status bar's Wrap toggle — whatever it was last left at. |
+| `file_open_with` | enum | `"built_in"` | What a file picked in the file tree, quick open or a search result opens in: `built_in` (the code panel), `helix` (`hx`) or `vim` (`vim`). The two external editors open a new tab whose shell runs the command, addressed to the line and column a search hit knew. A file on another machine always uses `built_in`. |
 | `editor_markdown_preview` | bool | `false` | Whether Markdown files open rendered rather than as source. Follows the Preview / Edit toggle the same way. |
 | `show_tray_icon` | bool | `true` | The tray / menu bar status item. |
 

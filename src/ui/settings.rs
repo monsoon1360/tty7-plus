@@ -736,6 +736,16 @@ fn settings_search_entries() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: General,
+            title: SettingsDocumentLayout,
+            keywords: SettingsSearchDocumentLayoutKeywords,
+        },
+        SearchEntry {
+            section: General,
+            title: SettingsFileOpenWith,
+            keywords: SettingsSearchFileOpenWithKeywords,
+        },
+        SearchEntry {
+            section: General,
             title: SettingsEditorGitGutter,
             keywords: SettingsSearchEditorGitGutterKeywords,
         },
@@ -842,6 +852,8 @@ impl SearchEntry {
             L10nKey::SettingsConfirmClose => "confirm_close",
             L10nKey::SettingsTabBarPosition => "tab_bar_position",
             L10nKey::SettingsSidebarGrouping => "sidebar_auto_grouping",
+            L10nKey::SettingsDocumentLayout => "document_layout",
+            L10nKey::SettingsFileOpenWith => "file_open_with",
             L10nKey::SettingsEditorGitGutter => "editor_git_gutter",
             L10nKey::SettingsEditorLsp => "editor_lsp",
             L10nKey::SettingsEditorSoftWrap => "editor_soft_wrap",
@@ -965,6 +977,8 @@ impl SearchEntry {
             L10nKey::SettingsConfirmClose => t(L10nKey::SettingsConfirmCloseDesc),
             L10nKey::SettingsTabBarPosition => t(L10nKey::SettingsTabBarPositionDesc),
             L10nKey::SettingsSidebarGrouping => t(L10nKey::SettingsSidebarGroupingDesc),
+            L10nKey::SettingsDocumentLayout => t(L10nKey::SettingsDocumentLayoutDesc),
+            L10nKey::SettingsFileOpenWith => t(L10nKey::SettingsFileOpenWithDesc),
             L10nKey::SettingsEditorGitGutter => t(L10nKey::SettingsEditorGitGutterDesc),
             L10nKey::SettingsEditorLsp => t(L10nKey::SettingsEditorLspDesc),
             L10nKey::SettingsEditorSoftWrap => t(L10nKey::SettingsEditorSoftWrapDesc),
@@ -1018,6 +1032,8 @@ impl SearchEntry {
             L10nKey::SettingsSidebarGrouping => {
                 cfg.sidebar_auto_grouping != defaults.sidebar_auto_grouping
             }
+            L10nKey::SettingsDocumentLayout => cfg.document_layout != defaults.document_layout,
+            L10nKey::SettingsFileOpenWith => cfg.file_open_with != defaults.file_open_with,
             L10nKey::SettingsEditorGitGutter => cfg.editor_git_gutter != defaults.editor_git_gutter,
             L10nKey::SettingsEditorLsp => cfg.editor_lsp != defaults.editor_lsp,
             L10nKey::SettingsEditorSoftWrap => cfg.editor_soft_wrap != defaults.editor_soft_wrap,
