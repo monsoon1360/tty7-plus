@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Files panel can show dotfiles, and remembers the choice.** An eye in
+  the panel's title bar — alongside the row menu's existing **Show Dotfiles**
+  switch — lists dotfiles and dot-directories. The preference is saved to
+  `config.json`, so a project whose interesting files are `.env` and
+  `.claude/` does not have to be un-hidden on every launch.
 - **Android remote terminals and session management.** A Kotlin Multiplatform
   Compose app pairs through a five-minute QR with code comparison and explicit
   desktop approval in Settings → Pair Devices. The approved computer reconnects

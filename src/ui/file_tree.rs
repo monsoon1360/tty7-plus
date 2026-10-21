@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::core::config::RightPanelTab;
+use crate::core::config::{Config, RightPanelTab};
 use crate::core::git::status::{DecoStatus, DirRollup, StatusIndex};
 use crate::terminal::git_data::index_of;
 use crate::ui::app::{CONTENT_INSET, Tty7App};
@@ -261,7 +261,7 @@ impl FileTreeState {
             repo_root_loads: InFlight::default(),
             search: SearchState::default(),
             quick_open: Default::default(),
-            show_hidden: false,
+            show_hidden: cx.global::<Config>().files_show_hidden,
             editing: None,
             editing_subs: Vec::new(),
             watch: None,
@@ -898,6 +898,21 @@ impl Tty7App {
 
     pub(crate) fn file_tree_listings_on_screen(&self, cx: &App) -> bool {
         self.file_tree_on_screen(cx) && !self.file_tree_searching(cx)
+    }
+
+    /// Show or hide dotfiles in the Files panel, and remember the choice.
+    ///
+    /// The listings already carry them — [`Host::read_dir`] returns every
+    /// entry — so this only flips the filter the renderer and the name walk
+    /// read; no directory has to be listed again. The search is retargeted by
+    /// the next render because [`SearchState::retarget`] keys its walk on
+    /// `show_hidden` too.
+    ///
+    /// [`Host::read_dir`]: crate::ui::host_ops::Host::read_dir
+    pub(crate) fn file_tree_toggle_hidden(&mut self, cx: &mut Context<Self>) {
+        let next = !self.file_tree.show_hidden;
+        self.file_tree.show_hidden = next;
+        self.update_config(cx, |cfg| cfg.files_show_hidden = next);
     }
 
     pub(crate) fn file_tree_apply_fs_events(
@@ -2393,10 +2408,7 @@ fn dotfiles_menu_item(show_hidden: bool, app: &gpui::WeakEntity<Tty7App>) -> Pop
         t(L10nKey::FileTreeContextShowDotfiles)
     })
     .on_click(move |_, _window, cx| {
-        let _ = app.update(cx, |this, cx| {
-            this.file_tree.show_hidden = !this.file_tree.show_hidden;
-            cx.notify();
-        });
+        let _ = app.update(cx, |this, cx| this.file_tree_toggle_hidden(cx));
     })
 }
 
@@ -3535,6 +3547,36 @@ mod render_idle_gpui_tests {
         let (app, mut vcx, _pane) = files_panel_on(cx, &root);
         assert_eq!(rows(&app, &mut vcx), 1, "the dotfile is filtered out");
         assert_eq!(draws_while_idle(&mut vcx), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[gpui::test]
+    fn showing_dotfiles_reveals_them_and_is_remembered(cx: &mut TestAppContext) {
+        let _serial = serial();
+        let root = scratch("hidden-toggle");
+        std::fs::write(root.join(".hidden"), "").unwrap();
+        let (app, mut vcx, _pane) = files_panel_on(cx, &root);
+        assert_eq!(rows(&app, &mut vcx), 1, "hidden by default");
+
+        app.update_in(&mut vcx, |app, _, cx| {
+            app.file_tree_toggle_hidden(cx);
+        });
+        vcx.background_executor.run_until_parked();
+        assert_eq!(rows(&app, &mut vcx), 2, "the dotfile is listed");
+        assert!(
+            cx.update(|cx| cx.global::<Config>().files_show_hidden),
+            "the panel's choice is written to the config"
+        );
+
+        app.update_in(&mut vcx, |app, _, cx| {
+            app.file_tree_toggle_hidden(cx);
+        });
+        vcx.background_executor.run_until_parked();
+        assert_eq!(rows(&app, &mut vcx), 1, "hiding again");
+        assert!(
+            !cx.update(|cx| cx.global::<Config>().files_show_hidden),
+            "and hiding is remembered too"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

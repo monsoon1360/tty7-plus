@@ -262,6 +262,12 @@ pub struct Config {
     /// agent run that touched sixty files across a dozen modules.
     #[serde(default)]
     pub scm_changes_tree: bool,
+    /// Whether the Files panel lists dotfiles and dot-directories. Off by
+    /// default, as the tree has always drawn them, but the choice is
+    /// remembered: a project whose interesting files are `.env` and
+    /// `.claude/` should not have to be un-hidden on every launch.
+    #[serde(default)]
+    pub files_show_hidden: bool,
     /// Whether a file opens in the code panel with soft wrap on. Not a
     /// setting anyone picks up front: it is whatever the status bar's Wrap
     /// toggle (or `ToggleDocumentWrap`) was last left at, so the next file
@@ -822,6 +828,7 @@ impl Default for Config {
             document_ratio: default_document_ratio(),
             scm_graph_expanded: false,
             scm_changes_tree: false,
+            files_show_hidden: false,
             editor_soft_wrap: false,
             editor_markdown_preview: false,
             editor_lsp: true,

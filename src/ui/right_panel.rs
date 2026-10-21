@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use crate::core::config::{Config, RightPanelTab};
 use crate::daemon::protocol::{ManagedForward, PaneProcs, PortProbe};
 use crate::ui::app::{
-    CONTENT_INSET, TILE_GLYPH_XS, TILE_SIZE_SM, TILE_SIZE_XS, Tty7App, tile_trailing_inset,
+    CONTENT_INSET, TILE_GLYPH_SM, TILE_GLYPH_XS, TILE_SIZE_SM, TILE_SIZE_XS, Tty7App,
+    tile_trailing_inset,
 };
 use crate::ui::i18n::{L10nKey, t, t_fmt};
 use crate::ui::scrollbar::with_vertical_scrollbar;
@@ -1975,6 +1976,34 @@ impl Tty7App {
         .detach();
     }
 
+    /// The Files panel's dotfile switch: an eye in the title bar, selected
+    /// while hidden files are listed. The same switch is in a row's
+    /// right-click menu, where it has always lived; this one puts it where
+    /// someone who has never right-clicked a row can find it.
+    fn files_hidden_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shown = self.file_tree.show_hidden;
+        let (icon, label) = match shown {
+            true => (IconName::Eye, L10nKey::FileTreeContextHideDotfiles),
+            false => (IconName::EyeOff, L10nKey::FileTreeContextShowDotfiles),
+        };
+        div()
+            .occlude()
+            .child(
+                crate::ui::tab_strip::chrome_tile_sized(
+                    Button::new("panel-files-hidden").icon(Icon::new(icon)),
+                    TILE_SIZE_SM,
+                    TILE_GLYPH_SM,
+                    shown,
+                    cx,
+                )
+                .rounded_md()
+                .accessible_label(t(label))
+                .tooltip(t(label))
+                .on_click(cx.listener(|this, _, _w, cx| this.file_tree_toggle_hidden(cx))),
+            )
+            .into_any_element()
+    }
+
     fn render_panel_files(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let remote = self.remote_files_pane(window, cx);
         let host = remote.as_ref().map(|(_, host)| host.clone());
@@ -1986,7 +2015,8 @@ impl Tty7App {
             self.file_search
                 .update(cx, |input, cx| input.focus(window, cx));
         }
-        let title = self.panel_title(t(L10nKey::PanelFilesTitle), None, None, window, cx);
+        let hidden = self.files_hidden_toggle(cx);
+        let title = self.panel_title(t(L10nKey::PanelFilesTitle), None, Some(hidden), window, cx);
         // One field for names and text alike. The switches only shape the
         // text search; names are always matched loosely.
         let toggles = self.panel_search_toggles(cx);
