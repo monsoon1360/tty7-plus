@@ -9,6 +9,7 @@
 //! Nothing here depends on gpui: the headless `tty7-server` answers the same
 //! questions for a remote workspace that `LocalHost` answers for this machine,
 //! and the conformance suite holds the two to the same behaviour.
+pub mod commit_context;
 pub mod diff;
 pub mod head;
 pub mod log;

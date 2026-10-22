@@ -21,6 +21,7 @@ use crate::ui::scm::state::RepoKey;
 /// match is what keeps the three from drifting apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ScmIntent {
+    GenerateCommitMessage,
     Commit,
     CommitAmend,
     /// Commit, then send it on. Two operations rather than one, so the commit
@@ -155,6 +156,7 @@ impl Tty7App {
             return;
         };
         match intent {
+            ScmIntent::GenerateCommitMessage => self.scm_generate_commit_message(repo, window, cx),
             ScmIntent::Refresh => {
                 self.scm_invalidate(repo.host, &repo.root, cx);
                 cx.notify();
@@ -254,7 +256,7 @@ impl Tty7App {
 
     /// What the commit box holds for a repository, whether or not it is the
     /// one currently on screen.
-    fn scm_message(&self, repo: &RepoKey, cx: &gpui::App) -> String {
+    pub(super) fn scm_message(&self, repo: &RepoKey, cx: &gpui::App) -> String {
         match (&self.scm.commit_input, &self.scm.commit_repo) {
             (Some(input), Some(showing)) if showing == repo => input.read(cx).value().to_string(),
             _ => self.scm.draft(repo).to_string(),

@@ -2,6 +2,99 @@ use super::L10nKey;
 
 pub fn translate_en(key: L10nKey) -> &'static str {
     match key {
+        L10nKey::SettingsNavAi => "AI",
+        L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsCodexModel => "Codex default model",
+        L10nKey::SettingsCodexEffort => "Codex reasoning effort",
+        L10nKey::SettingsDeepSeekUrl => "API base URL",
+        L10nKey::SettingsDeepSeekKey => "DeepSeek API Key",
+        L10nKey::SettingsDeepSeekModel => "DeepSeek model",
+        L10nKey::SettingsDeepSeekEffort => "DeepSeek reasoning effort",
+        L10nKey::SettingsGitProvider => "AI provider",
+        L10nKey::SettingsGitLanguage => "Commit language",
+        L10nKey::SettingsGitRules => "Custom rules",
+        L10nKey::SettingsAiKeywords => "AI LLM DeepSeek Codex model reasoning API Key 模型 推理",
+        L10nKey::SettingsGitAiKeywords => "AI Git commit language rules 提交 语言 规则",
+        L10nKey::SettingsCodexModelDesc => {
+            "Leave empty to use Codex's own model configuration. Uses your local CLI sign-in."
+        }
+        L10nKey::SettingsCodexScope => {
+            "Local launches only, starting with the next Codex launch; SSH and WSL are not affected. Reopen old terminals once to load shell integration. Custom shell arguments disable manual-command injection, but menu launches still apply defaults. Existing aliases and functions are preserved. Global Codex configuration is never changed."
+        }
+        L10nKey::SettingsAiEffortDesc => {
+            "Default leaves the provider configuration unchanged. Unsupported levels return the provider's error."
+        }
+        L10nKey::SettingsDeepSeekDesc => "Configure the API independently of CLI agents.",
+        L10nKey::SettingsDeepSeekUrlDesc => {
+            "HTTPS without credentials, query or fragment. Loopback HTTP is allowed for local gateways."
+        }
+        L10nKey::SettingsDeepSeekKeyDesc => {
+            "Stored only in the system keychain. Moving the configuration directory requires setting the Key again. Resetting settings does not remove it."
+        }
+        L10nKey::SettingsGitAiTitle => "Git commit messages",
+        L10nKey::SettingsGitAiDesc => {
+            "Generate an editable draft only; commit manually. Generating sends the pending diff to the selected service. Remote repositories also use the service from this computer."
+        }
+        L10nKey::SettingsGitLanguageDesc => "Language for generated commit messages.",
+        L10nKey::SettingsGitRulesDesc => {
+            "Optional instructions; Enter inserts a new line. Saved when leaving the field."
+        }
+        L10nKey::SettingsGitRulesPlaceholder => {
+            "For example: use Conventional Commits and keep titles under 72 characters."
+        }
+        L10nKey::SettingsGitLanguageApplication => "Follow application",
+        L10nKey::SettingsAiDefault => "Default",
+        L10nKey::SettingsAiOff => "Off",
+        L10nKey::SettingsAiSaveKey => "Save Key",
+        L10nKey::SettingsAiRemoveKey => "Remove Key",
+        L10nKey::SettingsAiKeyConfigured => "Key configured",
+        L10nKey::SettingsAiKeyNotConfigured => "No Key configured",
+        L10nKey::SettingsAiConfigDirError => {
+            "Cannot access the configuration directory. Save the configuration successfully before managing the Key."
+        }
+        L10nKey::AiGenerationOff => "Choose an AI provider in Git settings.",
+        L10nKey::AiMissingKey => "Save a DeepSeek API Key in AI settings.",
+        L10nKey::AiCredentialError => {
+            "Could not access the system keychain. Check keychain access and try again."
+        }
+        L10nKey::AiInvalidUrl => {
+            "Use HTTPS (or loopback HTTP), without credentials, query or fragment."
+        }
+        L10nKey::AiNetworkError => "Could not connect to the AI service.",
+        L10nKey::AiRequestTimeout => "AI generation timed out.",
+        L10nKey::AiResponseTooLarge => "The AI response exceeded the size limit.",
+        L10nKey::AiUnauthorized => "AI service authentication failed. Check your API Key.",
+        L10nKey::AiRateLimited => "AI service quota or rate limit reached. Try again later.",
+        L10nKey::AiHttpError => "AI service returned HTTP {status}.",
+        L10nKey::AiInvalidResponse => "The AI service returned an invalid response.",
+        L10nKey::AiEmptyResponse => "The AI service returned no commit message.",
+        L10nKey::AiCodexMissing => "Install Codex CLI, sign in, and configure AI settings.",
+        L10nKey::AiCodexFailed => {
+            "Codex exited with status {detail}. Check local CLI login and model/effort; upgrade Codex if options are unsupported."
+        }
+        L10nKey::AiCodexIoError => "Could not communicate with Codex CLI.",
+        L10nKey::ScmAiGenerate => "AI generate",
+        L10nKey::ScmAiGenerating => "Generating…",
+        L10nKey::ScmAiReplaceQuestion => "Replace existing commit message?",
+        L10nKey::ScmAiReplace => "Replace",
+        L10nKey::ScmAiChanged => "Commit state changed; draft was not overwritten.",
+        L10nKey::ScmAiTruncated => "Generated using truncated changes only.",
+        L10nKey::ScmAiFailed => "Could not generate commit message.",
+        L10nKey::ScmAiBusy => "A message is being generated for this repository.",
+        L10nKey::ScmAiCommitting => "A commit is in progress.",
+        L10nKey::ScmAiNoChanges => "No tracked changes available for generation.",
+        L10nKey::ScmAiConfigure => "Choose an AI provider in Git settings.",
+        L10nKey::ScmAiMissingCodex => "Install Codex CLI and sign in, then configure AI settings.",
+        L10nKey::ScmAiOpenSettings => "Open AI settings",
+        L10nKey::ScmAiConflicts => "Resolve conflicts before generating a commit message.",
+        L10nKey::ScmAiReadFailed => "Could not read commit state.",
+        L10nKey::AiCodexLoginRequired => {
+            "Codex exited with status {status}. Sign in using the local Codex CLI, then try again."
+        }
+        L10nKey::AiCodexConfigurationError => {
+            "Codex exited with status {status}. Check the model and reasoning effort; upgrade Codex if options are unsupported."
+        }
+        L10nKey::ScmAiMissingHead => "Cannot amend a repository without a HEAD commit.",
         L10nKey::SettingsNoMatchesShort => "No matches",
         L10nKey::SettingsModifiedTitle => "Modified",
         L10nKey::SettingsMatchCount => "{count} matches",

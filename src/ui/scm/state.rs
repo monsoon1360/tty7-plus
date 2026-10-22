@@ -52,6 +52,22 @@ impl ScmGroup {
     ];
 }
 
+/// A request snapshot. Dropping its entry invalidates any late completion.
+pub(crate) struct GenerationState {
+    pub(crate) token: u64,
+    pub(crate) head: HeadState,
+    pub(crate) original: String,
+    pub(crate) amend: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GenerationFinish {
+    Invalidated,
+    Changed,
+    Failed,
+    Applied,
+}
+
 #[derive(Default)]
 pub(crate) struct ScmPanelState {
     /// Which repository the panel is showing. Follows the active pane unless
@@ -76,6 +92,8 @@ pub(crate) struct ScmPanelState {
     pub(crate) checkout_branch: Option<Entity<InputState>>,
     /// Unsent commit messages, one per working tree.
     pub(crate) drafts: HashMap<RepoKey, String>,
+    pub(crate) generating: HashMap<RepoKey, GenerationState>,
+    pub(crate) generation_token: u64,
     /// The commit box. `None` until the panel has been rendered once: an
     /// `InputState` needs a real window to be created in, and this struct is
     /// built by `Default` alongside the rest of `Tty7App`.
@@ -145,6 +163,7 @@ impl ScmPanelState {
         self.probe_attempt.retain(|(h, _), _| *h != host);
         self.branches.retain(|k, _| k.host != host);
         self.branches_loading.retain(|k| k.host != host);
+        self.generating.retain(|key, _| key.host != host);
         if self.repo_override.as_ref().is_some_and(|k| k.host == host) {
             self.repo_override = None;
             self.override_tab = None;
@@ -161,6 +180,63 @@ impl ScmPanelState {
 
     pub(crate) fn draft(&self, repo: &RepoKey) -> &str {
         self.drafts.get(repo).map(String::as_str).unwrap_or("")
+    }
+
+    pub(crate) fn begin_generation(
+        &mut self,
+        repo: RepoKey,
+        head: HeadState,
+        original: String,
+        amend: bool,
+    ) -> Option<u64> {
+        if self.generating.contains_key(&repo) {
+            return None;
+        }
+        self.generation_token = self
+            .generation_token
+            .checked_add(1)
+            .expect("generation token exhausted");
+        let token = self.generation_token;
+        self.drafts.insert(repo.clone(), original.clone());
+        self.generating.insert(
+            repo,
+            GenerationState {
+                token,
+                head,
+                original,
+                amend,
+            },
+        );
+        Some(token)
+    }
+
+    /// Only the matching live request may clear loading or replace its draft.
+    /// `current` comes from the real input when visible, not a render-time cache.
+    pub(crate) fn finish_generation(
+        &mut self,
+        repo: &RepoKey,
+        token: u64,
+        head: &HeadState,
+        amend: bool,
+        current: &str,
+        message: Option<String>,
+    ) -> GenerationFinish {
+        if !self
+            .generating
+            .get(repo)
+            .is_some_and(|state| state.token == token)
+        {
+            return GenerationFinish::Invalidated;
+        }
+        let state = self.generating.remove(repo).expect("matching live request");
+        if state.head != *head || state.amend != amend || state.original != current {
+            return GenerationFinish::Changed;
+        }
+        let Some(message) = message else {
+            return GenerationFinish::Failed;
+        };
+        self.drafts.insert(repo.clone(), message);
+        GenerationFinish::Applied
     }
 
     /// Whether a group renders folded. `count` decides it only for a group the
@@ -332,5 +408,170 @@ mod tests {
         state.drafts.insert(key("/a"), "wip".into());
         assert_eq!(state.draft(&key("/a")), "wip");
         assert_eq!(state.draft(&key("/b")), "");
+    }
+
+    fn head(oid: &str) -> HeadState {
+        HeadState::Branch {
+            name: "main".into(),
+            oid: oid.into(),
+        }
+    }
+
+    #[test]
+    fn concurrent_results_only_change_their_original_repository() {
+        let mut state = ScmPanelState::default();
+        let (a, b) = (key("/a"), key("/b"));
+        let first = state
+            .begin_generation(a.clone(), head("one"), "original a".into(), false)
+            .unwrap();
+        assert!(
+            state
+                .begin_generation(a.clone(), head("one"), "duplicate".into(), false)
+                .is_none()
+        );
+        let second = state
+            .begin_generation(b.clone(), head("one"), "original b".into(), false)
+            .unwrap();
+        state.repo = Some(b.clone());
+        assert_eq!(
+            state.finish_generation(
+                &a,
+                first,
+                &head("one"),
+                false,
+                "original a",
+                Some("generated a".into())
+            ),
+            GenerationFinish::Applied
+        );
+        assert_eq!(state.draft(&a), "generated a");
+        assert_eq!(state.draft(&b), "original b");
+        assert!(state.generating.contains_key(&b));
+        assert_eq!(
+            state.finish_generation(
+                &b,
+                second,
+                &head("one"),
+                false,
+                "original b",
+                Some("generated b".into())
+            ),
+            GenerationFinish::Applied
+        );
+        assert_eq!(state.draft(&b), "generated b");
+        assert!(state.committing.is_none());
+    }
+
+    #[test]
+    fn edits_head_moves_and_amend_changes_reject_late_results() {
+        for (current, oid, amend) in [
+            ("edited", "one", false),
+            ("merge message", "two", false),
+            ("merge message", "one", true),
+        ] {
+            let mut state = ScmPanelState::default();
+            let repo = key("/a");
+            let token = state
+                .begin_generation(repo.clone(), head("one"), "merge message".into(), false)
+                .unwrap();
+            state.drafts.insert(repo.clone(), current.into());
+            assert_eq!(
+                state.finish_generation(
+                    &repo,
+                    token,
+                    &head(oid),
+                    amend,
+                    current,
+                    Some("late".into())
+                ),
+                GenerationFinish::Changed
+            );
+            assert_eq!(state.draft(&repo), current);
+            assert!(!state.generating.contains_key(&repo));
+        }
+    }
+
+    #[test]
+    fn disconnect_invalidates_only_that_hosts_requests_and_tokens() {
+        let mut state = ScmPanelState::default();
+        let local = key("/same");
+        let remote = RepoKey {
+            host: HostId(42),
+            root: local.root.clone(),
+        };
+        let first = state
+            .begin_generation(remote.clone(), head("one"), "remote draft".into(), false)
+            .unwrap();
+        let local_token = state
+            .begin_generation(local.clone(), head("one"), "local draft".into(), false)
+            .unwrap();
+        state.forget_host(remote.host);
+        assert_eq!(
+            state.finish_generation(
+                &remote,
+                first,
+                &head("one"),
+                false,
+                "remote draft",
+                Some("late".into())
+            ),
+            GenerationFinish::Invalidated
+        );
+        let next = state
+            .begin_generation(remote.clone(), head("one"), "remote draft".into(), false)
+            .unwrap();
+        assert_ne!(first, next);
+        assert_eq!(
+            state.finish_generation(
+                &remote,
+                first,
+                &head("one"),
+                false,
+                "remote draft",
+                Some("late".into())
+            ),
+            GenerationFinish::Invalidated
+        );
+        assert!(state.generating.contains_key(&remote));
+        assert_eq!(
+            state.finish_generation(
+                &local,
+                local_token,
+                &head("one"),
+                false,
+                "local draft",
+                Some("local result".into())
+            ),
+            GenerationFinish::Applied
+        );
+        assert_eq!(state.draft(&remote), "remote draft");
+    }
+
+    #[test]
+    fn generation_failure_preserves_merge_prefill() {
+        let mut state = ScmPanelState::default();
+        let repo = key("/a");
+        let token = state
+            .begin_generation(
+                repo.clone(),
+                head("one"),
+                "Merge branch 'topic'".into(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            state.finish_generation(
+                &repo,
+                token,
+                &head("one"),
+                false,
+                "Merge branch 'topic'",
+                None
+            ),
+            GenerationFinish::Failed
+        );
+        assert_eq!(state.draft(&repo), "Merge branch 'topic'");
+        assert!(!state.generating.contains_key(&repo));
+        assert!(state.committing.is_none());
     }
 }

@@ -20,8 +20,8 @@ use crate::daemon::protocol::{
     AuthResponse, DaemonMsg, LeaseRequest, MAX_FRAME, NativeSshSpec, PaneInfo, RemoteContext,
     RemoteKind, ShellSpec, WinSize,
 };
-use crate::daemon::shell_integration;
 use crate::daemon::screen::{HistorySnapshot, ScreenMirror, ScreenSnapshot};
+use crate::daemon::shell_integration;
 
 #[cfg(windows)]
 fn default_prog() -> CommandBuilder {
@@ -390,6 +390,12 @@ const TERM_PROGRAM_NAME: &str = "tty7";
 const TTY7_CONFIG_DIR_ENV: &str = "TTY7_CONFIG_DIR";
 pub(crate) const TTY7_PANE_ENV: &str = "TTY7_PANE";
 const TTY7_WS_ENV: &str = "TTY7_WS";
+const TTY7_AI_LAUNCHER_ENV: &str = "TTY7_AI_LAUNCHER";
+
+fn is_wsl_program(shell: &str) -> bool {
+    let base = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    base.eq_ignore_ascii_case("wsl") || base.eq_ignore_ascii_case("wsl.exe")
+}
 
 fn config_dir_env() -> Option<String> {
     crate::core::config::config_dir_path().map(|p| p.display().to_string())
@@ -508,6 +514,11 @@ fn pane_environment(
     if let Some(dir) = config_dir_env() {
         env.push((TTY7_CONFIG_DIR_ENV.to_string(), dir));
     }
+    if !is_wsl_program(shell)
+        && let Some(path) = crate::core::ai::local_codex_launcher()
+    {
+        env.push((TTY7_AI_LAUNCHER_ENV.to_string(), path.display().to_string()));
+    }
     // Names the pane's own history file; the integration snippet is what
     // decides to use it, once the user's rc has said where their history was.
     if let Some((key, value)) = crate::daemon::history::env_for(pane, shell) {
@@ -543,7 +554,9 @@ fn pane_environment(
     env.extend(
         extra_env
             .iter()
-            .filter(|(k, _)| !names_capability_env(k))
+            .filter(|(k, _)| {
+                !names_capability_env(k) && !k.eq_ignore_ascii_case(TTY7_AI_LAUNCHER_ENV)
+            })
             .map(|(k, v)| (k.clone(), v.clone())),
     );
     env
@@ -601,6 +614,9 @@ fn apply_common_command_setup(
     for (k, v) in crate::daemon::windows_env::refreshed_pane_environment(&extra_env) {
         cmd.env(k, v);
     }
+    // A launcher belongs only to this daemon, never an inherited terminal or
+    // a WSL distro (even when the user forwards the name via WSLENV).
+    cmd.env_remove(TTY7_AI_LAUNCHER_ENV);
 
     let dark = crate::core::machine::appearance().dark;
     for (k, v) in pane_environment(&extra_env, dark, pane, workspace, shell) {
@@ -725,7 +741,10 @@ struct ScreenObserver {
 
 fn wake_screens(st: &mut PaneState) {
     st.screen_observers.retain(|observer| {
-        !matches!(observer.wake.try_send(()), Err(mpsc::TrySendError::Disconnected(())))
+        !matches!(
+            observer.wake.try_send(()),
+            Err(mpsc::TrySendError::Disconnected(()))
+        )
     });
 }
 
@@ -961,7 +980,9 @@ fn send_to_observer(obs: &Observer, msg: &DaemonMsg, len: usize) -> bool {
 /// resize. The echo exists to close the 16 MiB window, not that one.
 fn resize_state(st: &mut PaneState, size: WinSize) {
     st.ring.resize(size);
-    if let Some(screen) = &mut st.screen { screen.resize(size); }
+    if let Some(screen) = &mut st.screen {
+        screen.resize(size);
+    }
     wake_screens(st);
     if let Some(sub) = &st.subscriber {
         let _ = sub.send(DaemonMsg::Size(size));
@@ -1016,7 +1037,9 @@ fn lease_take(st: &mut PaneState, observer: u64, size: WinSize, by: String) -> O
     // client that is told its pane changed size resizes back to fit its
     // window, and the two would take turns.
     st.ring.resize(size);
-    if let Some(screen) = &mut st.screen { screen.resize(size); }
+    if let Some(screen) = &mut st.screen {
+        screen.resize(size);
+    }
     wake_screens(st);
     st.observers
         .retain(|obs| obs.tx.send(DaemonMsg::Size(size)).is_ok());
@@ -1034,10 +1057,19 @@ fn mobile_lease_resize(
     initial: bool,
 ) -> std::io::Result<WinSize> {
     if !has_observer(st, observer) {
-        return Err(std::io::Error::other("terminal subscription is no longer active"));
+        return Err(std::io::Error::other(
+            "terminal subscription is no longer active",
+        ));
     }
-    if !initial && !st.lease.as_ref().is_some_and(|lease| lease.observer == observer) {
-        return Err(std::io::Error::other("terminal size control was taken back"));
+    if !initial
+        && !st
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.observer == observer)
+    {
+        return Err(std::io::Error::other(
+            "terminal size control was taken back",
+        ));
     }
     lease_take(st, observer, size, "phone".into())
         .ok_or_else(|| std::io::Error::other("terminal subscription is no longer active"))
@@ -1189,12 +1221,20 @@ struct ReadBoundary {
 #[cfg(unix)]
 impl ReadBoundary {
     fn wait_readable(&self) -> std::io::Result<()> {
-        let mut fd = libc::pollfd { fd: self.fd, events: libc::POLLIN, revents: 0 };
+        let mut fd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         loop {
             let result = unsafe { libc::poll(&mut fd, 1, -1) };
-            if result >= 0 { return Ok(()); }
+            if result >= 0 {
+                return Ok(());
+            }
             let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted { return Err(error); }
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
         }
     }
 }
@@ -1975,9 +2015,12 @@ impl DaemonPane {
         } = parts;
 
         #[cfg(unix)]
-        let read_boundary = master.as_raw_fd().map(|fd| Arc::new(ReadBoundary {
-            fd, gate: parking_lot::Mutex::new(()),
-        }));
+        let read_boundary = master.as_raw_fd().map(|fd| {
+            Arc::new(ReadBoundary {
+                fd,
+                gate: parking_lot::Mutex::new(()),
+            })
+        });
         #[cfg(not(unix))]
         let read_boundary = None;
         let id = state.id;
@@ -2070,28 +2113,47 @@ impl DaemonPane {
     /// Native SSH cannot cross an exec and therefore returns `None`.
     #[cfg(unix)]
     pub(crate) fn prepare_handoff(&self) -> std::io::Result<Option<PreparedHandoff<'_>>> {
-        let PaneBackend::Pty(pty) = &self.backend else { return Ok(None); };
-        let boundary = pty.read_boundary.as_ref()
+        let PaneBackend::Pty(pty) = &self.backend else {
+            return Ok(None);
+        };
+        let boundary = pty
+            .read_boundary
+            .as_ref()
             .ok_or_else(|| std::io::Error::other("PTY has no checkpoint read boundary"))?;
         let read = boundary.gate.lock();
-        let st = self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?;
+        let st = self
+            .state
+            .lock()
+            .map_err(|_| std::io::Error::other("pane state poisoned"))?;
         {
             // A desktop replay can be midway through a transient redraw nudge.
             // Normalize its temporary kernel size while both reader and state are frozen.
-            let master = pty.master.lock().map_err(|_| std::io::Error::other("PTY master poisoned"))?;
-            let master = master.as_ref().ok_or_else(|| std::io::Error::other("PTY master closed"))?;
-            master.resize(pty_size(st.ring.tail_size()))
+            let master = pty
+                .master
+                .lock()
+                .map_err(|_| std::io::Error::other("PTY master poisoned"))?;
+            let master = master
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("PTY master closed"))?;
+            master
+                .resize(pty_size(st.ring.tail_size()))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
         let carried = Carried {
             id: self.id,
             owner: self.owner.clone(),
             master_fd: boundary.fd,
-            child_pid: pty.shell_pid.ok_or_else(|| std::io::Error::other("PTY has no child pid"))?,
+            child_pid: pty
+                .shell_pid
+                .ok_or_else(|| std::io::Error::other("PTY has no child pid"))?,
             integration_dir: pty.integration_dir.clone(),
             size: st.ring.tail_size(),
             ring: st.ring.snapshot(),
-            screen_checkpoint: st.screen.as_ref().map(ScreenMirror::checkpoint).transpose()?,
+            screen_checkpoint: st
+                .screen
+                .as_ref()
+                .map(ScreenMirror::checkpoint)
+                .transpose()?,
             cwd: st.cwd.clone(),
             osc_title: st.osc_title.clone(),
             shell_spec: st.shell_spec.clone(),
@@ -2103,7 +2165,11 @@ impl DaemonPane {
             agent_argv: st.agent_argv.clone(),
             agent_session: st.agent_session.clone(),
         };
-        Ok(Some(PreparedHandoff { _read: read, _state: st, carried: Some(carried) }))
+        Ok(Some(PreparedHandoff {
+            _read: read,
+            _state: st,
+            carried: Some(carried),
+        }))
     }
 
     /// Rebuild a pane around a pty this process already holds.
@@ -2140,18 +2206,22 @@ impl DaemonPane {
         // announce and nothing to reset. The shell below these bytes is the
         // same shell that wrote them.
         ring.resize(size);
-        let screen = carried.screen_checkpoint.as_deref().and_then(|checkpoint| {
-            match ScreenMirror::restore(checkpoint) {
-                Ok(mut screen) => {
-                    screen.resize(size);
-                    Some(screen)
-                }
-                Err(error) => {
-                    log::error!("pane {} has an unreadable terminal checkpoint: {error}", carried.id);
-                    None
-                }
-            }
-        });
+        let screen =
+            carried.screen_checkpoint.as_deref().and_then(
+                |checkpoint| match ScreenMirror::restore(checkpoint) {
+                    Ok(mut screen) => {
+                        screen.resize(size);
+                        Some(screen)
+                    }
+                    Err(error) => {
+                        log::error!(
+                            "pane {} has an unreadable terminal checkpoint: {error}",
+                            carried.id
+                        );
+                        None
+                    }
+                },
+            );
 
         Ok(Self::over_pty(
             PtyParts {
@@ -2359,7 +2429,17 @@ impl DaemonPane {
         probes: ForegroundProbes,
         death: Arc<DeathReporter>,
     ) -> JoinHandle<()> {
-        Self::spawn_reader_guarded(state, shutting_down, gate, reader, writer, foreground_running, probes, death, None)
+        Self::spawn_reader_guarded(
+            state,
+            shutting_down,
+            gate,
+            reader,
+            writer,
+            foreground_running,
+            probes,
+            death,
+            None,
+        )
     }
 
     fn spawn_reader_guarded(
@@ -2711,7 +2791,10 @@ impl DaemonPane {
 
     /// Register a bounded wake-only observer, without allocating or replaying raw history.
     pub(crate) fn mobile_screen_observe(&self, wake: mpsc::SyncSender<()>) -> std::io::Result<u64> {
-        let mut st = self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?;
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|_| std::io::Error::other("pane state poisoned"))?;
         if st.screen.is_none() {
             return Err(std::io::Error::other(crate::daemon::screen::UNAVAILABLE));
         }
@@ -2722,19 +2805,32 @@ impl DaemonPane {
     }
 
     pub(crate) fn mobile_screen(&self) -> std::io::Result<Arc<ScreenSnapshot>> {
-        self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?.screen.as_mut()
+        self.state
+            .lock()
+            .map_err(|_| std::io::Error::other("pane state poisoned"))?
+            .screen
+            .as_mut()
             .map(ScreenMirror::snapshot)
             .ok_or_else(|| std::io::Error::other(crate::daemon::screen::UNAVAILABLE))
     }
 
     pub(crate) fn mobile_history(&self) -> std::io::Result<HistorySnapshot> {
-        self.state.lock().map_err(|_| std::io::Error::other("pane state poisoned"))?.screen.as_ref()
+        self.state
+            .lock()
+            .map_err(|_| std::io::Error::other("pane state poisoned"))?
+            .screen
+            .as_ref()
             .map(ScreenMirror::history)
             .ok_or_else(|| std::io::Error::other(crate::daemon::screen::UNAVAILABLE))
     }
 
     pub(crate) fn mobile_lease_held(&self, id: u64) -> bool {
-        self.state.lock().unwrap_or_else(|error| error.into_inner()).lease.as_ref().is_some_and(|lease| lease.observer == id)
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.observer == id)
     }
 
     pub(crate) fn mobile_exit(&self) -> Option<Option<i32>> {
@@ -2756,7 +2852,8 @@ impl DaemonPane {
         let mut st = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let restore = lease_release(&mut st, observer_id);
         st.observers.retain(|obs| obs.id != observer_id);
-        st.screen_observers.retain(|observer| observer.id != observer_id);
+        st.screen_observers
+            .retain(|observer| observer.id != observer_id);
         if let Some(size) = restore {
             self.resize_pty(size);
         }
@@ -4101,7 +4198,9 @@ pub fn codex_report_target(
         .collect();
     // An unscoped shared server also runs sessions outside tty7. Only an
     // existing session match or matching directory may claim those reports.
-    if named == 0 && here.is_empty() { return None; }
+    if named == 0 && here.is_empty() {
+        return None;
+    }
     let pool = if here.is_empty() {
         codex().collect()
     } else {
@@ -4733,13 +4832,27 @@ mod tests {
 
         // The app-server was started in pane 1, so every hook names it.
         assert_eq!(target(1, Some("s-a"), "/work/a"), Some(1));
-        assert_eq!(target(0, Some("s-a"), "/elsewhere"), Some(1),
-            "a shared server without tty7 environment still routes known sessions");
-        assert_eq!(target(0, Some("s-new"), "/work/b"), Some(2),
-            "an unscoped shared server can identify a new session by directory");
-        assert_eq!(codex_report_target(&[pane(1, true, "/work/a", None)], 0,
-            Some("outside"), Some(Path::new("/outside")), false), None,
-            "a session outside tty7 must not claim the only Codex pane");
+        assert_eq!(
+            target(0, Some("s-a"), "/elsewhere"),
+            Some(1),
+            "a shared server without tty7 environment still routes known sessions"
+        );
+        assert_eq!(
+            target(0, Some("s-new"), "/work/b"),
+            Some(2),
+            "an unscoped shared server can identify a new session by directory"
+        );
+        assert_eq!(
+            codex_report_target(
+                &[pane(1, true, "/work/a", None)],
+                0,
+                Some("outside"),
+                Some(Path::new("/outside")),
+                false
+            ),
+            None,
+            "a session outside tty7 must not claim the only Codex pane"
+        );
         assert_eq!(
             target(1, Some("s-c"), "/work/elsewhere"),
             Some(4),
@@ -6356,7 +6469,11 @@ mod tests {
         PaneState {
             id: 0,
             ring: ReplayRing::new(ws(80, 24)),
-            screen: Some(ScreenMirror::with_config(ws(80, 24), false, &crate::core::config::Config::default())),
+            screen: Some(ScreenMirror::with_config(
+                ws(80, 24),
+                false,
+                &crate::core::config::Config::default(),
+            )),
             screen_observers: Vec::new(),
             subscriber: None,
             subscriber_epoch: 0,
@@ -6389,9 +6506,14 @@ mod tests {
         let mut state = test_state(true);
         let (wake, receiver) = mpsc::sync_channel(1);
         state.screen_observers.push(ScreenObserver { id: 1, wake });
-        for _ in 0..1000 { wake_screens(&mut state); }
+        for _ in 0..1000 {
+            wake_screens(&mut state);
+        }
         assert_eq!(receiver.try_iter().count(), 1);
-        assert!(state.observers.is_empty(), "screen observation never creates raw replay subscribers");
+        assert!(
+            state.observers.is_empty(),
+            "screen observation never creates raw replay subscribers"
+        );
         mobile_lease_resize(&mut state, 1, ws(40, 10), true).unwrap();
         let screen = state.screen.as_mut().unwrap().snapshot();
         assert_eq!((screen.cols, screen.rows), (40, 10));
@@ -6414,7 +6536,10 @@ mod tests {
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
         let (mut input, mut output) = UnixStream::pair().unwrap();
-        let boundary = Arc::new(ReadBoundary { fd: input.as_raw_fd(), gate: parking_lot::Mutex::new(()) });
+        let boundary = Arc::new(ReadBoundary {
+            fd: input.as_raw_fd(),
+            gate: parking_lot::Mutex::new(()),
+        });
         let frozen = boundary.gate.lock();
         let reader_boundary = boundary.clone();
         let (done, receive) = mpsc::channel();
@@ -6464,7 +6589,10 @@ mod tests {
         let mut state = test_state(true);
         apply_agent(&mut state, Some((CLIAgent::OhMyPi, vec!["omp".into()])));
         let mut revision = state.agent_clock.generation;
-        assert!(revision > 0, "a foreground agent with no session is a new reading");
+        assert!(
+            revision > 0,
+            "a foreground agent with no session is a new reading"
+        );
         for (event, expected) in [
             ("prompt-submit", AgentStatus::Working),
             ("permission-request", AgentStatus::Waiting),
@@ -6480,18 +6608,33 @@ mod tests {
             revision = state.agent_clock.generation;
         }
         settle_interrupt(&mut state, revision);
-        assert_eq!(mobile_agent(&state), Some((CLIAgent::OhMyPi, AgentStatus::Done)));
-        assert!(state.agent_clock.generation > revision, "inferred completion orders after Working");
+        assert_eq!(
+            mobile_agent(&state),
+            Some((CLIAgent::OhMyPi, AgentStatus::Done))
+        );
+        assert!(
+            state.agent_clock.generation > revision,
+            "inferred completion orders after Working"
+        );
         revision = state.agent_clock.generation;
         apply_agent(&mut state, None);
         assert_eq!(mobile_agent(&state), None);
-        assert!(state.agent_clock.generation > revision, "agent removal orders after completion");
+        assert!(
+            state.agent_clock.generation > revision,
+            "agent removal orders after completion"
+        );
 
         apply_agent(&mut state, Some((CLIAgent::OhMyPi, vec!["omp".into()])));
         revision = state.agent_clock.generation;
         apply_agent_signals(&mut state, Vec::new(), Some("needs input".into()));
-        assert_eq!(mobile_agent(&state), Some((CLIAgent::OhMyPi, AgentStatus::Waiting)));
-        assert!(state.agent_clock.generation > revision, "notification-only agents also advance");
+        assert_eq!(
+            mobile_agent(&state),
+            Some((CLIAgent::OhMyPi, AgentStatus::Waiting))
+        );
+        assert!(
+            state.agent_clock.generation > revision,
+            "notification-only agents also advance"
+        );
     }
 
     #[test]
@@ -7549,15 +7692,24 @@ mod tests {
     #[test]
     fn mobile_grid_updates_cannot_retake_a_revoked_or_cancelled_subscription() {
         let (mut st, controller_rx, phone, observer_rx) = leased_rig();
-        assert_eq!(mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap(), ws(42, 28));
-        assert_eq!(mobile_lease_resize(&mut st, phone, ws(45, 18), false).unwrap(), ws(45, 18));
+        assert_eq!(
+            mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap(),
+            ws(42, 28)
+        );
+        assert_eq!(
+            mobile_lease_resize(&mut st, phone, ws(45, 18), false).unwrap(),
+            ws(45, 18)
+        );
         assert_eq!(controller_resize(&mut st, ws(120, 40)), None);
         drain(&controller_rx);
         drain(&observer_rx);
         assert_eq!(lease_end(&mut st), Some(ws(120, 40)));
         assert!(mobile_lease_resize(&mut st, phone, ws(45, 18), false).is_err());
         assert_eq!(st.ring.size(), ws(120, 40));
-        assert_eq!(drain(&observer_rx), vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(120, 40))]);
+        assert_eq!(
+            drain(&observer_rx),
+            vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(120, 40))]
+        );
         st.observers.retain(|observer| observer.id != phone);
         assert!(mobile_lease_resize(&mut st, phone, ws(42, 28), true).is_err());
         assert_eq!(st.ring.size(), ws(120, 40));
@@ -7577,7 +7729,10 @@ mod tests {
         st.observers.retain(|observer| observer.id != phone);
         assert_eq!(st.ring.size(), ws(130, 45));
         assert_eq!(drain(&other_rx), vec![DaemonMsg::Size(ws(130, 45))]);
-        assert_eq!(drain(&controller_rx), vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(130, 45))]);
+        assert_eq!(
+            drain(&controller_rx),
+            vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(130, 45))]
+        );
     }
 
     #[test]
@@ -8932,6 +9087,34 @@ mod tests {
 
         assert!(dead_rx.try_recv().is_ok(), "unattached death → on_dead");
         assert!(dead_rx.try_recv().is_err(), "on_dead must fire only once");
+    }
+
+    #[test]
+    fn codex_launcher_is_reserved_and_never_given_to_wsl() {
+        let configured = std::collections::HashMap::from([
+            (
+                "TTY7_AI_LAUNCHER".to_string(),
+                "/wrong/launcher".to_string(),
+            ),
+            ("tty7_ai_launcher".to_string(), "/also/wrong".to_string()),
+        ]);
+        for shell in ["wsl", "wsl.exe", r"C:\Windows\System32\WSL.EXE"] {
+            let env = pane_environment(&configured, false, 1, None, shell);
+            assert!(
+                !env.iter()
+                    .any(|(key, _)| key.eq_ignore_ascii_case(TTY7_AI_LAUNCHER_ENV))
+            );
+        }
+        let env = pane_environment(&configured, false, 1, None, "/bin/bash");
+        let launcher = env
+            .iter()
+            .find(|(key, _)| key == TTY7_AI_LAUNCHER_ENV)
+            .map(|(_, value)| value.as_str());
+        assert_eq!(
+            launcher,
+            crate::core::ai::local_codex_launcher().map(|path| path.to_str().unwrap())
+        );
+        assert!(!env.iter().any(|(key, _)| key == "tty7_ai_launcher"));
     }
 
     #[test]

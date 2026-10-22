@@ -582,6 +582,22 @@ impl Tty7App {
             .max_w_full()
     }
 
+    pub(crate) fn settings_multiline_text_input(
+        &self,
+        input: &Entity<InputState>,
+        width: f32,
+        cx: &App,
+    ) -> Div {
+        kit::multiline_text_field(
+            input,
+            self.settings_input_focused(input, cx),
+            &Tk::of(cx),
+            cx,
+        )
+        .w(px(width))
+        .max_w_full()
+    }
+
     pub(crate) fn settings_input_focused(&self, input: &Entity<InputState>, cx: &App) -> bool {
         let handle = input.read(cx).focus_handle(cx);
         self.active_settings()
@@ -824,6 +840,8 @@ impl Tty7App {
                 SettingsSection::KeyboardMouse => self.render_settings_input(cx),
                 SettingsSection::Ssh => self.render_settings_ssh(cx),
                 SettingsSection::Agents => self.render_settings_agents(cx),
+                SettingsSection::Ai => self.render_settings_ai(cx),
+                SettingsSection::Git => self.render_settings_git(cx),
                 SettingsSection::PairDevices => self.render_settings_pair_devices(window, cx),
                 SettingsSection::Keybindings => self.render_settings_keybindings(cx),
                 SettingsSection::About => self.render_settings_about(cx),
@@ -1414,6 +1432,12 @@ impl Tty7App {
                 }
                 SettingsSection::Agents => {
                     self.render_command_line_rows(cx);
+                }
+                SettingsSection::Ai => {
+                    self.render_settings_ai(cx);
+                }
+                SettingsSection::Git => {
+                    self.render_settings_git(cx);
                 }
                 SettingsSection::PairDevices => {
                     self.render_settings_pair_devices_config(cx);

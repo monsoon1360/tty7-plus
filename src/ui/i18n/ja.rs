@@ -2,6 +2,107 @@ use super::L10nKey;
 
 pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
     Some(match key {
+        L10nKey::SettingsNavAi => "AI",
+        L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsCodexModel => "Codex 既定モデル",
+        L10nKey::SettingsCodexEffort => "Codex 推論強度",
+        L10nKey::SettingsDeepSeekUrl => "API ベース URL",
+        L10nKey::SettingsDeepSeekKey => "DeepSeek API Key",
+        L10nKey::SettingsDeepSeekModel => "DeepSeek モデル",
+        L10nKey::SettingsDeepSeekEffort => "DeepSeek 推論強度",
+        L10nKey::SettingsGitProvider => "AI プロバイダー",
+        L10nKey::SettingsGitLanguage => "コミット言語",
+        L10nKey::SettingsGitRules => "カスタムルール",
+        L10nKey::SettingsAiKeywords => {
+            "AI LLM DeepSeek Codex model reasoning API Key モデル 推論 模型 推理"
+        }
+        L10nKey::SettingsGitAiKeywords => "AI Git commit language rules コミット 言語 ルール",
+        L10nKey::SettingsCodexModelDesc => {
+            "空欄の場合は Codex のモデル設定を使用します。ローカル CLI のログインを再利用します。"
+        }
+        L10nKey::SettingsCodexScope => {
+            "次回のローカル Codex 起動から適用され、SSH と WSL には影響しません。既存の端末は一度開き直して shell 統合を読み込んでください。独自の shell 引数を使う場合、手動コマンドには適用されませんが、メニュー起動には適用されます。既存のエイリアスと関数は保持され、Codex のグローバル設定は変更しません。"
+        }
+        L10nKey::SettingsAiEffortDesc => {
+            "既定ではプロバイダー設定を上書きしません。非対応の強度はプロバイダーのエラーを表示します。"
+        }
+        L10nKey::SettingsDeepSeekDesc => "CLI Agent とは独立した API 設定です。",
+        L10nKey::SettingsDeepSeekUrlDesc => {
+            "認証情報、クエリ、フラグメントのない HTTPS を使用します。ローカルゲートウェイにはループバック HTTP を使用できます。"
+        }
+        L10nKey::SettingsDeepSeekKeyDesc => {
+            "システムのキーチェーンのみに保存します。設定ディレクトリを移動した場合は再設定が必要です。設定のリセットでは削除されません。"
+        }
+        L10nKey::SettingsGitAiTitle => "Git コミットメッセージ",
+        L10nKey::SettingsGitAiDesc => {
+            "編集可能な下書きのみを生成し、コミットは手動で行います。生成時に変更 diff を選択したサービスに送信します。リモートリポジトリもこのコンピューターからサービスを呼び出します。"
+        }
+        L10nKey::SettingsGitLanguageDesc => "生成するコミットメッセージの言語。",
+        L10nKey::SettingsGitRulesDesc => {
+            "任意の指示。Enter で改行し、フォーカスを離すと保存します。"
+        }
+        L10nKey::SettingsGitRulesPlaceholder => {
+            "例：Conventional Commits を使用し、タイトルを 72 文字以内にする。"
+        }
+        L10nKey::SettingsGitLanguageApplication => "アプリに従う",
+        L10nKey::SettingsAiDefault => "既定",
+        L10nKey::SettingsAiOff => "無効",
+        L10nKey::SettingsAiSaveKey => "キーを保存",
+        L10nKey::SettingsAiRemoveKey => "キーを削除",
+        L10nKey::SettingsAiKeyConfigured => "キー設定済み",
+        L10nKey::SettingsAiKeyNotConfigured => "キー未設定",
+        L10nKey::SettingsAiConfigDirError => {
+            "設定ディレクトリにアクセスできません。キーを管理する前に設定を正常に保存してください。"
+        }
+        L10nKey::AiGenerationOff => "Git 設定で AI プロバイダーを選択してください。",
+        L10nKey::AiMissingKey => "AI 設定で DeepSeek API Key を保存してください。",
+        L10nKey::AiCredentialError => {
+            "システムのキーチェーンにアクセスできません。アクセス権を確認して再試行してください。"
+        }
+        L10nKey::AiInvalidUrl => {
+            "認証情報、クエリ、フラグメントのない HTTPS またはループバック HTTP を使用してください。"
+        }
+        L10nKey::AiNetworkError => "AI サービスに接続できませんでした。",
+        L10nKey::AiRequestTimeout => "AI 生成がタイムアウトしました。",
+        L10nKey::AiResponseTooLarge => "AI の応答がサイズ制限を超えました。",
+        L10nKey::AiUnauthorized => "AI サービスの認証に失敗しました。API Key を確認してください。",
+        L10nKey::AiRateLimited => {
+            "AI サービスの利用枠またはレート制限に達しました。後で再試行してください。"
+        }
+        L10nKey::AiHttpError => "AI サービスが HTTP {status} を返しました。",
+        L10nKey::AiInvalidResponse => "AI サービスの応答が不正です。",
+        L10nKey::AiEmptyResponse => "AI サービスがコミットメッセージを返しませんでした。",
+        L10nKey::AiCodexMissing => {
+            "Codex CLI をインストールしてログインし、AI 設定を行ってください。"
+        }
+        L10nKey::AiCodexFailed => {
+            "Codex が状態 {detail} で終了しました。ローカル CLI のログインとモデル・推論強度を確認し、非対応のオプションの場合は Codex を更新してください。"
+        }
+        L10nKey::AiCodexIoError => "Codex CLI と通信できませんでした。",
+        L10nKey::ScmAiGenerate => "AI 生成",
+        L10nKey::ScmAiGenerating => "生成中…",
+        L10nKey::ScmAiReplaceQuestion => "既存のコミットメッセージを置き換えますか？",
+        L10nKey::ScmAiReplace => "置き換え",
+        L10nKey::ScmAiChanged => "コミット状態が変わったため、下書きは上書きされませんでした。",
+        L10nKey::ScmAiTruncated => "切り詰めた変更のみに基づいて生成しました。",
+        L10nKey::ScmAiFailed => "コミットメッセージを生成できませんでした。",
+        L10nKey::ScmAiBusy => "このリポジトリのメッセージを生成中です。",
+        L10nKey::ScmAiCommitting => "コミット処理中です。",
+        L10nKey::ScmAiNoChanges => "生成に使用できる追跡済み変更がありません。",
+        L10nKey::ScmAiConfigure => "Git 設定で AI プロバイダーを選択してください。",
+        L10nKey::ScmAiMissingCodex => {
+            "Codex CLI をインストールしてログインし、AI 設定を行ってください。"
+        }
+        L10nKey::ScmAiOpenSettings => "AI 設定を開く",
+        L10nKey::ScmAiConflicts => "競合を解決してからコミットメッセージを生成してください。",
+        L10nKey::ScmAiReadFailed => "コミット状態を読み取れませんでした。",
+        L10nKey::AiCodexLoginRequired => {
+            "Codex が状態 {status} で終了しました。ローカル Codex CLI にログインしてから再試行してください。"
+        }
+        L10nKey::AiCodexConfigurationError => {
+            "Codex が状態 {status} で終了しました。モデルと推論強度を確認し、非対応のオプションの場合は更新してください。"
+        }
+        L10nKey::ScmAiMissingHead => "HEAD コミットのないリポジトリでは amend できません。",
         L10nKey::SettingsNoMatchesShort => "一致なし",
         L10nKey::SettingsModifiedTitle => "変更済み",
         L10nKey::SettingsMatchCount => "{count} 件",

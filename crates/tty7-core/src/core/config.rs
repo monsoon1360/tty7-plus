@@ -130,6 +130,8 @@ pub enum KeybindingOverride {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
+    pub ai: crate::core::ai::AiSettings,
+    pub git_ai: crate::core::ai::GitAiSettings,
     pub font_family: String,
     pub font_fallbacks: Vec<String>,
     pub font_family_bold: Option<String>,
@@ -784,6 +786,8 @@ pub fn platform_last_resort_fallbacks() -> &'static [&'static str] {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ai: Default::default(),
+            git_ai: Default::default(),
             font_family: "Hack".to_string(),
             font_fallbacks: default_font_fallbacks(),
             font_family_bold: None,
@@ -2451,8 +2455,9 @@ mod tests {
     fn fork_rejects_inherited_upstream_auto_update_preferences() {
         let defaults = Config::default();
         assert!(!defaults.check_for_updates && !defaults.auto_download_updates);
-        let mut inherited: Config = serde_json::from_str(
-            r#"{"check_for_updates":true,"auto_download_updates":true}"#).unwrap();
+        let mut inherited: Config =
+            serde_json::from_str(r#"{"check_for_updates":true,"auto_download_updates":true}"#)
+                .unwrap();
         inherited.sanitize();
         assert!(!inherited.check_for_updates && !inherited.auto_download_updates);
     }

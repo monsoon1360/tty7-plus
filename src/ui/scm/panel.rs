@@ -862,6 +862,16 @@ impl Tty7App {
         let input = self.scm_commit_input(repo, status, window, cx);
         let focused = input.read(cx).focus_handle(cx).is_focused(window);
         let sf = cx.global::<crate::ui::presets::Surfaces>().sidebar;
+        let generating = self.scm.generating.contains_key(repo);
+        let committing = self
+            .scm
+            .committing
+            .as_ref()
+            .is_some_and(|(key, _, _)| key == repo);
+        let unavailable =
+            super::generate::unavailable(status, self.scm.amend, generating, committing);
+        let off = cx.global::<crate::core::config::Config>().git_ai.provider
+            == crate::core::ai::GitAiProvider::Off;
         div()
             .key_context(COMMIT_KEY_CONTEXT)
             .flex_none()
@@ -896,6 +906,27 @@ impl Tty7App {
                     // it is the size whose `input_py` is zero — see the
                     // `MSG_*` constants.
                     .child(Input::new(&input).appearance(false).xsmall()),
+            )
+            .child(
+                h_flex().justify_end().pt(px(4.)).child(
+                    Button::new("scm-ai-generate")
+                        .ghost()
+                        .xsmall()
+                        .label(t(if generating {
+                            L10nKey::ScmAiGenerating
+                        } else {
+                            L10nKey::ScmAiGenerate
+                        }))
+                        .disabled(unavailable.is_some())
+                        .tooltip(t(unavailable.unwrap_or(if off {
+                            L10nKey::ScmAiConfigure
+                        } else {
+                            L10nKey::ScmAiGenerate
+                        })))
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            app.run_scm_action(ScmIntent::GenerateCommitMessage, window, cx);
+                        })),
+                ),
             )
             .into_any_element()
     }
@@ -3073,6 +3104,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn delayed_generation_updates_only_its_original_draft_and_respects_edits(
+        cx: &mut TestAppContext,
+    ) {
+        crate::core::config::pin_test_config_dir();
+        let (app, mut vcx) = harness(cx);
+        let (a, b) = (repo("/a"), repo("/b"));
+        let status_a = status_of_repo("/a", Vec::new());
+        let status_b = status_of_repo("/b", Vec::new());
+        app.update_in(&mut vcx, |app, window, cx| {
+            let input = app.scm_commit_input(&a, &status_a, window, cx);
+            input.update(cx, |input, cx| input.set_value("original", window, cx));
+            let token = app
+                .scm
+                .begin_generation(a.clone(), status_a.head.clone(), "original".into(), false)
+                .unwrap();
+            let input = app.scm_commit_input(&b, &status_b, window, cx);
+            input.update(cx, |input, cx| input.set_value("draft b", window, cx));
+            app.scm_land_generation(
+                a.clone(),
+                token,
+                status_a.head.clone(),
+                "generated a".into(),
+                false,
+                window,
+                cx,
+            );
+            assert_eq!(input.read(cx).value(), "draft b");
+            assert_eq!(app.scm.draft(&a), "generated a");
+            let input = app.scm_commit_input(&a, &status_a, window, cx);
+            assert_eq!(input.read(cx).value(), "generated a");
+            let token = app
+                .scm
+                .begin_generation(
+                    a.clone(),
+                    status_a.head.clone(),
+                    "generated a".into(),
+                    false,
+                )
+                .unwrap();
+            input.update(cx, |input, cx| input.set_value("user edit", window, cx));
+            app.scm_land_generation(
+                a.clone(),
+                token,
+                status_a.head.clone(),
+                "late result".into(),
+                false,
+                window,
+                cx,
+            );
+            assert_eq!(input.read(cx).value(), "user edit");
+            assert!(!app.scm.generating.contains_key(&a));
+            assert!(app.scm.committing.is_none());
+        });
+    }
+
+    #[gpui::test]
     fn a_rejected_commit_keeps_the_message_it_was_given(cx: &mut TestAppContext) {
         crate::core::config::pin_test_config_dir();
         let (app, mut vcx) = harness(cx);
@@ -3424,6 +3511,68 @@ mod render_idle_gpui_tests {
         assert!(!drawn(&mut vcx, src_ui));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[gpui::test]
+    fn cancelling_replacement_preserves_the_draft_and_disabled_provider_opens_settings(
+        cx: &mut TestAppContext,
+    ) {
+        let _serial = serial();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(fixture.path()).unwrap();
+        git(&root, &["init", "--quiet"]);
+        std::fs::write(root.join("tracked.txt"), "a readable staged change\n").unwrap();
+        git(&root, &["add", "tracked.txt"]);
+        let before = std::fs::read(root.join(".git/index")).unwrap();
+        let want = root.clone();
+        let (app, mut vcx, _pane) = scm_panel_on(cx, &root, move |app, cx| {
+            app.scm.repo.as_ref().is_some_and(|repo| repo.root == want)
+                && crate::terminal::git_data::status_of(cx, HostId::LOCAL, &want).is_some()
+        });
+        app.update_in(&mut vcx, |app, window, cx| {
+            cx.global_mut::<crate::core::config::Config>()
+                .git_ai
+                .provider = crate::core::ai::GitAiProvider::Deepseek;
+            let input = app.scm.commit_input.clone().unwrap();
+            input.update(cx, |input, cx| {
+                input.set_value("Merge branch 'topic'", window, cx)
+            });
+            app.run_scm_action(ScmIntent::GenerateCommitMessage, window, cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.has_pending_prompt());
+        vcx.simulate_prompt_answer(t(L10nKey::Cancel));
+        vcx.run_until_parked();
+        app.update_in(&mut vcx, |app, window, cx| {
+            assert_eq!(
+                app.scm.commit_input.as_ref().unwrap().read(cx).value(),
+                "Merge branch 'topic'"
+            );
+            assert!(app.scm.generating.is_empty());
+            assert_eq!(
+                app.scm.generation_token, 0,
+                "cancel must not dispatch a generation"
+            );
+            assert!(app.scm.committing.is_none());
+            cx.global_mut::<crate::core::config::Config>()
+                .git_ai
+                .provider = crate::core::ai::GitAiProvider::Off;
+            app.run_scm_action(ScmIntent::GenerateCommitMessage, window, cx);
+            assert!(app.active_settings().is_some_and(
+                |settings| settings.section == crate::ui::settings::SettingsSection::Git
+            ));
+            assert_eq!(app.scm.generation_token, 0);
+        });
+        assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), before);
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            !head.status.success(),
+            "generation must not create a commit"
+        );
     }
 }
 

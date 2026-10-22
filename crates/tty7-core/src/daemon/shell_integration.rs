@@ -5,6 +5,13 @@ const ZSH_INTEGRATION: &str = r#"
 # --- tty7 shell integration (zsh) ---
 if [[ -o interactive ]] && [[ -z "$TTY7_SHELL_INTEGRATION" ]]; then
   export TTY7_SHELL_INTEGRATION=1
+  if [[ -n "$TTY7_AI_LAUNCHER" ]]; then
+    if (( ${+aliases[codex]} || ${+functions[codex]} )); then
+      print -u2 'tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.'
+    else
+      function codex { "$TTY7_AI_LAUNCHER" --ai-run-codex -- "$@"; }
+    fi
+  fi
 
   # Per-pane history, when the app asked for it. This runs after the user's
   # .zshrc, which is the only reason it can work at all: $HISTFILE is theirs to
@@ -148,6 +155,15 @@ const FISH_INTEGRATION: &str = r#"
 # it installs once for a fresh top-level shell while an inherited `1` still blocks it.
 if status is-interactive; and test -z "$TTY7_SHELL_INTEGRATION"
   set -gx TTY7_SHELL_INTEGRATION 1
+  if test -n "$TTY7_AI_LAUNCHER"
+    if functions -q codex
+      echo 'tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.' >&2
+    else
+      function codex
+        "$TTY7_AI_LAUNCHER" --ai-run-codex -- $argv
+      end
+    end
+  end
 
   function __tty7_osc
     printf '\e]%s\a' $argv[1]
@@ -207,6 +223,13 @@ const BASH_INTEGRATION: &str = r#"
 # --- tty7 shell integration (bash) ---
 if [[ $- == *i* ]] && [[ -z "$TTY7_SHELL_INTEGRATION" ]]; then
   export TTY7_SHELL_INTEGRATION=1
+  if [[ -n "$TTY7_AI_LAUNCHER" ]]; then
+    if alias codex &>/dev/null || declare -F codex &>/dev/null; then
+      printf '%s\n' 'tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.' >&2
+    else
+      function codex { "$TTY7_AI_LAUNCHER" --ai-run-codex -- "$@"; }
+    fi
+  fi
 
   # Per-pane history — see the zsh block for why this can only be done here,
   # after the user's rc has decided where their history lives. bash loads the
@@ -507,6 +530,18 @@ const POWERSHELL_INTEGRATION: &str = r#"
 # --- tty7 shell integration (PowerShell) ---
 if (-not $env:TTY7_SHELL_INTEGRATION) {
   $env:TTY7_SHELL_INTEGRATION = '1'
+  if ($env:TTY7_AI_LAUNCHER) {
+    if (Test-Path Alias:codex) {
+      [Console]::Error.WriteLine('tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.')
+    } elseif (Test-Path Function:codex) {
+      [Console]::Error.WriteLine('tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.')
+    } else {
+      function global:codex {
+        & $env:TTY7_AI_LAUNCHER --ai-run-codex -- @args
+        $global:LASTEXITCODE = $LASTEXITCODE
+      }
+    }
+  }
 
   $global:__Tty7Esc = [char]0x1b
   $global:__Tty7Bel = [char]0x07
@@ -618,23 +653,36 @@ if (-not $env:TTY7_SHELL_INTEGRATION) {
 # --- end tty7 shell integration ---
 "#;
 
+// Defined before the user's top-level source: their alias/def wins naturally.
+// A top-level definition survives startup, unlike one in an `if` block.
+const NUSHELL_CODEX_WRAPPER: &str = r#"
+def --wrapped codex [...args] {
+  if (($env.TTY7_AI_LAUNCHER? | default "") != "") {
+    ^$env.TTY7_AI_LAUNCHER --ai-run-codex -- ...$args
+  } else {
+    ^codex ...$args
+  }
+}
+"#;
+const NUSHELL_CODEX_NOTICE: &str = r#"
+if (($env.TTY7_AI_LAUNCHER? | default "") != "") {
+  let wrapper = (try { view source codex } catch { "" })
+  if not ($wrapper | str contains '--ai-run-codex') {
+    print -e 'tty7: existing codex alias/function kept; use the menu or remove your wrapper to apply defaults.'
+  }
+}
+"#;
+
 const NUSHELL_INTEGRATION: &str = r#"
 # --- tty7 shell integration (nushell) ---
 # Guard on emptiness (`== ""`), not mere definedness, exactly like the other
 # shells: setup() resets the sentinel to an empty-but-exported value at each
 # spawn boundary, and a nested `nu` inherits the set `1` without re-installing.
+__TTY7_CODEX_PRELUDE__
+__TTY7_SOURCE_USER_CONFIG__
+__TTY7_CODEX_NOTICE__
 if (($env.TTY7_SHELL_INTEGRATION? | default "") == "") {
   $env.TTY7_SHELL_INTEGRATION = "1"
-
-  # tty7 restores the user's own config.nu at this placeholder — `source` is
-  # evaluated at parse time, so the wrapper can only name a file that provably
-  # exists; the Rust side resolves the path (the same resolution
-  # `$nu.default-config-dir` performs) and substitutes a literal, or a no-op
-  # line when there is no config.nu. The order is load-bearing: a config.nu
-  # conventionally ends with a wholesale `$env.config = {...}` that would
-  # clobber every hook added below, so the hooks must come after it.
-  __TTY7_SOURCE_USER_CONFIG__
-
   # Hooks live in `$env.config.hooks` as lists. Ensure the skeleton exists
   # before appending to it — a minimal config, or none at all, leaves it
   # missing, and a bare assignment would error instead of creating it.
@@ -911,11 +959,27 @@ fn setup_nushell_with(user_config: Option<&Path>) -> Option<Injection> {
 /// resolved and substituted here, and a machine without a config.nu gets a
 /// no-op line instead.
 fn nushell_config_script_with(user_config: Option<&Path>) -> String {
+    nushell_config_script_with_launcher(
+        user_config,
+        crate::core::ai::local_codex_launcher().is_some(),
+    )
+}
+
+fn nushell_config_script_with_launcher(user_config: Option<&Path>, local: bool) -> String {
     let source = match user_config {
         Some(path) => format!("source {}", nu_string_literal(&path.to_string_lossy())),
         None => "# no user config.nu to restore".to_string(),
     };
-    NUSHELL_INTEGRATION.replace("__TTY7_SOURCE_USER_CONFIG__", &source)
+    NUSHELL_INTEGRATION
+        .replace("__TTY7_SOURCE_USER_CONFIG__", &source)
+        .replace(
+            "__TTY7_CODEX_PRELUDE__",
+            if local { NUSHELL_CODEX_WRAPPER } else { "" },
+        )
+        .replace(
+            "__TTY7_CODEX_NOTICE__",
+            if local { NUSHELL_CODEX_NOTICE } else { "" },
+        )
 }
 
 /// Where nu would load its config.nu from. Only a file that exists comes
@@ -1125,6 +1189,7 @@ fn shell_quote(s: &str) -> String {
 fn wsl_exec_script() -> String {
     format!(
         concat!(
+            "unset TTY7_AI_LAUNCHER; ",
             r#"case "${{SHELL:-}}" in "#,
             r#"*/bash) [ -r "${{TTY7_RC:-}}" ] && exec "$SHELL" --rcfile "$TTY7_RC" -i; "#,
             r#"exec "$SHELL" -l ;; "#,
@@ -2296,6 +2361,220 @@ fi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Execute the real startup fragments without reading a user's dotfiles.
+    /// The probe is only an argv sink, never a substitute completion provider.
+    #[cfg(unix)]
+    #[test]
+    fn local_codex_wrappers_forward_empty_and_awkward_args_and_exit_status() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("argv probe");
+        let recorded = dir.path().join("argv");
+        std::fs::write(
+            &probe,
+            "#!/bin/sh\nprintf '%s\\000' \"$@\" > \"$TTY7_ARGV_PROBE\"\nexit 23\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::hard_link(&probe, dir.path().join("codex")).unwrap();
+        let path = std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        for local in [true, false] {
+            let nu = nushell_config_script_with_launcher(None, local);
+            for (program, flags, integration, call, exit) in [
+                (
+                    "bash",
+                    vec!["--noprofile", "--norc", "-i", "-c"],
+                    BASH_INTEGRATION,
+                    "codex '' 'a b' '--help' '--daemon' '--config-dir'",
+                    "exit $?",
+                ),
+                (
+                    "zsh",
+                    vec!["-f", "-i", "-c"],
+                    ZSH_INTEGRATION,
+                    "codex '' 'a b' '--help' '--daemon' '--config-dir'",
+                    "exit $?",
+                ),
+                (
+                    "fish",
+                    vec!["--no-config", "--interactive", "--command"],
+                    FISH_INTEGRATION,
+                    "codex '' 'a b' '--help' '--daemon' '--config-dir'",
+                    "exit $status",
+                ),
+                (
+                    "pwsh",
+                    vec!["-NoLogo", "-NoProfile", "-Command"],
+                    POWERSHELL_INTEGRATION,
+                    "codex '' 'a b' '--help' '--daemon' '--config-dir'",
+                    "exit $LASTEXITCODE",
+                ),
+                (
+                    "nu",
+                    vec!["--no-config-file", "--commands"],
+                    nu.as_str(),
+                    "codex '' 'a b' '--help' '--daemon' '--config-dir'",
+                    "exit $env.LAST_EXIT_CODE",
+                ),
+            ] {
+                let mut command = Command::new(program);
+                command
+                    .args(flags)
+                    .arg(format!("{integration}\n{call}\n{exit}\n"))
+                    .env("HOME", dir.path())
+                    .env("ZDOTDIR", dir.path())
+                    .env("PATH", &path)
+                    .env("TTY7_SHELL_INTEGRATION", "")
+                    .env("TTY7_ARGV_PROBE", &recorded);
+                if local {
+                    command.env("TTY7_AI_LAUNCHER", &probe);
+                } else {
+                    command.env_remove("TTY7_AI_LAUNCHER");
+                }
+                let output = command.output();
+                let output = match output {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        eprintln!("skipping {program}: not installed");
+                        continue;
+                    }
+                    other => other.unwrap(),
+                };
+                assert_eq!(
+                    output.status.code(),
+                    Some(23),
+                    "{program}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let expected: &[u8] = if local {
+                    b"--ai-run-codex\0--\0\0a b\0--help\0--daemon\0--config-dir\0"
+                } else {
+                    b"\0a b\0--help\0--daemon\0--config-dir\0"
+                };
+                assert_eq!(
+                    std::fs::read(&recorded).unwrap(),
+                    expected,
+                    "{program}, local={local}"
+                );
+                std::fs::remove_file(&recorded).unwrap();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_codex_wrappers_keep_user_functions_and_warn_once() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let user_nu = dir.path().join("user.nu");
+        std::fs::write(
+            &user_nu,
+            "def --wrapped codex [...args] { print 'user-codex' }\n",
+        )
+        .unwrap();
+        let nu = nushell_config_script_with_launcher(Some(&user_nu), true);
+        let alias_nu = dir.path().join("alias.nu");
+        std::fs::write(&alias_nu, "alias codex = print 'user-codex'\n").unwrap();
+        let nu_alias = nushell_config_script_with_launcher(Some(&alias_nu), true);
+        for (program, flags, user, integration, call) in [
+            (
+                "bash",
+                vec!["--noprofile", "--norc", "-i", "-c"],
+                "function codex { printf 'user-codex\\n'; }",
+                BASH_INTEGRATION,
+                "codex",
+            ),
+            (
+                "bash",
+                vec!["--noprofile", "--norc", "-i", "-c"],
+                "alias codex='printf user-codex'",
+                BASH_INTEGRATION,
+                "eval codex",
+            ),
+            (
+                "zsh",
+                vec!["-f", "-i", "-c"],
+                "function codex { print user-codex; }",
+                ZSH_INTEGRATION,
+                "codex",
+            ),
+            (
+                "zsh",
+                vec!["-f", "-i", "-c"],
+                "alias codex='print user-codex'",
+                ZSH_INTEGRATION,
+                "eval codex",
+            ),
+            (
+                "fish",
+                vec!["--no-config", "--interactive", "--command"],
+                "function codex; echo user-codex; end",
+                FISH_INTEGRATION,
+                "codex",
+            ),
+            (
+                "pwsh",
+                vec!["-NoLogo", "-NoProfile", "-Command"],
+                "function global:codex { 'user-codex' }",
+                POWERSHELL_INTEGRATION,
+                "codex",
+            ),
+            (
+                "pwsh",
+                vec!["-NoLogo", "-NoProfile", "-Command"],
+                "function user_codex { 'user-codex' }; Set-Alias codex user_codex",
+                POWERSHELL_INTEGRATION,
+                "codex",
+            ),
+            (
+                "nu",
+                vec!["--no-config-file", "--commands"],
+                "",
+                nu.as_str(),
+                "codex",
+            ),
+            (
+                "nu",
+                vec!["--no-config-file", "--commands"],
+                "",
+                nu_alias.as_str(),
+                "codex",
+            ),
+        ] {
+            let output = Command::new(program)
+                .args(flags)
+                .arg(format!("{user}\n{integration}\n{call}\n"))
+                .env("HOME", dir.path())
+                .env("ZDOTDIR", dir.path())
+                .env("TTY7_SHELL_INTEGRATION", "")
+                .env("TTY7_AI_LAUNCHER", "/not/a/launcher")
+                .output();
+            let output = match output {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                other => other.unwrap(),
+            };
+            assert!(
+                output.status.success(),
+                "{program}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("user-codex"),
+                "{program}"
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr)
+                    .matches("existing codex alias/function kept")
+                    .count(),
+                1,
+                "{program}"
+            );
+        }
+    }
 
     #[test]
     fn edit_mode_detection_survives_rebound_escape_and_inputrc() {

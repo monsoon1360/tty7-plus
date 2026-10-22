@@ -3258,6 +3258,7 @@ impl Tty7App {
                 s.save_error = None;
             }
             self.reload_from_config(window, cx);
+            self.refresh_ai_controls(&[0, 1, 2, 3], window, cx);
         }
     }
 
@@ -7156,6 +7157,30 @@ impl Tty7App {
     ) {
         let defaults = Config::default();
         match title {
+            L10nKey::SettingsCodexModel => self.update_config(cx, |cfg| {
+                cfg.ai.codex.model = defaults.ai.codex.model.clone()
+            }),
+            L10nKey::SettingsCodexEffort => self.update_config(cx, |cfg| {
+                cfg.ai.codex.reasoning_effort = defaults.ai.codex.reasoning_effort
+            }),
+            L10nKey::SettingsDeepSeekUrl => self.update_config(cx, |cfg| {
+                cfg.ai.deepseek.base_url = defaults.ai.deepseek.base_url.clone()
+            }),
+            L10nKey::SettingsDeepSeekModel => self.update_config(cx, |cfg| {
+                cfg.ai.deepseek.model = defaults.ai.deepseek.model.clone()
+            }),
+            L10nKey::SettingsDeepSeekEffort => self.update_config(cx, |cfg| {
+                cfg.ai.deepseek.reasoning_effort = defaults.ai.deepseek.reasoning_effort
+            }),
+            L10nKey::SettingsGitProvider => {
+                self.update_config(cx, |cfg| cfg.git_ai.provider = defaults.git_ai.provider)
+            }
+            L10nKey::SettingsGitLanguage => {
+                self.update_config(cx, |cfg| cfg.git_ai.language = defaults.git_ai.language)
+            }
+            L10nKey::SettingsGitRules => self.update_config(cx, |cfg| {
+                cfg.git_ai.style_rules = defaults.git_ai.style_rules.clone()
+            }),
             L10nKey::SettingsDimInactivePanes => {
                 self.set_dim_inactive_panes(defaults.dim_inactive_panes, cx)
             }
@@ -7346,6 +7371,10 @@ impl Tty7App {
     ) {
         let mut subs = Vec::new();
         match title {
+            L10nKey::SettingsCodexModel => self.refresh_ai_controls(&[0], window, cx),
+            L10nKey::SettingsDeepSeekUrl => self.refresh_ai_controls(&[1], window, cx),
+            L10nKey::SettingsDeepSeekModel => self.refresh_ai_controls(&[2], window, cx),
+            L10nKey::SettingsGitRules => self.refresh_ai_controls(&[3], window, cx),
             L10nKey::SettingsProgram | L10nKey::SettingsArguments => {
                 let (program, args, _) = self.build_shell_inputs(&mut subs, window, cx);
                 if let Some(s) = self.active_settings_mut() {
@@ -7481,6 +7510,7 @@ impl Tty7App {
             self.build_shell_inputs(&mut subs, window, cx);
         let link_file_command_input = self.build_link_file_command_input(&mut subs, window, cx);
         let http_proxy_input = self.build_http_proxy_input(&mut subs, window, cx);
+        let ai = crate::ui::settings::ai::AiSettingsState::new(window, cx, &mut subs);
         // One query box for whichever popover is open — a theme list or a
         // font list — since only one is ever open at a time.
         // Shared by every searchable dropdown on the page, so the hint is the
@@ -7571,6 +7601,7 @@ impl Tty7App {
             wd_path_input,
             link_file_command_input,
             http_proxy_input,
+            ai,
             theme_editor: None,
             theme_draft: None,
             theme_draft_error: None,
@@ -7612,6 +7643,7 @@ impl Tty7App {
         }
         self.rebuild_theme_editor(window, cx);
         self.ensure_agent_hooks_loaded(cx);
+        self.ai_key_action(None, window, cx);
         cx.notify();
     }
 
@@ -7644,6 +7676,11 @@ impl Tty7App {
     }
 
     pub(crate) fn refresh_locale_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(s) = self.active_settings() {
+            s.ai.inputs[3].update(cx, |input, cx| {
+                input.set_placeholder(t(L10nKey::SettingsGitRulesPlaceholder), window, cx);
+            });
+        }
         self.sidebar_search.update(cx, |state, cx| {
             state.set_placeholder(t(L10nKey::SearchTabs), window, cx)
         });

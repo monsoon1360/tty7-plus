@@ -11,7 +11,7 @@ section something is in.
   <img src="/images/settings.webp" alt="tty7 Settings" />
 </Frame>
 
-## The seven sections
+## Sections
 
 <CardGroup cols={2}>
   <Card title="General" icon="sliders">
@@ -37,6 +37,17 @@ section something is in.
   <Card title="Integrations" icon="robot" href="/agents/status">
     AI agent hooks per machine and the tty7 command on PATH.
   </Card>
+  <Card title="AI" icon="robot" href="/agents/overview#local-codex-defaults">
+    Local Codex model and reasoning defaults; DeepSeek endpoint, API key,
+    model and reasoning effort.
+  </Card>
+  <Card title="Git" icon="code-branch" href="/git/source-control#ai-generated-drafts">
+    Commit-message AI provider, output language and multiline custom rules.
+    Generation creates an editable draft, never an automatic commit.
+  </Card>
+  <Card title="Pair Devices" icon="mobile" href="/remote/workspaces#android-remote-terminals">
+    Pair and revoke devices that can reach this computer's terminals.
+  </Card>
   <Card title="About" icon="circle-info" href="/reference/updates">
     Version and update checks, update preferences and proxy, the settings
     file, and the tty7 server.
@@ -56,7 +67,8 @@ do not have a generic reset.
 
 Ordinary controls save automatically. Text fields commit valid values on Enter
 or when focus leaves the field. Custom theme edits are previewed until you save;
-cancel restores the original theme. SSH hosts also use explicit saving.
+cancel restores the original theme. SSH hosts and AI API keys use explicit
+saving. Git custom rules save on blur; Enter inserts a newline.
 
 Recording a keyboard shortcut that another action already uses asks before
 taking it over: **Replace** moves the shortcut, **Cancel** leaves both as they
@@ -65,16 +77,22 @@ Leaving an edited form offers save, discard, or continue editing.
 
 ## The settings file
 
-Everything the Settings window writes goes to one file:
+Ordinary settings go to one file:
 
 | | |
 |---|---|
 | macOS / Linux | `~/.config/tty7/config.json` |
 | Windows | `%APPDATA%\tty7\config.json` |
 
-The one exception is your saved SSH hosts, which live beside it in
+Saved SSH hosts instead live beside it in
 `servers.json` — so `config.json` can be synced between machines without
 carrying your servers. [servers.json →](/reference/configuration#ssh)
+
+DeepSeek API keys live only in the OS keychain, under a configuration-directory
+identity. They are never written to `config.json` or filled back into the key
+input. **Save key** replaces the key; **Remove key** explicitly deletes it.
+Resetting ordinary settings does not delete it. Moving the configuration
+directory requires setting the key again.
 
 Set `TTY7_CONFIG_DIR` to point the whole directory — config, themes, state —
 somewhere else.

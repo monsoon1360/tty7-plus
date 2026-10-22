@@ -32,7 +32,9 @@ use crate::ui::i18n::{L10nKey, t, t_fmt, t_plural};
 use crate::ui::presets;
 
 mod agents;
+pub(crate) mod ai;
 mod editor;
+mod git;
 mod hosts;
 pub(crate) mod kit;
 mod pages;
@@ -202,19 +204,23 @@ pub(crate) enum SettingsSection {
     KeyboardMouse,
     Ssh,
     Agents,
+    Ai,
+    Git,
     PairDevices,
     Keybindings,
     About,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [SettingsSection; 8] = [
+    pub(crate) const ALL: [SettingsSection; 10] = [
         SettingsSection::General,
         SettingsSection::Appearance,
         SettingsSection::Terminal,
         SettingsSection::KeyboardMouse,
         SettingsSection::Ssh,
         SettingsSection::Agents,
+        SettingsSection::Ai,
+        SettingsSection::Git,
         SettingsSection::PairDevices,
         SettingsSection::About,
     ];
@@ -234,6 +240,8 @@ impl SettingsSection {
             Self::KeyboardMouse => L10nKey::SettingsNavInput,
             Self::Ssh => L10nKey::SettingsNavSsh,
             Self::Agents => L10nKey::SettingsNavAgents,
+            Self::Ai => L10nKey::SettingsNavAi,
+            Self::Git => L10nKey::SettingsNavGit,
             Self::PairDevices => L10nKey::SettingsNavPairDevices,
             Self::Keybindings => L10nKey::SettingsNavKeybindings,
             Self::About => L10nKey::SettingsNavAbout,
@@ -248,6 +256,8 @@ impl SettingsSection {
             Self::KeyboardMouse | Self::Keybindings => "icons/settings/keyboard.svg",
             Self::Ssh => "icons/settings/ssh.svg",
             Self::Agents => "icons/settings/integrations.svg",
+            Self::Ai => "icons/settings/integrations.svg",
+            Self::Git => "icons/git-branch.svg",
             Self::PairDevices => "icons/settings/machine-remote.svg",
             Self::About => "icons/settings/about.svg",
         }
@@ -261,6 +271,8 @@ impl SettingsSection {
             SettingsSection::KeyboardMouse => "settings:keyboard-mouse",
             SettingsSection::Ssh => "settings:ssh",
             SettingsSection::Agents => "settings:agents",
+            SettingsSection::Ai => "settings:ai",
+            SettingsSection::Git => "settings:git",
             SettingsSection::PairDevices => "settings:pair-devices",
             SettingsSection::Keybindings => "settings:keybindings",
             SettingsSection::About => "settings:about",
@@ -280,6 +292,51 @@ fn settings_search_entries() -> &'static [SearchEntry] {
     use L10nKey::*;
     use SettingsSection::*;
     &[
+        SearchEntry {
+            section: Ai,
+            title: SettingsCodexModel,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsCodexEffort,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsDeepSeekUrl,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsDeepSeekKey,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsDeepSeekModel,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsDeepSeekEffort,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Git,
+            title: SettingsGitProvider,
+            keywords: SettingsGitAiKeywords,
+        },
+        SearchEntry {
+            section: Git,
+            title: SettingsGitLanguage,
+            keywords: SettingsGitAiKeywords,
+        },
+        SearchEntry {
+            section: Git,
+            title: SettingsGitRules,
+            keywords: SettingsGitAiKeywords,
+        },
         SearchEntry {
             section: PairDevices,
             title: SettingsMobileEnabled,
@@ -842,6 +899,14 @@ pub(crate) const PROMPT_CURSOR_SHAPES: [PromptCursorStyle; 4] = [
 impl SearchEntry {
     fn config_key(&self) -> &'static str {
         match self.title {
+            L10nKey::SettingsCodexModel => "ai.codex.model",
+            L10nKey::SettingsCodexEffort => "ai.codex.reasoning_effort",
+            L10nKey::SettingsDeepSeekUrl => "ai.deepseek.base_url",
+            L10nKey::SettingsDeepSeekModel => "ai.deepseek.model",
+            L10nKey::SettingsDeepSeekEffort => "ai.deepseek.reasoning_effort",
+            L10nKey::SettingsGitProvider => "git_ai.provider",
+            L10nKey::SettingsGitLanguage => "git_ai.language",
+            L10nKey::SettingsGitRules => "git_ai.style_rules",
             L10nKey::SettingsDimInactivePanes => "dim_inactive_panes",
             L10nKey::SettingsAutoHideTitlebarButtons => "auto_hide_titlebar_buttons",
             L10nKey::SettingsCursorBlink => "cursor_blink",
@@ -918,6 +983,16 @@ impl SearchEntry {
     }
     fn description(&self) -> &'static str {
         match self.title {
+            L10nKey::SettingsCodexModel => t(L10nKey::SettingsCodexModelDesc),
+            L10nKey::SettingsCodexEffort | L10nKey::SettingsDeepSeekEffort => {
+                t(L10nKey::SettingsAiEffortDesc)
+            }
+            L10nKey::SettingsDeepSeekUrl => t(L10nKey::SettingsDeepSeekUrlDesc),
+            L10nKey::SettingsDeepSeekKey => t(L10nKey::SettingsDeepSeekKeyDesc),
+            L10nKey::SettingsDeepSeekModel => t(L10nKey::SettingsDeepSeekDesc),
+            L10nKey::SettingsGitProvider => t(L10nKey::SettingsGitAiDesc),
+            L10nKey::SettingsGitLanguage => t(L10nKey::SettingsGitLanguageDesc),
+            L10nKey::SettingsGitRules => t(L10nKey::SettingsGitRulesDesc),
             L10nKey::SettingsMobileEnabled => t(L10nKey::SettingsMobileEnabledDesc),
             L10nKey::SettingsMobileRelayUrl => t(L10nKey::SettingsMobileRelayUrlDesc),
             L10nKey::SettingsMobileTlsPin => t(L10nKey::SettingsMobileTlsPinDesc),
@@ -1014,6 +1089,20 @@ impl SearchEntry {
     fn modified(&self, cfg: &Config) -> bool {
         let defaults = Config::default();
         match self.title {
+            L10nKey::SettingsCodexModel => cfg.ai.codex.model != defaults.ai.codex.model,
+            L10nKey::SettingsCodexEffort => {
+                cfg.ai.codex.reasoning_effort != defaults.ai.codex.reasoning_effort
+            }
+            L10nKey::SettingsDeepSeekUrl => {
+                cfg.ai.deepseek.base_url != defaults.ai.deepseek.base_url
+            }
+            L10nKey::SettingsDeepSeekModel => cfg.ai.deepseek.model != defaults.ai.deepseek.model,
+            L10nKey::SettingsDeepSeekEffort => {
+                cfg.ai.deepseek.reasoning_effort != defaults.ai.deepseek.reasoning_effort
+            }
+            L10nKey::SettingsGitProvider => cfg.git_ai.provider != defaults.git_ai.provider,
+            L10nKey::SettingsGitLanguage => cfg.git_ai.language != defaults.git_ai.language,
+            L10nKey::SettingsGitRules => cfg.git_ai.style_rules != defaults.git_ai.style_rules,
             L10nKey::SettingsDimInactivePanes => {
                 cfg.dim_inactive_panes != defaults.dim_inactive_panes
             }
@@ -1281,6 +1370,7 @@ pub(crate) struct SettingsState {
     pub(crate) wd_path_input: Entity<InputState>,
     pub(crate) link_file_command_input: Entity<InputState>,
     pub(crate) http_proxy_input: Entity<InputState>,
+    pub(crate) ai: ai::AiSettingsState,
     pub(crate) theme_editor: Option<ThemeEditor>,
     pub(crate) theme_draft: Option<(presets::Theme, presets::Theme)>,
     pub(crate) theme_draft_error: Option<String>,
@@ -3782,7 +3872,7 @@ mod gpui_tests {
     use crate::ui::app::Tty7App;
     use gpui::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
 
-    fn harness(cx: &mut TestAppContext) -> (Entity<Tty7App>, VisualTestContext) {
+    pub(super) fn harness(cx: &mut TestAppContext) -> (Entity<Tty7App>, VisualTestContext) {
         crate::core::config::pin_test_config_dir();
         cx.executor().allow_parking();
         cx.update(|cx| {

@@ -582,8 +582,57 @@ fn handle_external_opens(urls: Vec<String>, cx: &mut App) {
     }
 }
 
+/// Internal terminal launcher: intentionally runs before tty7's flag scanner.
+fn run_codex_helper(args: &[std::ffi::OsString]) -> ! {
+    // The release executable is a GUI-subsystem binary; reconnect it to the
+    // terminal that invoked this internal mode before inheriting its handles.
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::AttachConsole(
+            windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        );
+    }
+    let run = || -> std::io::Result<i32> {
+        if args.first().map(std::ffi::OsString::as_os_str) != Some(std::ffi::OsStr::new("--")) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "expected -- before Codex arguments",
+            ));
+        }
+        let path = crate::core::config::config_path("config.json")
+            .ok_or_else(|| std::io::Error::other("configuration directory is unavailable"))?;
+        let defaults = crate::core::ai::read_codex_defaults(&path)?;
+        let original = &args[1..];
+        let mut command = std::process::Command::new("codex");
+        command
+            .args(crate::core::ai::codex_default_args(original, &defaults))
+            .args(original);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            Err(command.exec())
+        }
+        #[cfg(not(unix))]
+        {
+            command.status().map(|status| status.code().unwrap_or(1))
+        }
+    };
+    match run() {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("tty7: cannot launch Codex: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().map(std::ffi::OsString::as_os_str)
+        == Some(std::ffi::OsStr::new("--ai-run-codex"))
+    {
+        run_codex_helper(&args[1..]);
+    }
     {
         if args.first().map(std::ffi::OsString::as_os_str)
             == Some(std::ffi::OsStr::new("agent-hook"))
@@ -651,6 +700,10 @@ fn main() {
     }
 
     if daemon {
+        match std::env::current_exe() {
+            Ok(path) => crate::core::ai::register_local_codex_launcher(path),
+            Err(error) => log::warn!("cannot register local Codex launcher: {error}"),
+        }
         if let Err(e) = crate::daemon::server::run_daemon() {
             log::error!("daemon exited with error: {e}");
         }

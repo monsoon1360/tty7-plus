@@ -8,6 +8,7 @@
 // are gone. What is left is `status_rank`, which is the file tree's to use.
 pub(crate) mod actions;
 pub(crate) mod detail;
+mod generate;
 pub(crate) mod graph;
 pub(crate) mod panel;
 pub(crate) mod path;

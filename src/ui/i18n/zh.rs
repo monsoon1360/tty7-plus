@@ -2,6 +2,89 @@ use super::L10nKey;
 
 pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
     Some(match key {
+        L10nKey::SettingsNavAi => "AI",
+        L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsCodexModel => "Codex 默认模型",
+        L10nKey::SettingsCodexEffort => "Codex 推理强度",
+        L10nKey::SettingsDeepSeekUrl => "API 接口地址",
+        L10nKey::SettingsDeepSeekKey => "DeepSeek API Key",
+        L10nKey::SettingsDeepSeekModel => "DeepSeek 模型",
+        L10nKey::SettingsDeepSeekEffort => "DeepSeek 推理强度",
+        L10nKey::SettingsGitProvider => "AI 提供方",
+        L10nKey::SettingsGitLanguage => "提交语言",
+        L10nKey::SettingsGitRules => "自定义规则",
+        L10nKey::SettingsAiKeywords => {
+            "AI LLM DeepSeek Codex model reasoning API Key 模型 推理 密钥"
+        }
+        L10nKey::SettingsGitAiKeywords => "AI Git commit language rules 提交 语言 规则",
+        L10nKey::SettingsCodexModelDesc => "留空沿用 Codex 自身的模型配置，复用本机 CLI 登录。",
+        L10nKey::SettingsCodexScope => {
+            "仅本机生效，影响下一次 Codex 启动，不影响 SSH 或 WSL。旧终端需重新打开一次以加载 shell 集成。自定义 shell 参数会关闭手动命令注入，但菜单启动仍可应用默认值。保留已有别名和函数，不修改 Codex 全局配置。"
+        }
+        L10nKey::SettingsAiEffortDesc => "默认不覆盖提供方配置。不支持的档位会显示提供方错误。",
+        L10nKey::SettingsDeepSeekDesc => "API 配置独立于 CLI Agent。",
+        L10nKey::SettingsDeepSeekUrlDesc => {
+            "使用不含凭据、查询或片段的 HTTPS 地址。本地网关允许回环 HTTP。"
+        }
+        L10nKey::SettingsDeepSeekKeyDesc => {
+            "仅保存在系统密钥库中。移动配置目录后需重新设置 Key。重置普通设置不会删除密钥。"
+        }
+        L10nKey::SettingsGitAiTitle => "Git 提交信息",
+        L10nKey::SettingsGitAiDesc => {
+            "仅生成可编辑草稿，需手动提交。点击生成会把待提交 diff 发给所选服务，远程仓库也由本机调用服务。"
+        }
+        L10nKey::SettingsGitLanguageDesc => "生成提交信息使用的语言。",
+        L10nKey::SettingsGitRulesDesc => "可选规则；Enter 换行，离开输入框时保存。",
+        L10nKey::SettingsGitRulesPlaceholder => {
+            "例如：使用 Conventional Commits，标题不超过 72 个字符。"
+        }
+        L10nKey::SettingsGitLanguageApplication => "跟随应用",
+        L10nKey::SettingsAiDefault => "默认",
+        L10nKey::SettingsAiOff => "关闭",
+        L10nKey::SettingsAiSaveKey => "保存密钥",
+        L10nKey::SettingsAiRemoveKey => "移除密钥",
+        L10nKey::SettingsAiKeyConfigured => "已配置密钥",
+        L10nKey::SettingsAiKeyNotConfigured => "未配置密钥",
+        L10nKey::SettingsAiConfigDirError => "无法访问配置目录。请先成功保存配置，再管理密钥。",
+        L10nKey::AiGenerationOff => "请在 Git 设置中选择 AI 提供方。",
+        L10nKey::AiMissingKey => "请在 AI 设置中保存 DeepSeek API Key。",
+        L10nKey::AiCredentialError => "无法访问系统密钥库，请检查密钥库权限后重试。",
+        L10nKey::AiInvalidUrl => "请使用不含凭据、查询或片段的 HTTPS 地址，或回环 HTTP。",
+        L10nKey::AiNetworkError => "无法连接 AI 服务。",
+        L10nKey::AiRequestTimeout => "AI 生成超时。",
+        L10nKey::AiResponseTooLarge => "AI 响应超过大小限制。",
+        L10nKey::AiUnauthorized => "AI 服务认证失败，请检查 API Key。",
+        L10nKey::AiRateLimited => "AI 服务额度或速率受限，请稍后重试。",
+        L10nKey::AiHttpError => "AI 服务返回 HTTP {status}。",
+        L10nKey::AiInvalidResponse => "AI 服务返回了无效响应。",
+        L10nKey::AiEmptyResponse => "AI 服务未返回提交信息。",
+        L10nKey::AiCodexMissing => "请安装 Codex CLI 并登录，然后配置 AI 设置。",
+        L10nKey::AiCodexFailed => {
+            "Codex 已退出，状态 {detail}。请检查本机 CLI 登录及模型/推理强度；若不支持选项，请升级 Codex。"
+        }
+        L10nKey::AiCodexIoError => "无法与 Codex CLI 通信。",
+        L10nKey::ScmAiGenerate => "AI 生成",
+        L10nKey::ScmAiGenerating => "生成中…",
+        L10nKey::ScmAiReplaceQuestion => "替换现有提交信息？",
+        L10nKey::ScmAiReplace => "替换",
+        L10nKey::ScmAiChanged => "提交状态已更改，未覆盖草稿。",
+        L10nKey::ScmAiTruncated => "仅根据截断的变更生成。",
+        L10nKey::ScmAiFailed => "无法生成提交信息。",
+        L10nKey::ScmAiBusy => "此仓库正在生成提交信息。",
+        L10nKey::ScmAiCommitting => "正在提交。",
+        L10nKey::ScmAiNoChanges => "没有可用于生成的已跟踪变更。",
+        L10nKey::ScmAiConfigure => "请在 Git 设置中选择 AI 提供方。",
+        L10nKey::ScmAiMissingCodex => "请安装 Codex CLI 并登录，然后配置 AI 设置。",
+        L10nKey::ScmAiOpenSettings => "打开 AI 设置",
+        L10nKey::ScmAiConflicts => "请解决冲突后再生成提交信息。",
+        L10nKey::ScmAiReadFailed => "无法读取提交状态。",
+        L10nKey::AiCodexLoginRequired => {
+            "Codex 已退出，状态 {status}。请先在本机 Codex CLI 登录后重试。"
+        }
+        L10nKey::AiCodexConfigurationError => {
+            "Codex 已退出，状态 {status}。请检查模型和推理强度；若不支持选项，请升级 Codex。"
+        }
+        L10nKey::ScmAiMissingHead => "仓库没有 HEAD 提交，无法修订。",
         L10nKey::SettingsNoMatchesShort => "没有匹配项",
         L10nKey::SettingsModifiedTitle => "已修改",
         L10nKey::SettingsMatchCount => "{count} 个结果",

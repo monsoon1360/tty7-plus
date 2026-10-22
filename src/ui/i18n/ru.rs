@@ -2,6 +2,101 @@ use super::L10nKey;
 
 pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
     Some(match key {
+        L10nKey::SettingsNavAi => "AI",
+        L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsCodexModel => "Модель Codex по умолчанию",
+        L10nKey::SettingsCodexEffort => "Уровень рассуждений Codex",
+        L10nKey::SettingsDeepSeekUrl => "Базовый URL API",
+        L10nKey::SettingsDeepSeekKey => "DeepSeek API Key",
+        L10nKey::SettingsDeepSeekModel => "Модель DeepSeek",
+        L10nKey::SettingsDeepSeekEffort => "Уровень рассуждений DeepSeek",
+        L10nKey::SettingsGitProvider => "Провайдер AI",
+        L10nKey::SettingsGitLanguage => "Язык коммита",
+        L10nKey::SettingsGitRules => "Свои правила",
+        L10nKey::SettingsAiKeywords => {
+            "AI LLM DeepSeek Codex model reasoning API Key модель рассуждения 模型 推理"
+        }
+        L10nKey::SettingsGitAiKeywords => "AI Git commit language rules коммит язык правила",
+        L10nKey::SettingsCodexModelDesc => {
+            "Оставьте пустым, чтобы использовать модель из настроек Codex. Используется вход в локальный CLI."
+        }
+        L10nKey::SettingsCodexScope => {
+            "Только локально, со следующего запуска Codex; SSH и WSL не затрагиваются. Старые терминалы нужно один раз открыть заново для загрузки интеграции shell. Свои аргументы shell отключают подстановку в ручные команды, но запуск из меню использует настройки. Существующие псевдонимы и функции сохраняются. Глобальные настройки Codex не меняются."
+        }
+        L10nKey::SettingsAiEffortDesc => {
+            "По умолчанию настройки провайдера не переопределяются. Неподдерживаемый уровень вернёт ошибку провайдера."
+        }
+        L10nKey::SettingsDeepSeekDesc => "Настройки API независимы от CLI-агентов.",
+        L10nKey::SettingsDeepSeekUrlDesc => {
+            "HTTPS без учётных данных, запроса и фрагмента. Для локальных шлюзов разрешён HTTP на loopback."
+        }
+        L10nKey::SettingsDeepSeekKeyDesc => {
+            "Хранится только в системном хранилище ключей. После перемещения каталога настроек ключ нужно задать заново. Сброс настроек не удаляет ключ."
+        }
+        L10nKey::SettingsGitAiTitle => "Сообщения коммитов Git",
+        L10nKey::SettingsGitAiDesc => {
+            "Создаётся только редактируемый черновик; коммит выполняется вручную. При генерации diff отправляется выбранному сервису. Для удалённых репозиториев сервис также вызывается с этого компьютера."
+        }
+        L10nKey::SettingsGitLanguageDesc => "Язык создаваемых сообщений коммитов.",
+        L10nKey::SettingsGitRulesDesc => {
+            "Необязательные инструкции. Enter добавляет строку; сохранение при потере фокуса."
+        }
+        L10nKey::SettingsGitRulesPlaceholder => {
+            "Например: используйте Conventional Commits и заголовок не длиннее 72 символов."
+        }
+        L10nKey::SettingsGitLanguageApplication => "Как в приложении",
+        L10nKey::SettingsAiDefault => "По умолчанию",
+        L10nKey::SettingsAiOff => "Выключено",
+        L10nKey::SettingsAiSaveKey => "Сохранить ключ",
+        L10nKey::SettingsAiRemoveKey => "Удалить ключ",
+        L10nKey::SettingsAiKeyConfigured => "Ключ настроен",
+        L10nKey::SettingsAiKeyNotConfigured => "Ключ не настроен",
+        L10nKey::SettingsAiConfigDirError => {
+            "Нет доступа к каталогу настроек. Сначала успешно сохраните настройки, затем управляйте ключом."
+        }
+        L10nKey::AiGenerationOff => "Выберите провайдера AI в настройках Git.",
+        L10nKey::AiMissingKey => "Сохраните DeepSeek API Key в настройках AI.",
+        L10nKey::AiCredentialError => {
+            "Нет доступа к системному хранилищу ключей. Проверьте разрешения и повторите попытку."
+        }
+        L10nKey::AiInvalidUrl => {
+            "Используйте HTTPS или loopback HTTP без учётных данных, запроса и фрагмента."
+        }
+        L10nKey::AiNetworkError => "Не удалось подключиться к сервису AI.",
+        L10nKey::AiRequestTimeout => "Истекло время генерации AI.",
+        L10nKey::AiResponseTooLarge => "Ответ AI превысил ограничение размера.",
+        L10nKey::AiUnauthorized => "Ошибка авторизации сервиса AI. Проверьте API Key.",
+        L10nKey::AiRateLimited => "Достигнут лимит запросов или квоты AI. Повторите позже.",
+        L10nKey::AiHttpError => "Сервис AI вернул HTTP {status}.",
+        L10nKey::AiInvalidResponse => "Сервис AI вернул некорректный ответ.",
+        L10nKey::AiEmptyResponse => "Сервис AI не вернул сообщение коммита.",
+        L10nKey::AiCodexMissing => "Установите Codex CLI, войдите в аккаунт и настройте AI.",
+        L10nKey::AiCodexFailed => {
+            "Codex завершился с кодом {detail}. Проверьте вход в локальный CLI, модель и уровень рассуждений; обновите Codex, если параметры не поддерживаются."
+        }
+        L10nKey::AiCodexIoError => "Не удалось связаться с Codex CLI.",
+        L10nKey::ScmAiGenerate => "Создать с AI",
+        L10nKey::ScmAiGenerating => "Генерация…",
+        L10nKey::ScmAiReplaceQuestion => "Заменить существующее сообщение коммита?",
+        L10nKey::ScmAiReplace => "Заменить",
+        L10nKey::ScmAiChanged => "Состояние коммита изменилось; черновик не перезаписан.",
+        L10nKey::ScmAiTruncated => "Создано только на основе сокращённых изменений.",
+        L10nKey::ScmAiFailed => "Не удалось создать сообщение коммита.",
+        L10nKey::ScmAiBusy => "Для этого репозитория уже создаётся сообщение.",
+        L10nKey::ScmAiCommitting => "Выполняется коммит.",
+        L10nKey::ScmAiNoChanges => "Нет отслеживаемых изменений для генерации.",
+        L10nKey::ScmAiConfigure => "Выберите провайдера AI в настройках Git.",
+        L10nKey::ScmAiMissingCodex => "Установите Codex CLI, войдите в аккаунт и настройте AI.",
+        L10nKey::ScmAiOpenSettings => "Открыть настройки AI",
+        L10nKey::ScmAiConflicts => "Разрешите конфликты перед генерацией сообщения коммита.",
+        L10nKey::ScmAiReadFailed => "Не удалось прочитать состояние коммита.",
+        L10nKey::AiCodexLoginRequired => {
+            "Codex завершился с кодом {status}. Войдите в аккаунт через локальный Codex CLI и повторите попытку."
+        }
+        L10nKey::AiCodexConfigurationError => {
+            "Codex завершился с кодом {status}. Проверьте модель и уровень рассуждений; обновите Codex, если параметры не поддерживаются."
+        }
+        L10nKey::ScmAiMissingHead => "Нельзя исправить коммит в репозитории без HEAD.",
         L10nKey::SettingsNoMatchesShort => "Нет совпадений",
         L10nKey::SettingsModifiedTitle => "Изменено",
         L10nKey::SettingsMatchCount => "Совпадений: {count}",

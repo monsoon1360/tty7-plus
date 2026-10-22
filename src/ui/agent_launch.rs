@@ -24,8 +24,113 @@ use crate::core::cli_agent::{CLIAgent, launch_program, program_on_path};
 use crate::core::config::{Config, ProfileUsage, unix_now};
 use crate::core::session::WorkspaceStore;
 use crate::ui::app::{SpawnAs, SpawnWhere, Tty7App, join_shell_args};
+use crate::ui::host_ops::HostId;
 use crate::ui::i18n::{L10nKey, t_fmt};
 use crate::ui::pane::PaneSlot;
+
+/// A new local pane uses the configured shell, or the local login shell.
+pub(crate) fn local_launch_shell(cx: &App) -> String {
+    cx.global::<Config>()
+        .shell
+        .as_ref()
+        .filter(|shell| !shell.program.trim().is_empty())
+        .map(|shell| shell.program.clone())
+        .unwrap_or_else(crate::core::shells::login_shell)
+}
+
+pub(crate) fn configured_launch_line(
+    agent: CLIAgent,
+    host: HostId,
+    shell_program: Option<&str>,
+    cx: &App,
+) -> String {
+    let config = cx.global::<Config>();
+    configured_codex_line(
+        agent,
+        host.is_local(),
+        shell_program,
+        agent.launch_command(&config.agent_launch),
+        &config.ai.codex,
+    )
+}
+
+/// Never reinterpret shell programs as argv. In particular, expansions and
+/// operators remain user-authored launch configuration, not quoted literals.
+fn single_argv_line(line: &str) -> bool {
+    let mut quote = None;
+    for c in line.chars() {
+        match (quote, c) {
+            (Some(q), c) if q == c => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (Some('\''), _) => {}
+            (_, '$' | '`' | '\n' | '\r') => return false,
+            (
+                None,
+                ';' | '&' | '|' | '<' | '>' | '(' | ')' | '{' | '}' | '#' | '\\' | '*' | '?' | '['
+                | ']',
+            ) => return false,
+            _ => {}
+        }
+    }
+    quote.is_none()
+}
+
+fn configured_codex_line(
+    agent: CLIAgent,
+    local: bool,
+    shell_program: Option<&str>,
+    line: String,
+    defaults: &crate::core::ai::CodexSettings,
+) -> String {
+    use crate::core::shell_quote::{Quoting, quote_for_shell, quoting_for};
+    let shell = shell_program.unwrap_or("");
+    let shell_base = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    if agent != CLIAgent::Codex
+        || !local
+        || shell_base.eq_ignore_ascii_case("wsl")
+        || shell_base.eq_ignore_ascii_case("wsl.exe")
+        || !single_argv_line(&line)
+    {
+        return line;
+    }
+    let Ok(argv) = crate::ui::app::split_shell_args(&line) else {
+        return line;
+    };
+    let Some(program) = argv.first() else {
+        return line;
+    };
+    let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    if !base.eq_ignore_ascii_case("codex") && !base.eq_ignore_ascii_case("codex.exe") {
+        return line;
+    }
+    let args: Vec<_> = argv[1..].iter().map(std::ffi::OsString::from).collect();
+    let missing = crate::core::ai::codex_default_args(&args, defaults);
+    if missing.is_empty() {
+        return line;
+    }
+    let mut words = Vec::with_capacity(argv.len() + missing.len());
+    words.push(quote_for_shell(program, shell_program));
+    words.extend(
+        missing
+            .iter()
+            .map(|arg| quote_for_shell(&arg.to_string_lossy(), shell_program)),
+    );
+    words.extend(
+        argv[1..]
+            .iter()
+            .map(|arg| quote_for_shell(arg, shell_program)),
+    );
+    let line = words.join(" ");
+    if quoting_for(shell_program) == Quoting::PowerShell {
+        format!("& {line}")
+    } else if (shell_base.eq_ignore_ascii_case("nu") || shell_base.eq_ignore_ascii_case("nu.exe"))
+        && words[0].starts_with(['\'', '"'])
+    {
+        format!("^{line}")
+    } else {
+        line
+    }
+}
 
 /// How the keymap spells "launch this agent": `LaunchAgent:claude`.
 const LAUNCH_ACTION_PREFIX: &str = "LaunchAgent:";
@@ -130,7 +235,7 @@ pub(crate) fn resume_line(
     overrides: &HashMap<String, String>,
 ) -> Option<String> {
     let launch = agent.launch_command(overrides);
-    let argv: Vec<String> = launch.split_whitespace().map(str::to_string).collect();
+    let argv = crate::ui::app::split_shell_args(&launch).ok()?;
     agent.resume_command(session_id, Some(&argv))
 }
 
@@ -143,7 +248,7 @@ pub(crate) fn fork_line(
     overrides: &HashMap<String, String>,
 ) -> Option<String> {
     let launch = agent.launch_command(overrides);
-    let argv: Vec<String> = launch.split_whitespace().map(str::to_string).collect();
+    let argv = crate::ui::app::split_shell_args(&launch).ok()?;
     agent.fork_command(session_id, Some(&argv))
 }
 
@@ -214,7 +319,8 @@ impl Tty7App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let command = agent.launch_command(&cx.global::<Config>().agent_launch);
+        let shell = local_launch_shell(cx);
+        let command = configured_launch_line(agent, self.spawn_host(cx), Some(&shell), cx);
         let slot = match at {
             SpawnWhere::NewTab => {
                 let cwd = self.tabs.get(self.active).and_then(|t| {
@@ -278,6 +384,14 @@ impl Tty7App {
             );
             return;
         };
+        let shell = local_launch_shell(cx);
+        let command = configured_codex_line(
+            agent,
+            self.spawn_host(cx).is_local(),
+            Some(&shell),
+            command,
+            &cx.global::<Config>().ai.codex,
+        );
         // A directory that is gone cannot hold the session either; say so
         // rather than resume into a history the agent will not find. Only
         // asked of this machine: a remote session's directory is not here.
@@ -398,6 +512,75 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
     const DAY: u64 = 86_400;
+
+    #[test]
+    fn codex_menu_defaults_preserve_explicit_flags_and_shell_scripts() {
+        use crate::core::ai::{CodexReasoningEffort, CodexSettings};
+        let defaults = CodexSettings {
+            model: "model with spaces".into(),
+            reasoning_effort: Some(CodexReasoningEffort::High),
+        };
+        let compose = |local, shell, line: &str| {
+            configured_codex_line(
+                CLIAgent::Codex,
+                local,
+                Some(shell),
+                line.to_string(),
+                &defaults,
+            )
+        };
+        let line = compose(true, "bash", "codex resume session --model explicit");
+        assert_eq!(
+            crate::ui::app::split_shell_args(&line).unwrap(),
+            argv(&[
+                "codex",
+                "-c",
+                "model_reasoning_effort=high",
+                "resume",
+                "session",
+                "--model",
+                "explicit"
+            ])
+        );
+        let line = compose(
+            true,
+            "bash",
+            "codex fork session -c model_reasoning_effort=low",
+        );
+        assert_eq!(
+            crate::ui::app::split_shell_args(&line).unwrap(),
+            argv(&[
+                "codex",
+                "--model",
+                "model with spaces",
+                "fork",
+                "session",
+                "-c",
+                "model_reasoning_effort=low"
+            ])
+        );
+        for script in [
+            "codex && echo done",
+            "codex; echo done",
+            "codex | cat",
+            "codex >log",
+            "my-codex",
+            "env codex",
+            "codex \"$MODEL\"",
+            "codex $(echo hi)",
+            "codex `echo hi`",
+        ] {
+            assert_eq!(compose(true, "bash", script), script);
+        }
+        assert_eq!(compose(false, "bash", "codex"), "codex");
+        assert_eq!(compose(true, "wsl.exe", "codex"), "codex");
+        assert_eq!(compose(true, "bash", "codex --help"), "codex --help");
+        let line = compose(true, "pwsh", "'C:\\Program Files\\codex.exe'");
+        assert_eq!(
+            line,
+            "& 'C:\\Program Files\\codex.exe' --model 'model with spaces' -c 'model_reasoning_effort=high'"
+        );
+    }
 
     #[test]
     fn agents_are_offered_most_used_first() {

@@ -42,6 +42,29 @@ Write the message in the box at the top and pick a commit action:
 <kbd>⌘ ⏎</kbd> commits while the caret is in the message box. **Stash All** is
 there too.
 
+### AI-generated drafts
+
+Choose **DeepSeek API** or **Codex CLI** in **Settings → Git**, then use
+**AI generate** below the commit box. The default provider is **Off**.
+Configure the endpoint, model and reasoning effort in **Settings → AI**;
+DeepSeek's API key is saved separately in the operating system's keychain.
+Codex uses the installed CLI and its existing login, without changing its
+global configuration.
+
+Generation sends only the selected commit patch: staged changes when present,
+otherwise tracked unstaged changes. Untracked files are excluded. Amend uses
+the current HEAD patch plus staged increments, not unstaged edits. Conflicts
+must be resolved first. The context is capped at 24 KiB; a notification says
+when the result used truncated changes. Remote repositories are read through
+their host, but the selected provider is called on this computer.
+
+Language can follow the application or be selected explicitly. Custom rules
+are optional and support multiple lines; there is no fixed tone menu.
+Replacing a nonempty draft asks first. You can edit a generated message and
+must click the existing commit action yourself: generation never stages,
+commits or pushes. Results are discarded if the draft, HEAD or amend mode
+changes while the request is running.
+
 ## Branches and remotes
 
 The branch name at the top of the panel is a dropdown. It holds:

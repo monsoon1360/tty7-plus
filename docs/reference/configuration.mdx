@@ -188,6 +188,33 @@ angle brackets, and a tab:
 
 [Agent slugs →](/agents/overview#your-own-wrapper)
 
+## AI and Git commit drafts
+
+| Key | Type | Default | |
+|---|---|---|---|
+| `ai.codex.model` | string | `""` | Local Codex launch default; empty retains Codex's own model. |
+| `ai.codex.reasoning_effort` | enum or null | `null` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Null sends no override. |
+| `ai.deepseek.base_url` | string | `"https://api.deepseek.com"` | HTTPS without userinfo, query or fragment; loopback HTTP is allowed for local gateways. Requests append `/chat/completions`, including when the base ends in `/v1`. |
+| `ai.deepseek.model` | string | `"deepseek-flash"` | Free-form model name; empty input restores the default. |
+| `ai.deepseek.reasoning_effort` | enum or null | `null` | `off`, `low`, `high`, `max`. Null sends no thinking override; off disables thinking, the other values enable it. |
+| `git_ai.provider` | enum | `"off"` | `off`, `deepseek`, `codex_cli`. No automatic fallback. |
+| `git_ai.language` | enum | `"application"` | `application`, `en`, `zh`, `ja`, `ru`. Application language is resolved when generation starts. |
+| `git_ai.style_rules` | string | `""` | Optional multiline commit-message rules; no required style. |
+
+The DeepSeek API key is not a JSON setting. Manage it explicitly in
+**Settings → AI**; it is stored in the OS keychain for this configuration
+directory. The application does not copy Codex login tokens or edit
+`~/.codex/config.toml`.
+
+Codex generation runs a separate non-interactive invocation from an empty
+temporary directory, with a read-only sandbox and shell-tool/hooks disabled
+for that invocation. Existing custom providers and MCP configuration remain
+Codex's responsibility; this is not a promise that every external MCP service
+is constrained by an OS sandbox. Each request has a 120-second deadline.
+
+[Local launch scope and precedence →](/agents/overview#local-codex-defaults)
+· [Patch selection and draft workflow →](/git/source-control#ai-generated-drafts)
+
 ## SSH
 
 | Key | Type | Default | |

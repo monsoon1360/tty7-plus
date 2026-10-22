@@ -1,13 +1,12 @@
 ---
 title: "Coding agents"
-description: "What tty7 does around Claude Code, Codex, TraeCode, and 25 others — without ever wrapping them."
+description: "What tty7 adds around Claude Code, Codex, TraeCode, and 25 others."
 ---
 
-tty7 recognises coding agents running in a pane and builds around them. It does
-not wrap them, proxy them, or replace their interface: the agent you start is
-the agent you get, running in a normal PTY, with its own UI. tty7 adds the
-things a terminal is in a position to add — who is running where, what they
-need, and what changed.
+tty7 recognises coding agents running in a pane and builds around them without
+replacing their interface: the agent you start runs in a normal PTY with its
+own UI. tty7 adds status, sessions and Git context. Optional local Codex
+defaults use a thin launch wrapper, not a proxy for the agent's traffic.
 
 <Frame caption="Agent sessions across several repos, each with its avatar, status dot, branch, and diff">
   <img src="/images/agents-overview.webp" alt="Agent sessions in the tty7 sidebar" />
@@ -107,6 +106,29 @@ In a remote workspace tty7 cannot read the far machine's `PATH`, so it offers
 the agents it has already seen running there: start one by hand once and it
 joins the list. A wrapper named in your local `agent_launch` is only recognised
 over there if the remote `config.json` names it too.
+
+## Local Codex defaults
+
+**Settings → AI → Codex CLI** sets a default model and reasoning effort.
+An empty model and the default effort leave Codex's own configuration in charge.
+Explicit command-line model/effort options take precedence over tty7 defaults,
+which take precedence over Codex profile, project and user configuration.
+Unsupported models or effort levels remain CLI errors; tty7 does not choose
+another model or weaken permissions.
+
+The defaults apply to subsequent local menu launches, resume/fork and new
+worktree tasks, and to ordinary `codex` commands in integrated local shells.
+Reopen terminals created before this version once to load the shell wrapper;
+later saved defaults are read on each invocation. Custom shell arguments
+disable shell integration, so manual commands in those shells are unchanged,
+but direct Codex menu launches still receive defaults.
+
+User aliases/functions are preserved with a short notice. Custom wrapper or
+script entries in `agent_launch` are also left unchanged. `command codex` and
+absolute executable paths deliberately bypass the shell wrapper. SSH, remote
+Codex and WSL do not receive this computer's defaults. tty7 does not edit
+dotfiles or Codex's global configuration, and restored panes retain their
+saved explicit arguments.
 
 ## What you get for free
 

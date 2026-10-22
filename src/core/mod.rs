@@ -2,6 +2,7 @@ pub use tty7_core::core::*;
 
 pub mod actions;
 pub mod agent_prompt;
+pub(crate) mod ai_completion;
 #[cfg(target_os = "windows")]
 pub mod aumid;
 pub mod cli_install;

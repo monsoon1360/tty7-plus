@@ -498,6 +498,34 @@ pub(crate) fn text_field(
     field_box(input, focused, invalid, false, tk, cx)
 }
 
+pub(crate) fn multiline_text_field(
+    input: &gpui::Entity<InputState>,
+    focused: bool,
+    tk: &Tk,
+    cx: &App,
+) -> Div {
+    div()
+        .h(px(112.))
+        .px(px(10.))
+        .py(px(6.))
+        .rounded(px(6.))
+        .shadow(vec![ring(
+            if focused { tk.k45 } else { tk.k15 },
+            if focused { 1. } else { hairline() },
+            true,
+        )])
+        .font_family(Tk::mono(cx))
+        .text_color(tk.fg)
+        .child(
+            Input::new(input)
+                .appearance(false)
+                .px_0()
+                .py_0()
+                .h(px(100.))
+                .text_size(fs(12.)),
+        )
+}
+
 /// A [`text_field`] for a masked input, with the eye that reveals it.
 pub(crate) fn secret_field(
     input: &gpui::Entity<InputState>,

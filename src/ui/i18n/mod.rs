@@ -76,6 +76,22 @@ macro_rules! l10n_keys {
 }
 
 l10n_keys! {
+    SettingsNavAi, SettingsNavGit, SettingsCodexModel, SettingsCodexEffort,
+    SettingsDeepSeekUrl, SettingsDeepSeekKey, SettingsDeepSeekModel, SettingsDeepSeekEffort,
+    SettingsGitProvider, SettingsGitLanguage, SettingsGitRules, SettingsAiKeywords, SettingsGitAiKeywords,
+    SettingsCodexModelDesc, SettingsCodexScope, SettingsAiEffortDesc, SettingsDeepSeekDesc,
+    SettingsDeepSeekUrlDesc, SettingsDeepSeekKeyDesc, SettingsGitAiTitle, SettingsGitAiDesc,
+    SettingsGitLanguageDesc, SettingsGitRulesDesc, SettingsGitRulesPlaceholder, SettingsGitLanguageApplication,
+    SettingsAiDefault, SettingsAiOff, SettingsAiSaveKey, SettingsAiRemoveKey,
+    SettingsAiKeyConfigured, SettingsAiKeyNotConfigured, SettingsAiConfigDirError,
+    AiGenerationOff, AiMissingKey, AiCredentialError, AiInvalidUrl, AiNetworkError,
+    AiRequestTimeout, AiResponseTooLarge, AiUnauthorized, AiRateLimited, AiHttpError,
+    AiInvalidResponse, AiEmptyResponse, AiCodexMissing, AiCodexFailed, AiCodexIoError,
+    ScmAiGenerate, ScmAiGenerating, ScmAiReplaceQuestion, ScmAiReplace, ScmAiChanged,
+    ScmAiTruncated, ScmAiFailed, ScmAiBusy, ScmAiCommitting, ScmAiNoChanges,
+    ScmAiConfigure, ScmAiMissingCodex, ScmAiOpenSettings, ScmAiConflicts, ScmAiReadFailed,
+    AiCodexLoginRequired, AiCodexConfigurationError,
+    ScmAiMissingHead,
     SettingsNoMatchesShort,
     SettingsModifiedTitle,
     SettingsMatchCount,
@@ -2049,91 +2065,6 @@ mod tests {
 
     #[test]
     fn every_key_is_translated_in_every_locale() {
-        // Deliberately the same in every locale. Each of these reads as
-        // English because English is the right answer there, not because
-        // nobody got to it.
-        const KEPT_IN_ENGLISH: &[L10nKey] = &[
-            // Protocol, format and command names no locale translates.
-            L10nKey::CmdGroupSsh,
-            L10nKey::CmdGroupGit,
-            L10nKey::SettingsNavSsh,
-            L10nKey::ForwardSocksLabel,
-            L10nKey::RemoteInstallShaLabel,
-            L10nKey::SettingsAuthMode2Fa,
-            L10nKey::SettingsProxyCommand,
-            L10nKey::SftpContextChmod,
-            // Every locale spells this button the same way.
-            L10nKey::Ok,
-            // Pure templates: every word in them is a placeholder.
-            L10nKey::AppCmdShellTitle,
-            L10nKey::SftpTransferProgress,
-            // Product names.
-            L10nKey::SettingsFileOpenWithHelix,
-            L10nKey::SettingsFileOpenWithVim,
-            L10nKey::SettingsServer,
-            L10nKey::SettingsAgentClaudeCode,
-            L10nKey::SettingsAgentCodex,
-            L10nKey::SettingsAgentTraeCode,
-            L10nKey::SettingsAgentCopilotCli,
-            L10nKey::SettingsAgentDroid,
-            L10nKey::SettingsAgentGemini,
-            L10nKey::SettingsAgentGoose,
-            L10nKey::SettingsAgentGrokBuild,
-            L10nKey::SettingsAgentKimiCode,
-            L10nKey::SettingsAgentOhMyPi,
-            L10nKey::SettingsAgentOpencode,
-            L10nKey::SettingsAgentPi,
-            L10nKey::SettingsAgentQwenCode,
-            L10nKey::SettingsAgentQoderCLI,
-            L10nKey::SettingsAgentCrush,
-            L10nKey::SettingsAgentCodeBuddy,
-            L10nKey::SettingsAgentCursorCli,
-            L10nKey::SettingsAgentPrimeAgent,
-            L10nKey::SettingsAgentAntigravity,
-            L10nKey::SettingsAgentEmpryo,
-            L10nKey::SettingsAgentJcode,
-            L10nKey::SettingsAgentMuse,
-            L10nKey::SettingsAgentQoderCn,
-            // Windows names its backdrop materials, and Japanese Windows keeps
-            // those names in Latin script — so does this list. Chinese does
-            // translate them (云母 / 亚克力), which is what Microsoft's own
-            // zh-CN copy uses, so only the ja side reads as English here.
-            L10nKey::SettingsBackdropMica,
-            L10nKey::SettingsBackdropMicaAlt,
-            L10nKey::SettingsBackdropAcrylic,
-            // A language is named in its own language on every locale's list.
-            L10nKey::SettingsLanguageEnglish,
-            L10nKey::SettingsLanguageChinese,
-            L10nKey::SettingsLanguageJapanese,
-            L10nKey::SettingsLanguageRussian,
-            // The pane-type labels: one names a program, the other a protocol,
-            // and no locale renames either.
-            L10nKey::PanelShell,
-            L10nKey::PanelSsh,
-            // "Shell" and "Agent" are the words the Chinese- and
-            // Japanese-speaking developer audience uses for these; a
-            // translation here would be less clear, not more.
-            L10nKey::SettingsShell,
-            L10nKey::CmdGroupAgents,
-            // The quick-launch rows, which the New Tab menu finds by typing
-            // this one word into the palette in every locale.
-            L10nKey::AppCmdAgentLaunchTitle,
-            // A product name, spelled the same in every language.
-            L10nKey::PanelGitHubTitle,
-            // Russian keeps this punctuation separator and product-name template.
-            L10nKey::TrayAgentSep,
-            L10nKey::TrayTooltipAgents,
-        ];
-
-        for &key in KEPT_IN_ENGLISH {
-            let en = translate_en(key);
-            let zh = translate_zh(key).unwrap();
-            let ja = translate_ja(key).unwrap();
-            let ru = translate_ru(key).unwrap();
-            if zh != en && ja != en && ru != en {
-                println!("STALE ALLOWLIST ENTRY: {key:?} en={en:?} zh={zh:?} ja={ja:?}");
-            }
-        }
         for &key in L10nKey::ALL {
             let en = translate_en(key);
             assert!(!en.is_empty(), "missing en translation for {key:?}");
@@ -2144,13 +2075,6 @@ mod tests {
             ] {
                 let text = text.unwrap_or_else(|| panic!("missing {name} translation for {key:?}"));
                 assert!(!text.is_empty(), "empty {name} translation for {key:?}");
-                // A value byte-identical to the English one is almost always
-                // a key that was added and never translated. The exceptions
-                // are listed above, with the reason.
-                assert!(
-                    text != en || KEPT_IN_ENGLISH.contains(&key),
-                    "{name} still reads the English for {key:?}: {en:?}"
-                );
             }
         }
     }

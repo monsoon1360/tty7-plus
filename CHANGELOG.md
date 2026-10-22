@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AI and Git settings with editable commit drafts.** Configure DeepSeek API
+  credentials in the OS keychain or reuse the local Codex CLI login, choose a
+  commit language and optional multiline rules, and generate into the existing
+  SCM message box. Only the selected commit patch is sent, capped at 24 KiB;
+  generation never stages, commits or pushes, and late results cannot overwrite
+  changed drafts or disconnected repositories.
+- **Local Codex model and reasoning defaults.** Menu launches, resume/fork,
+  worktree tasks and integrated local shells share argument precedence without
+  editing Codex's global configuration. Explicit options win; SSH/remote Codex,
+  WSL and user-defined wrappers are left unchanged.
 - **Files can open in Helix or Vim.** Settings → General → Editor gains **File
   open method**: the built-in editor (the default), Helix or Vim. The choice
   covers files picked in the file tree, quick open and search results, and the

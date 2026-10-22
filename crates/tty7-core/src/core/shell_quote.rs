@@ -98,6 +98,25 @@ pub fn runs_or_list(shell_program: &str) -> bool {
 
 /// Quote `path` as a single argument for the shell the pane is running.
 pub fn quote_for_shell(path: &str, shell_program: Option<&str>) -> String {
+    // Nu does not concatenate adjacent quoted strings: POSIX's apostrophe
+    // seam is not one argument there. Keep the established quoting dialect
+    // API unchanged and spell a Nu literal at this final rendering boundary.
+    if shell_program.is_some_and(|program| base_name(program).eq_ignore_ascii_case("nu")) {
+        if !path.is_empty() && path.chars().all(is_bare) {
+            return path.to_string();
+        }
+        if !path.contains('\'') {
+            return format!("'{path}'");
+        }
+        let escaped = path
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('$', "\\$")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
+        return format!("\"{escaped}\"");
+    }
     quote_as(path, quoting_for(shell_program))
 }
 
@@ -181,6 +200,42 @@ pub fn unquote_word(word: &str, quoting: Quoting) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nushell_literals_round_trip_as_actual_arguments() {
+        let values = [
+            "",
+            "a b",
+            "it's here",
+            r#"C:\it's\$HOME\"quoted""#,
+            "line\nit's another",
+        ];
+        let args = values
+            .iter()
+            .map(|value| quote_for_shell(value, Some("nu")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let output = std::process::Command::new("nu")
+            .args(["--no-config-file", "--commands"])
+            .arg(format!(
+                "def collect [...args] {{ $args | to json --raw }}; collect {args}"
+            ))
+            .output();
+        let output = match output {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipping Nushell argv round-trip: nu is not installed");
+                return;
+            }
+            other => other.unwrap(),
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let actual: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(actual, values);
+    }
 
     #[test]
     fn only_shells_with_an_or_list_are_handed_one() {

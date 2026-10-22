@@ -207,9 +207,28 @@ impl Tty7App {
                 cx,
             );
         }
-        let agent = start
-            .agent
-            .map(|a| setup::agent_line(a, &start.task, &cx.global::<Config>().agent_launch));
+        let shell = crate::ui::agent_launch::local_launch_shell(cx);
+        let agent = start.agent.map(|agent| {
+            if host.is_local() && agent == crate::core::cli_agent::CLIAgent::Codex {
+                let mut line =
+                    crate::ui::agent_launch::configured_launch_line(agent, host, Some(&shell), cx);
+                if let Some(args) = (!start.task.trim().is_empty())
+                    .then(|| agent.prompt_args(start.task.trim()))
+                    .flatten()
+                {
+                    for arg in args {
+                        line.push(' ');
+                        line.push_str(&crate::core::shell_quote::quote_for_shell(
+                            &arg,
+                            Some(&shell),
+                        ));
+                    }
+                }
+                line
+            } else {
+                setup::agent_line(agent, &start.task, &cx.global::<Config>().agent_launch)
+            }
+        });
         let Some((script, env)) = setup else {
             let line = setup::launch_line(&wt.path, None, agent);
             self.open_worktree_tab(wt, line, window, cx);
