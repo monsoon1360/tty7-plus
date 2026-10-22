@@ -31,8 +31,9 @@
 > **tty7-plus is a community fork of [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7).**
 > It is not affiliated with the upstream project. Upstream's automatic updater is
 > disabled here, because an upstream package would replace the fork and discard its
-> changes. Prebuilt artifacts are published as prereleases; the macOS DMG is adhoc
-> signed and the Android APK is debug signed. See [Install](#install) and
+> changes. Prebuilt artifacts are published as prereleases; macOS packages are
+> adhoc signed, Windows and Linux packages are unsigned, and the Android APK is a
+> signed release build. See [Install](#install) and
 > [Upstream and maintenance](#upstream-and-maintenance).
 
 ## Why this fork
@@ -171,16 +172,24 @@ daemon, and remote workspaces run that daemon on another machine over SSH.
 
 The latest build is published on
 [**Releases**](https://github.com/monsoon1360/tty7-plus/releases). The current
-`v26.9.4` prerelease ships:
+`v26.9.4-plus.1` prerelease is built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml):
 
 | File | Platform | Notes |
 |---|---|---|
-| `tty7-26.9.4-macos-arm64.dmg` | macOS Apple Silicon | Adhoc signed, not notarized. First open with right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/tty7.app`. |
-| `tty7-plus-26.9.4-android-debug.apk` | Android 8.0+ | Debug signature, intended for testing. Uninstall a build signed with a different key first. |
+| `tty7-26.9.4-macos-arm64.dmg` · `.zip` | macOS Apple Silicon | Adhoc signed, not notarized. First open with right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/tty7.app`. |
+| `tty7-26.9.4-macos-x86_64.dmg` · `.zip` | macOS Intel | Same signature caveat. |
+| `tty7-26.9.4-windows-x86_64-setup.exe` · `.zip` | Windows x86-64 | Unsigned installer and portable archive. |
+| `tty7-26.9.4-linux-x86_64.AppImage` · `.tar.gz` | Linux x86-64 | Unsigned. The AppImage bundles its X11/Wayland runtime libraries. |
+| `tty7-plus-1.0.1-android-release.apk` | Android 8.0+ | Release build, signed with the tty7-plus release key. |
+| `tty7-relay-26.9.4-linux-x86_64-musl` · `-aarch64-musl` | Linux servers | Static relay binaries; recommended for deployment. |
+| `tty7-relay-26.9.4-linux-x86_64` | Linux x86-64 | glibc-linked relay for development. |
+| `tty7-relay-26.9.4-macos-arm64` · `-x86_64` · `-windows-x86_64.exe` | macOS / Windows | Relay development binaries. |
 | `SHA256SUMS.txt` | — | Verify with `shasum -a 256 -c SHA256SUMS.txt`. |
 
-There are no Windows, Linux, or Intel Mac artifacts in this prerelease. Build
-from source below, or use the packaging scripts for your platform.
+macOS packages are adhoc signed and will not pass Gatekeeper on another machine.
+Windows and Linux packages are unsigned. Every GitHub Actions run is preserved
+under [Actions](https://github.com/monsoon1360/tty7-plus/actions/workflows/release.yml).
 
 ### Desktop from source
 

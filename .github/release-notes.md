@@ -17,6 +17,7 @@ and Linux packages are unsigned. The Android package is a signed release build.
 | `tty7-plus-@ANDROID_VERSION@-android-release.apk` | Android 8.0+ | release 构建，使用 tty7-plus 发布密钥签名（SHA-256：`@ANDROID_CERT@`）。 |
 | `tty7-relay-@VERSION@-linux-x86_64-musl` | Linux x86-64 | 静态链接的 relay，可直接部署到服务器。 |
 | `tty7-relay-@VERSION@-linux-aarch64-musl` | Linux arm64 | 静态链接的 relay。 |
+| `tty7-relay-@VERSION@-linux-x86_64` | Linux x86-64 | 动态链接 glibc 的 relay；服务器部署优先使用 musl 版本。 |
 | `tty7-relay-@VERSION@-macos-arm64` | macOS Apple Silicon | relay 开发/测试用二进制。 |
 | `tty7-relay-@VERSION@-macos-x86_64` | macOS Intel | relay 开发/测试用二进制。 |
 | `tty7-relay-@VERSION@-windows-x86_64.exe` | Windows x86-64 | relay 开发/测试用二进制。 |
