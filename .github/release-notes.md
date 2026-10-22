@@ -65,4 +65,5 @@ shasum -a 256 -c SHA256SUMS.txt
 
 - macOS 包未使用 Developer ID 签名，也未公证；Gatekeeper 会拦截。
 - Windows 与 Linux 包未签名。
+- 如果安装过此前 debug 签名版本的 Android 包，请先卸载，再安装本次 release APK。
 - 本 release 由 GitHub Actions 构建；如果某个平台构建失败，该平台资产会缺失，请查看 Actions 日志。
