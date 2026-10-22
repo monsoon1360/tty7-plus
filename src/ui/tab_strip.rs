@@ -2002,7 +2002,12 @@ impl Tty7App {
         let sidebar =
             cx.global::<Config>().tab_bar_position == crate::core::config::TabBarPosition::Left;
         let move_targets = sidebar.then(|| {
-            let keys = this.sidebar_group_keys(cx);
+            let mut keys = this.sidebar_group_keys(cx);
+            for (i, key) in keys.iter_mut().enumerate() {
+                if this.is_external_editor_tab(i, cx) {
+                    *key = None;
+                }
+            }
             crate::ui::tab_sidebar::move_targets(&keys, &this.sidebar_groups, index)
         });
         let in_kept_group = this
@@ -2384,13 +2389,21 @@ impl Tty7App {
             self.tabs.len(),
             window.mouse_position(),
         );
-        let display: Vec<usize> = match &preview {
+        let mut display: Vec<usize> = match &preview {
             Some(p) => {
                 reorder::set_pending(&self.reorder, &Surface::Strip, p.order.clone());
                 p.order.clone()
             }
             None => (0..self.tabs.len()).collect(),
         };
+        let mut badge_pos = vec![usize::MAX; self.tabs.len()];
+        for (n, i) in (0..self.tabs.len())
+            .filter(|&i| !self.is_external_editor_tab(i, cx))
+            .enumerate()
+        {
+            badge_pos[i] = n;
+        }
+        display.retain(|&i| badge_pos[i] != usize::MAX);
         let display = visible_chips(&display, active, f32::from(chips_avail));
 
         for i in display {
@@ -2398,6 +2411,7 @@ impl Tty7App {
                 break;
             }
             let dragged = preview.as_ref().is_some_and(|p| p.from == i);
+            let badge_pos = badge_pos[i];
             let tab = &self.tabs[i];
             let is_active = i == active;
             let label = self.tab_label(tab, i, Some(window), cx);
@@ -2556,7 +2570,7 @@ impl Tty7App {
                     chip.child(self.phone_mark(("tab-phone", i), cx))
                 })
                 .child(label_region)
-                .when(show_badges && i < 9, |chip| {
+                .when(show_badges && badge_pos < 9, |chip| {
                     chip.child(
                         div()
                             .flex_shrink_0()
@@ -2571,10 +2585,10 @@ impl Tty7App {
                             } else {
                                 cx.theme().muted_foreground
                             })
-                            .child(tab_badge_label(i)),
+                            .child(tab_badge_label(badge_pos)),
                     )
                 })
-                .when(!(show_badges && i < 9), |chip| {
+                .when(!(show_badges && badge_pos < 9), |chip| {
                     let backing = if is_active {
                         cx.theme().secondary
                     } else {

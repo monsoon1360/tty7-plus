@@ -190,6 +190,8 @@ pub(crate) struct LocalFile {
 /// strip draws them, and which one is in front.
 pub(crate) struct TabCode {
     pub(crate) visible: bool,
+    /// A dedicated terminal session rendered in this document slot.
+    pub(crate) external: Option<TabId>,
     pub(crate) files: Vec<BufferId>,
     pub(crate) active: usize,
     pub(crate) roots: Vec<PathBuf>,
@@ -209,6 +211,7 @@ impl TabCode {
     pub(crate) fn new() -> Self {
         Self {
             visible: false,
+            external: None,
             files: Vec::new(),
             active: 0,
             roots: Vec::new(),
@@ -455,41 +458,12 @@ pub(crate) fn language_for_path(path: &Path) -> &'static str {
     }
 }
 
-/// The shell line that opens `path` in `mode`, quoted for the local shell.
-fn is_external_editor_program(program: &str) -> bool {
+/// Dedicated editor sessions, not shells in which a user happens to run Vim.
+pub(crate) fn is_external_editor_program(program: &str) -> bool {
     matches!(
         Path::new(program).file_name().and_then(|s| s.to_str()),
         Some("hx" | "helix" | "vim" | "nvim")
     )
-}
-
-pub(crate) fn external_editor_command(
-    mode: crate::core::config::FileOpenWith,
-    path: &Path,
-    line: Option<u32>,
-    column: Option<u32>,
-) -> String {
-    use crate::core::config::FileOpenWith;
-    match mode {
-        FileOpenWith::Helix => {
-            let spec = match line {
-                Some(line) => format!("{}:{}:{}", path.display(), line, column.unwrap_or(1)),
-                None => path.display().to_string(),
-            };
-            format!(
-                "hx {}",
-                crate::core::shell_quote::quote_for_shell(&spec, None)
-            )
-        }
-        FileOpenWith::Vim => {
-            let quoted = crate::core::shell_quote::quote_for_shell(&path.to_string_lossy(), None);
-            match line {
-                Some(line) => format!("vim +{line} {quoted}"),
-                None => format!("vim {quoted}"),
-            }
-        }
-        FileOpenWith::BuiltIn => String::new(),
-    }
 }
 
 fn external_editor_shell(
@@ -833,6 +807,30 @@ fn default_browser_bundle_id() -> Option<String> {
     let handler = unsafe { LSCopyDefaultHandlerForURLScheme(scheme.as_concrete_TypeRef()) };
     // A Copy function: the string is ours to release, which the wrapper does.
     (!handler.is_null()).then(|| unsafe { CFString::wrap_under_create_rule(handler) }.to_string())
+}
+
+/// Modal editor commands must not enter an IME composition. Select the
+/// user's last ASCII keyboard layout rather than hard-coding a US layout.
+fn select_editor_english_input() {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        use core_foundation::base::{CFRelease, CFTypeRef};
+        #[link(name = "Carbon", kind = "framework")]
+        unsafe extern "C" {
+            fn TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> CFTypeRef;
+            fn TISSelectInputSource(source: CFTypeRef) -> i32;
+        }
+        unsafe {
+            let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+            if !source.is_null() {
+                let status = TISSelectInputSource(source);
+                CFRelease(source);
+                if status != 0 {
+                    log::warn!("could not select ASCII editor input source: {status}");
+                }
+            }
+        }
+    }
 }
 
 /// The lines a selection covers, 1-based and inclusive. One that ends at the
@@ -1268,58 +1266,112 @@ impl Tty7App {
         let Some(tab) = self.tabs.get(index) else {
             return false;
         };
-        if self
-            .external_editor_tabs
-            .iter()
-            .any(|editor| editor.tab == tab.tree_id.get())
-        {
-            return true;
-        }
-        // Foreground facts survive a GUI restart, unlike the launch links.
-        // This also recognizes Helix tabs opened by the previous app build.
-        tab.pane.terminals().iter().any(|pane| {
-            let pane = pane.read(cx);
-            if pane
-                .shell_spec()
-                .is_some_and(|shell| is_external_editor_program(&shell.program))
-            {
-                return true;
-            }
-            if crate::core::cli_agent::launch_program(&pane.terminal.running_command())
-                .is_some_and(|program| is_external_editor_program(&program))
-            {
-                return true;
-            }
-            let host = pane.host_id();
-            crate::ui::machine_mirror::MachineMirrors::machine(cx, host)
-                .and_then(|machine| {
-                    machine
-                        .panes
-                        .iter()
-                        .find(|record| record.id == pane.pane_id)
-                })
-                .is_some_and(|record| is_external_editor_program(&record.title))
-        })
-    }
-
-    pub(crate) fn external_editor_terminal(&self, cx: &gpui::App) -> Option<usize> {
-        let active = self.tabs.get(self.active)?.tree_id.get();
         self.external_editor_tabs
             .iter()
-            .find(|editor| editor.tab == active)
-            .and_then(|editor| editor.terminal)
-            .and_then(|id| self.tab_index_of(id))
-            .filter(|index| !self.is_external_editor_tab(*index, cx))
-            .or_else(|| {
-                (0..self.active)
-                    .rev()
-                    .chain(self.active + 1..self.tabs.len())
-                    .find(|index| !self.is_external_editor_tab(*index, cx))
+            .any(|editor| editor.tab == tab.tree_id.get())
+            || tab.pane.terminals().iter().any(|pane| {
+                pane.read(cx)
+                    .shell_spec()
+                    .is_some_and(|shell| is_external_editor_program(&shell.program))
             })
     }
 
-    /// Opens a file the way the `file_open_with` setting asks. The built-in
-    /// editor is the fallback for remote hosts, which have no local `hx`/`vim`.
+    pub(crate) fn external_editor_index(&self) -> Option<usize> {
+        self.tab_index_of(self.tab_code()?.external?)
+    }
+
+    /// Spawning a pane can adopt the daemon's tab ID. Move document links
+    /// before the next frame checks whether their backing session exited.
+    pub(crate) fn editor_rekey_tab(&mut self, old: TabId, new: TabId, cx: &mut Context<Self>) {
+        if old == new {
+            return;
+        }
+        for tab in &mut self.tabs {
+            if let Some(code) = tab.code.as_mut()
+                && code.external == Some(old)
+            {
+                code.external = Some(new);
+            }
+        }
+        if self.editor.restored.remove(&old) {
+            self.editor.restored.insert(new);
+        }
+        self.editor.recorded.remove(&old);
+        if let Some(state) = editor_session::get(cx, old) {
+            editor_session::put(cx, new, state);
+        }
+        editor_session::remove(cx, old);
+        for editor in &mut self.external_editor_tabs {
+            let changed = editor.tab == old || editor.terminal == Some(old);
+            if editor.tab == old {
+                editor.tab = new;
+            }
+            if editor.terminal == Some(old) {
+                editor.terminal = Some(new);
+            }
+            if changed {
+                editor_session::put_external_editor(cx, editor.clone());
+            }
+        }
+    }
+
+    pub(crate) fn select_external_editor(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.tab_index_of(tab).is_none() {
+            return;
+        }
+        let Some(code) = self.tab_code_mut_or_init() else {
+            return;
+        };
+        code.external = Some(tab);
+        code.visible = true;
+        self.raise_code_overlay();
+        self.document_closing = None;
+        self.editor.bar = None;
+        self.focus_editor(window, cx);
+        select_editor_english_input();
+        // The file row's mouse-up and the newly mounted pane must settle
+        // before the editor becomes the keyboard target.
+        let owner = self.tabs[self.active].tree_id.get();
+        let app = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            let _ = app.update(cx, |app, cx| {
+                if app
+                    .tabs
+                    .get(app.active)
+                    .is_some_and(|active| active.tree_id.get() == owner)
+                    && app
+                        .tab_code()
+                        .is_some_and(|code| code.visible && code.external == Some(tab))
+                    && !app.document_closing_active()
+                {
+                    app.focus_editor(window, cx);
+                    select_editor_english_input();
+                }
+            });
+        });
+        window.refresh();
+        cx.notify();
+    }
+
+    pub(crate) fn close_external_editor(
+        &mut self,
+        tab: TabId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(index) = self.tab_index_of(tab) {
+            // Keep the existing running-process confirmation policy.
+            self.close_tab(index, window, cx);
+        }
+    }
+
+    /// Opens local modal editors in the same document slot as the built-in
+    /// editor. Their backing sessions never become the active terminal.
     pub(crate) fn open_file_preferred(
         &mut self,
         path: &Path,
@@ -1336,53 +1388,46 @@ impl Tty7App {
             self.open_file_in_editor_at(path, line, column, window, cx);
             return;
         }
-        let command = external_editor_command(mode, path, line, column);
-        // A file already open in its editor tab comes back rather than
-        // spawning a second one: the readers' repeat gesture is "show me that
-        // again", not "new tab".
-        let live: Vec<_> = self.tabs.iter().map(|tab| tab.tree_id.get()).collect();
-        self.external_editor_tabs
-            .retain(|editor| live.contains(&editor.tab));
+        let Some(owner) = self.tabs.get(self.active).map(|tab| tab.tree_id.get()) else {
+            return;
+        };
         if let Some(id) = self
             .external_editor_tabs
             .iter()
-            .find(|editor| editor.path == path)
+            .find(|editor| editor.path == path && self.tab_index_of(editor.tab).is_some())
             .map(|editor| editor.tab)
-            && let Some(ix) = self.tab_index_of(id)
         {
-            // The reader just asked for this file: its tab has to be on
-            // screen, even if the terminal area was hidden when it was last
-            // used.
-            self.terminal_visible = true;
-            self.activate(ix, window, cx);
+            self.select_external_editor(id, window, cx);
             return;
         }
-        let cwd = self.tabs.get(self.active).and_then(|tab| {
-            tab.pane
-                .focused_or_first(window, cx)
-                .and_then(|leaf| leaf.read(cx).spawnable_cwd())
-        });
-        let terminal = if self.is_external_editor_tab(self.active, cx) {
-            self.external_editor_terminal(cx)
-                .and_then(|index| self.tabs.get(index))
-                .map(|tab| tab.tree_id.get())
-        } else {
-            self.tabs.get(self.active).map(|tab| tab.tree_id.get())
-        };
+        let cwd = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.pane.focused_or_first(window, cx))
+            .and_then(|pane| pane.read(cx).spawnable_cwd());
+        let terminal_visible = self.terminal_visible;
         let shell = external_editor_shell(mode, path, line, column);
+        let maximized = self.maximized.clone();
         let Some(_slot) = self.new_tab_slot(cwd, Some(shell), window, cx) else {
-            log::warn!("no tab opened for {command:?}");
+            log::warn!("no editor opened for {:?}", path);
             return;
         };
-        if let Some(tab) = self.tabs.get(self.active) {
-            let editor = ExternalEditorTab {
-                path: path.to_path_buf(),
-                tab: tab.tree_id.get(),
-                terminal,
-            };
-            editor_session::put_external_editor(cx, editor.clone());
-            self.external_editor_tabs.push(editor);
-        }
+        let editor = ExternalEditorTab {
+            path: path.to_path_buf(),
+            tab: self.tabs[self.active].tree_id.get(),
+            terminal: Some(owner),
+        };
+        editor_session::put_external_editor(cx, editor.clone());
+        self.external_editor_tabs.push(editor.clone());
+        // new_tab_slot seats the session in the daemon tree. Restore the
+        // terminal selection before rendering either region.
+        self.active = self
+            .tab_index_of(owner)
+            .expect("the originating terminal still exists");
+        self.terminal_visible = terminal_visible;
+        self.maximized = maximized;
+        self.select_external_editor(editor.tab, window, cx);
+        self.save_session(cx);
     }
 
     /// [`Self::open_file_in_editor`] against an explicit host — the SFTP
@@ -1514,6 +1559,7 @@ impl Tty7App {
             return;
         }
         code.show(id);
+        code.external = None;
         code.visible = true;
         if tab_ix == self.active {
             self.editor.bar = None;
@@ -1718,35 +1764,6 @@ impl Tty7App {
     }
 
     pub(crate) fn toggle_code_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_external_editor_tab(self.active, cx) {
-            self.toggle_terminal_area(window, cx);
-            return;
-        }
-        if let Some(active) = self.tabs.get(self.active).map(|tab| tab.tree_id.get())
-            && cx.global::<crate::core::config::Config>().file_open_with
-                != crate::core::config::FileOpenWith::BuiltIn
-        {
-            let editor = self
-                .external_editor_tabs
-                .iter()
-                .rev()
-                .find(|editor| editor.terminal == Some(active))
-                .and_then(|editor| self.tab_index_of(editor.tab))
-                .or_else(|| {
-                    (cx.global::<crate::core::config::Config>().file_open_with
-                        != crate::core::config::FileOpenWith::BuiltIn)
-                        .then(|| {
-                            (0..self.tabs.len())
-                                .find(|index| self.is_external_editor_tab(*index, cx))
-                        })
-                        .flatten()
-                });
-            if let Some(index) = editor {
-                self.terminal_visible = true;
-                self.activate(index, window, cx);
-                return;
-            }
-        }
         // Ctrl+3 (or Esc) again while the panel is sliding away is the reader
         // asking for it back: the files are still there until the slide ends,
         // so this cancels the close rather than reopening over it.
@@ -1822,7 +1839,7 @@ impl Tty7App {
         code.visible = true;
         self.document_closing = None;
         self.file_tree_refresh_roots(window, cx);
-        if self.active_buffer().is_some() {
+        if self.external_editor_index().is_some() || self.active_buffer().is_some() {
             self.focus_editor(window, cx);
         } else {
             // With no file to show, the panel says "Open a file from the file
@@ -1838,20 +1855,6 @@ impl Tty7App {
         cx.notify();
     }
 
-    pub(crate) fn hide_code_panel(&mut self) {
-        if let Some(code) = self
-            .tabs
-            .get_mut(self.active)
-            .and_then(|tab| tab.code.as_mut())
-        {
-            code.visible = false;
-        }
-        self.document_closing = None;
-        self.editor.had_focus = None;
-        self.editor.bar = None;
-        self.file_tree.editing = None;
-    }
-
     fn raise_code_overlay(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.overlay_top = crate::ui::app::OverlayTop::Code;
@@ -1859,6 +1862,12 @@ impl Tty7App {
     }
 
     pub(crate) fn focus_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.external_editor_index() {
+            if let Some(target) = self.tabs[index].pane.focused_or_first_slot(window, cx) {
+                target.focus_handle(cx).focus(window, cx);
+            }
+            return;
+        }
         if let Some(f) = self.active_buffer() {
             f.input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -1878,6 +1887,7 @@ impl Tty7App {
             return;
         }
         code.active = pos;
+        code.external = None;
         self.editor.bar = None;
         self.focus_editor(window, cx);
         cx.notify();
@@ -2038,11 +2048,14 @@ impl Tty7App {
 
     /// Whether an editor exists to run [`Self::editor_dispatch`] on.
     pub(crate) fn editor_can_dispatch(&self) -> bool {
-        self.code_panel_visible() && self.active_buffer().is_some()
+        self.code_panel_visible()
+            && self.external_editor_index().is_none()
+            && self.active_buffer().is_some()
     }
 
     pub(crate) fn editor_has_focus(&self, window: &Window, cx: &Context<Self>) -> bool {
         self.code_panel_visible()
+            && self.external_editor_index().is_none()
             && self.active_buffer().is_some_and(|f| {
                 f.input
                     .read(cx)
@@ -2843,9 +2856,16 @@ impl Tty7App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.code_panel_visible()
+            && let Some(index) = self.external_editor_index()
+            && self.tabs[index].pane.focused_leaf(window, cx).is_some()
+        {
+            self.close_external_editor(self.tabs[index].tree_id.get(), window, cx);
+            return true;
+        }
         let empty = self
             .tab_code()
-            .is_some_and(|c| c.visible && c.files.is_empty());
+            .is_some_and(|c| c.visible && c.external.is_none() && c.files.is_empty());
         // Ctrl+3 on an empty panel hands the focus to the file tree, so from
         // there ⌘W is the empty panel's too.
         let tree = empty && self.file_tree.focus_handle.contains_focused(window, cx);
@@ -3247,6 +3267,63 @@ impl Tty7App {
     /// that exits, a tab dragged into another, a workspace switch, a server
     /// restart — because this sees all of them, including ones added later.
     pub(crate) fn editor_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Older sessions may restore with the editor's backing tab selected.
+        // Seat it in the document slot before anything is drawn.
+        if self.is_external_editor_tab(self.active, cx) {
+            let editor = self.tabs[self.active].tree_id.get();
+            let origin = self
+                .external_editor_tabs
+                .iter()
+                .find(|entry| entry.tab == editor)
+                .and_then(|entry| entry.terminal)
+                .and_then(|id| self.tab_index_of(id))
+                .filter(|&index| !self.is_external_editor_tab(index, cx))
+                .or_else(|| {
+                    (0..self.tabs.len()).find(|&index| !self.is_external_editor_tab(index, cx))
+                });
+            if let Some(index) = origin {
+                self.active = index;
+            } else if self.new_tab_slot(None, None, window, cx).is_none() {
+                return;
+            }
+            self.select_external_editor(editor, window, cx);
+        }
+        // Exiting :q or closing a backing session must not leave a blank
+        // document selected, nor change the terminal the user is working in.
+        for index in 0..self.tabs.len() {
+            let Some(selected) = self.tabs[index]
+                .code
+                .as_ref()
+                .and_then(|code| code.external)
+            else {
+                continue;
+            };
+            if self.tab_index_of(selected).is_some() {
+                continue;
+            }
+            let owner = self.tabs[index].tree_id.get();
+            let next = self
+                .external_editor_tabs
+                .iter()
+                .rev()
+                .find(|entry| {
+                    entry.terminal == Some(owner) && self.tab_index_of(entry.tab).is_some()
+                })
+                .map(|entry| entry.tab);
+            let code = self.tabs[index].code.as_mut().unwrap();
+            code.external = next;
+            if next.is_none() && code.files.is_empty() {
+                code.visible = false;
+            }
+            if index == self.active {
+                if self.code_panel_visible() {
+                    self.focus_editor(window, cx);
+                } else {
+                    self.terminal_visible = true;
+                    self.focus_active(window, cx);
+                }
+            }
+        }
         // A tab that left and came back under the same id — a server restart
         // rebuilds every tab that way — gets its files back like a relaunch.
         if self.editor.restored.len() > self.tabs.len() {
@@ -3312,12 +3389,21 @@ impl Tty7App {
         if !self.editor.restored.insert(tab_id) {
             return;
         }
-        if tab.code.as_deref().is_some_and(|c| !c.files.is_empty()) {
+        if tab
+            .code
+            .as_deref()
+            .is_some_and(|c| !c.files.is_empty() || c.external.is_some())
+        {
             return;
         }
         let Some(state) = editor_session::get(cx, tab_id) else {
             return;
         };
+        if let Some(external) = state.external.filter(|id| self.tab_index_of(*id).is_some()) {
+            let code = self.tab_code_mut_or_init().unwrap();
+            code.external = Some(external);
+            code.visible = state.visible;
+        }
         // The left group can be empty while the right is not: it held only
         // files that are not recorded (untitled, remote).
         if state.files.is_empty() && state.split.as_ref().is_none_or(|s| s.files.is_empty()) {
@@ -3448,6 +3534,7 @@ impl Tty7App {
                 files,
                 active,
                 visible: code.visible,
+                external: code.external,
                 split,
             };
             if self.editor.recorded.get(&tab_id) != Some(&state) {
@@ -3482,6 +3569,7 @@ impl Tty7App {
 
     /// A tab was closed for good: forget what it had open.
     pub(crate) fn editor_forget_tab(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        self.external_editor_tabs.retain(|editor| editor.tab != tab);
         self.editor.recorded.remove(&tab);
         self.editor.nav.forget_tab(tab);
         editor_session::remove(cx, tab);
@@ -3504,6 +3592,9 @@ impl Tty7App {
     ) -> Option<AnyElement> {
         if !self.code_panel_visible() {
             return None;
+        }
+        if self.external_editor_index().is_some() {
+            return self.render_external_editor(chrome, window, cx);
         }
         // The last file closed with the focus in it: keep the focus in the
         // panel, or gpui reports it lost and it falls back to the terminal.
@@ -3694,8 +3785,10 @@ impl Tty7App {
             crate::ui::tab_strip::RAIL_TILE_GLYPH,
         );
         let cap = self.editor_strip_cap(chrome, cx);
+        let external = self.external_editor_index().is_some();
         let (shown, hidden) = self
             .tab_code()
+            .filter(|_| !external)
             .map(|c| c.strip_split(cap))
             .unwrap_or_default();
         let active_id = self.tab_code().and_then(TabCode::active_id);
@@ -3711,7 +3804,9 @@ impl Tty7App {
                 Some((pos, f.label(), tip, Some(id) == active_id, f.dirty))
             })
             .collect();
-        let strip = if files.is_empty() {
+        let strip = if external {
+            self.render_external_editor_tabs(cx)
+        } else if files.is_empty() {
             div()
                 .min_w_0()
                 .px(px(8.))
@@ -3778,6 +3873,92 @@ impl Tty7App {
                     })),
                 ),
             )
+    }
+
+    fn render_external_editor_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let owner = self.tabs.get(self.active).map(|tab| tab.tree_id.get());
+        let selected = self.tab_code().and_then(|code| code.external);
+        h_flex()
+            .id("external-editor-file-tabs")
+            .min_w_0()
+            .gap(px(2.))
+            .overflow_x_scroll()
+            .children(
+                self.external_editor_tabs
+                    .iter()
+                    .filter(|editor| editor.terminal == owner || selected == Some(editor.tab))
+                    .filter(|editor| self.tab_index_of(editor.tab).is_some())
+                    .enumerate()
+                    .map(|(pos, editor)| {
+                        let id = editor.tab;
+                        let active = selected == Some(id);
+                        let name = editor
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        let tip = editor.path.display().to_string();
+                        let group: SharedString = format!("external-editor-file-tab-{pos}").into();
+                        div()
+                            .id(("external-editor-file-tab", pos))
+                            .role(gpui::Role::Tab)
+                            .aria_label(name.to_string())
+                            .aria_selected(active)
+                            .group(group.clone())
+                            .occlude()
+                            .flex_none()
+                            .min_w_0()
+                            .max_w(px(strip::CELL_MAX_W))
+                            .h(px(strip::CELL_H))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .pl(px(10.))
+                            .pr(px(6.))
+                            .rounded(px(strip::CELL_RADIUS))
+                            .text_size(gpui::rems(strip::CELL_TEXT))
+                            .text_color(cx.theme().muted_foreground)
+                            .when(active, |d| {
+                                d.font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(cx.theme().foreground)
+                                    .bg(cx.theme().sidebar_accent)
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_ellipsis()
+                                    .child(SharedString::from(name.into_owned())),
+                            )
+                            .child(
+                                div()
+                                    .id(("external-editor-file-close", pos))
+                                    .size(px(16.))
+                                    .flex_none()
+                                    .rounded(px(4.))
+                                    .when(!active, |d| d.invisible())
+                                    .group_hover(group, |d| d.visible())
+                                    .hover(|d| d.bg(cx.theme().muted))
+                                    .child(Icon::new(IconName::Close).xsmall())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_external_editor(id, window, cx);
+                                    })),
+                            )
+                            .tooltip(move |window, cx| {
+                                gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_external_editor(id, window, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Middle,
+                                cx.listener(move |this, _, window, cx| {
+                                    this.close_external_editor(id, window, cx);
+                                }),
+                            )
+                    }),
+            )
+            .into_any_element()
     }
 
     /// One file in the header's strip: its name, and a slot that shows the
@@ -4199,37 +4380,6 @@ impl Tty7App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn external_editor_commands_quote_paths_and_carry_the_line() {
-        use crate::core::config::FileOpenWith;
-        assert_eq!(
-            external_editor_command(
-                FileOpenWith::Helix,
-                Path::new("/tmp/a b.rs"),
-                Some(12),
-                Some(3)
-            ),
-            "hx '/tmp/a b.rs:12:3'"
-        );
-        assert_eq!(
-            external_editor_command(FileOpenWith::Helix, Path::new("/tmp/a.rs"), None, None),
-            "hx /tmp/a.rs"
-        );
-        assert_eq!(
-            external_editor_command(
-                FileOpenWith::Vim,
-                Path::new("/tmp/a b.rs"),
-                Some(12),
-                Some(3)
-            ),
-            "vim +12 '/tmp/a b.rs'"
-        );
-        assert_eq!(
-            external_editor_command(FileOpenWith::Vim, Path::new("a.rs"), None, None),
-            "vim a.rs"
-        );
-    }
 
     #[test]
     fn external_editors_spawn_as_the_recorded_program_with_literal_arguments() {

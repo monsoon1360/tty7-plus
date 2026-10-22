@@ -815,7 +815,9 @@ pub fn translate_en(key: L10nKey) -> &'static str {
             "Could not set tty7 as the default terminal: {error}"
         }
         L10nKey::SettingsVersion => "Version",
-        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus disables upstream updates to preserve this fork's changes",
+        L10nKey::SettingsUpstreamUpdatesDisabled => {
+            "tty7-plus disables upstream updates to preserve this fork's changes"
+        }
         L10nKey::SettingsUpdates => "Updates",
         L10nKey::SettingsUpdateAndRelaunch => "Update and relaunch",
         L10nKey::SettingsUpdateViewRelease => "View release",
@@ -1310,11 +1312,13 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::EditorProblemsMore => "…and {n} more",
         L10nKey::SettingsEditor => "Editor",
         L10nKey::SettingsDocumentLayout => "Document layout",
-        L10nKey::SettingsDocumentLayoutDesc => "Shared by all tabs and windows. Dock the built-in editor and diff view beside the terminal, or fill the window.",
+        L10nKey::SettingsDocumentLayoutDesc => {
+            "Shared by all tabs and windows. Dock the editor and diff view beside the terminal, or fill the window."
+        }
         L10nKey::SettingsSearchDocumentLayoutKeywords => "document layout global dock fill window",
         L10nKey::SettingsFileOpenWith => "File open method",
         L10nKey::SettingsFileOpenWithDesc => {
-            "Which editor opens a file picked in the file tree, quick open or search. Helix and Vim open in a new tab; remote files always use the built-in editor."
+            "Which editor opens a file picked in the file tree, quick open or search. Helix and Vim share the built-in editor's document area; remote files always use the built-in editor."
         }
         L10nKey::SettingsFileOpenWithHelix => "Helix",
         L10nKey::SettingsFileOpenWithVim => "Vim",

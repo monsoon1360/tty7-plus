@@ -12,11 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Files can open in Helix or Vim.** Settings → General → Editor gains **File
   open method**: the built-in editor (the default), Helix or Vim. The choice
   covers files picked in the file tree, quick open and search results, and the
-  external editors run in a new terminal tab — `hx path:line:column` or
-  `vim +line path`, so a search hit lands on its line. Files on a remote host
-  always open in the built-in editor, which is the only one that can read
-  them. Asking for a file that is already open in its editor tab switches to
-  that tab instead of opening a second one.
+  external editors run in the shared document region — `hx path:line:column`
+  or `vim +line path`, so a search hit lands on its line. Files on a remote
+  host always open in the built-in editor, which is the only one that can read
+  them. Asking for an already-open file selects its existing editor file tab.
 - **The Files panel can show dotfiles, and remembers the choice.** An eye in
   the panel's title bar — alongside the row menu's existing **Show Dotfiles**
   switch — lists dotfiles and dot-directories. The preference is saved to
@@ -89,7 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Helix/Vim return to the terminal with `Ctrl+2`.** External editor tabs remember their originating terminal; `Ctrl+3` returns to the editor. The only content area can no longer be hidden into a blank window.
+- **Helix and Vim share the built-in editor's region.** Opening a file focuses
+  the editor without adding a Terminal row to the sidebar or terminal switcher.
+  External editors use the same file tabs, Dock/Fill layouts and 140 ms
+  transitions; `Ctrl+2` focuses the original terminal and `Ctrl+3` toggles the
+  editor region without changing the selected terminal. macOS selects the last
+  ASCII keyboard layout when opening an external-editor file. Session ID
+  handoffs preserve document selection, and visible editor sessions continue
+  repainting independently of the terminal selection.
 - **Document layout is a global setting.** Settings → General → Editor → Document layout selects Dock beside terminal or Fill window for every tab and window, with persistence across relaunches.
 - **Terminal layout and region shortcuts after a local install.** The terminal
   column fills its animation wrapper vertically again. Hidden terminals and

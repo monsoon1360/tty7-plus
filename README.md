@@ -117,8 +117,11 @@ WebSocket relay you deploy yourself.
   **Settings → Keybindings** (or `keybindings` in `config.json`).
 - **External editors** — **Settings → General → Editor → File open method** can
   open local files in the built-in editor (default), Helix (`hx`), or Vim
-  (`vim`). Search hits pass a line and column; files on remote hosts always use
-  the built-in editor.
+  (`vim`) in the same document region, with shared file tabs, Dock/Fill layouts,
+  and 140 ms transitions. No extra terminal row appears in the sidebar. Opening
+  a file focuses its editor; on macOS, Helix/Vim also select the last ASCII
+  keyboard layout. Search hits pass a location; remote files always use the
+  built-in editor.
 - **Global document layout** — **Document layout** chooses **Dock beside
   terminal** or **Fill window** for every tab and window, and persists across
   relaunches.
@@ -349,7 +352,7 @@ changes these keys:
 |---|---|---|---|
 | `files_show_hidden` | bool | `false` | Show dotfiles and dot-directories in the Files panel. Persisted when toggled. |
 | `file_open_with` | `"built_in"`, `"helix"`, `"vim"` | `"built_in"` | Editor used for files picked in the tree, quick open, and search results. Remote files always use the built-in editor. |
-| `document_layout` | `"dock"`, `"fill"` | `"dock"` | Global layout for the built-in editor and diff view, shared by all tabs and windows. |
+| `document_layout` | `"dock"`, `"fill"` | `"dock"` | Global layout for the editor (built-in, Helix, or Vim) and diff view, shared by all tabs and windows. |
 | `check_for_updates` | bool | forced `false` | Retained for config compatibility; upstream update checks are disabled. |
 | `auto_download_updates` | bool | forced `false` | Retained for config compatibility; upstream downloads are disabled. |
 

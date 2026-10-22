@@ -1027,8 +1027,8 @@ pub struct Tty7App {
     /// user reopened in the meantime.
     pub(crate) document_closing: Option<(tty7_core::core::machine::TabId, u64)>,
     pub(crate) document_close_seq: u64,
-    /// Files `hx`/`vim` were opened on, with the tab each one got, so asking
-    /// for the same file twice activates its tab instead of spawning another.
+    /// Dedicated editor sessions, rendered as files in the document region
+    /// rather than exposed as workspace terminal tabs.
     pub(crate) external_editor_tabs: Vec<crate::ui::code_editor::ExternalEditorTab>,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) sidebar_scroll: gpui::ScrollHandle,
@@ -2231,7 +2231,7 @@ impl Tty7App {
                 diff_overlay: None,
                 code: None,
                 overlay_top: OverlayTop::default(),
-                    group: std::cell::Cell::new(st.group),
+                group: std::cell::Cell::new(st.group),
                 auto_group: std::cell::RefCell::new(st.last_auto),
                 // Reopened here, so it is this window's new tab: walking into
                 // a pinned folder files it there like any other.
@@ -3774,11 +3774,15 @@ impl Tty7App {
     }
 
     pub(crate) fn set_check_for_updates(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.update_config(cx, |cfg| cfg.check_for_updates = on && crate::core::update::UPDATES_ENABLED);
+        self.update_config(cx, |cfg| {
+            cfg.check_for_updates = on && crate::core::update::UPDATES_ENABLED
+        });
     }
 
     pub(crate) fn set_auto_download_updates(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.update_config(cx, |cfg| cfg.auto_download_updates = on && crate::core::update::UPDATES_ENABLED);
+        self.update_config(cx, |cfg| {
+            cfg.auto_download_updates = on && crate::core::update::UPDATES_ENABLED
+        });
     }
 
     /// Moves this installation to another release feed. See
@@ -3879,39 +3883,21 @@ impl Tty7App {
     /// Return from an editor to the terminal. A focused terminal can be hidden
     /// only while another document remains visible.
     pub(crate) fn toggle_terminal_area(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let from_external_editor = self.is_external_editor_tab(self.active, cx);
-        if from_external_editor {
-            self.terminal_visible = true;
-            if let Some(index) = self.external_editor_terminal(cx) {
-                self.activate(index, window, cx);
-            } else {
-                let cwd = self
-                    .tabs
-                    .get(self.active)
-                    .and_then(|tab| tab.pane.focused_or_first(window, cx))
-                    .and_then(|pane| pane.read(cx).spawnable_cwd());
-                self.new_tab_slot(cwd, None, window, cx);
-                cx.notify();
-                return;
-            }
-        }
         let document = self.document_front().is_some() && !self.document_closing_active();
         let covered = document && self.document_dock_px(window, cx).is_none();
         let terminal_focused = self
             .tabs
             .get(self.active)
             .is_some_and(|tab| tab.pane.focused_leaf(window, cx).is_some());
-        self.terminal_visible = from_external_editor
-            || !self.terminal_visible
-            || !terminal_focused
-            || !document
-            || covered;
+        self.terminal_visible = !self.terminal_visible || !terminal_focused || !document || covered;
         if covered {
             // Return to the terminal without changing the global layout or
             // discarding any editor buffers. Ctrl+3 reopens the document.
-            self.hide_code_panel();
             if let Some(tab) = self.tabs.get_mut(self.active) {
                 tab.diff_overlay = None;
+            }
+            if self.code_panel_visible() {
+                self.toggle_code_panel(window, cx);
             }
         }
         if self.terminal_visible {
@@ -4246,6 +4232,17 @@ impl Tty7App {
             return;
         }
         let was_focused = pending.read(cx).focus_handle.contains_focused(window, cx);
+        let tab_index = self
+            .tabs
+            .iter()
+            .position(|tab| {
+                tab.pane
+                    .leaves()
+                    .iter()
+                    .any(|leaf| leaf.entity_id() == slot_id)
+            })
+            .expect("the pending pane still belongs to a tab");
+        let old_tab_id = self.tabs[tab_index].tree_id.get();
         let restored = parts.restored;
         let view = build_terminal_view(parts, font_size, window, cx);
         let resume = (!restored)
@@ -4270,6 +4267,7 @@ impl Tty7App {
             self.focus_leaf(&slot, window, cx);
         }
         self.save_session(cx);
+        self.editor_rekey_tab(old_tab_id, self.tabs[tab_index].tree_id.get(), cx);
         cx.notify();
     }
 
@@ -4365,7 +4363,11 @@ impl Tty7App {
             log::warn!("no tab opened for {command:?}; not writing it to another pane");
             return;
         }
-        if let Some(terminal) = self.focused_leaf(window, cx) {
+        if let Some(terminal) = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.pane.focused_or_first(window, cx))
+        {
             terminal.read(cx).run_command_line(&command);
         }
     }
@@ -4374,7 +4376,11 @@ impl Tty7App {
     /// a cold LaunchServices request to one tab rather than creating the
     /// window's default shell and then a second shell for the requested item.
     pub(crate) fn run_in_active_terminal(&self, command: &str, window: &Window, cx: &App) {
-        if let Some(terminal) = self.focused_leaf(window, cx) {
+        if let Some(terminal) = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.pane.focused_or_first(window, cx))
+        {
             terminal.read(cx).run_command_line(command);
         }
     }
@@ -5262,21 +5268,26 @@ impl Tty7App {
         self.activate(index, window, cx);
     }
 
-    /// Declare to the pane registry which terminals are on screen this
-    /// frame: the active tab's, nobody else's. Stated per frame rather than
-    /// maintained at every tab operation, the way `scm_sync_watchers` is.
+    /// Declare the active terminal and the visible external document's panes.
+    /// Stated per frame rather than maintained at every tab operation, the
+    /// way `scm_sync_watchers` is.
     /// Entity ids only — reading the entities here would put them into the
     /// window's tracked set, which is exactly what the registry routes
     /// around.
     fn declare_displayed_panes(&self, cx: &App) {
         let active = self.active;
+        let editor = (self.document_front() == Some(OverlayTop::Code))
+            .then(|| self.external_editor_index())
+            .flatten();
         crate::terminal::view::declare_displayed(
             cx,
             self.tabs.iter().enumerate().flat_map(|(i, tab)| {
-                tab.pane
-                    .leaves()
-                    .into_iter()
-                    .filter_map(move |slot| Some((slot.terminal()?.entity_id(), i == active)))
+                tab.pane.leaves().into_iter().filter_map(move |slot| {
+                    Some((
+                        slot.terminal()?.entity_id(),
+                        i == active || Some(i) == editor,
+                    ))
+                })
             }),
         );
     }
@@ -6790,6 +6801,12 @@ impl Tty7App {
     }
 
     fn focused_leaf(&self, window: &Window, cx: &App) -> Option<Entity<TerminalView>> {
+        if self.code_panel_visible()
+            && let Some(index) = self.external_editor_index()
+            && let Some(pane) = self.tabs[index].pane.focused_leaf(window, cx)
+        {
+            return pane.terminal().cloned();
+        }
         self.tabs
             .get(self.active)
             .and_then(|t| t.pane.focused_or_first(window, cx))
@@ -9447,9 +9464,9 @@ impl Render for Tty7App {
         // pinned folder since the last frame is filed there on this one.
         self.settle_sidebar_groups(cx);
         self.touch_active_tab();
-        self.declare_displayed_panes(cx);
         self.scm_sync_watchers(window, cx);
         self.editor_sync(window, cx);
+        self.declare_displayed_panes(cx);
         // Keeps looking for new listening ports on the pane in front, panel
         // open or not — a port that appears while the panel is shut is exactly
         // the one worth forwarding unasked.
@@ -9555,23 +9572,21 @@ impl Render for Tty7App {
         } else {
             0.
         };
-        let right_w =
-            self.panel_anim
-                .width(PanelSlot::Details, right_open, right_target, window);
+        let right_w = self
+            .panel_anim
+            .width(PanelSlot::Details, right_open, right_target, window);
         let right_present = right_open || self.panel_anim.active(PanelSlot::Details);
 
         let body_w = (viewport_w - sidebar_w - right_w).max(0.);
 
-        // The docked column's steady width, or `None` when there is no
-        // document to draw — too narrow a window included, where the surface
-        // falls back to the filling overlay (which is not width-animated: it
-        // covers the workspace rather than splitting it).
+        // A narrow workspace uses the same eased document width as Fill;
+        // only a docked document takes width away from the terminal.
         let closing_document = self.document_closing_active();
         let dock_steady = (self.document_layout(cx) == crate::core::config::DocumentLayout::Dock
             && self.document_front().is_some())
         .then(|| document_column_px(body_w, self.document_ratio.get()))
         .flatten();
-        let document_open = dock_steady.is_some() && !closing_document;
+        let document_open = self.document_front().is_some() && !closing_document;
         let document_target = if !document_open {
             0.
         } else if terminal_open {
@@ -9583,24 +9598,24 @@ impl Render for Tty7App {
             self.panel_anim
                 .width(PanelSlot::Document, document_open, document_target, window);
 
-        let terminal_target = if terminal_open {
+        let terminal_target = if !terminal_open {
+            0.
+        } else if dock_steady.is_some() {
             (body_w - document_w).max(0.)
         } else {
-            0.
+            body_w
         };
-        let terminal_w = self.panel_anim.width(
-            PanelSlot::Terminal,
-            terminal_open,
-            terminal_target,
-            window,
-        );
-        if document_open && self.panel_anim.active(PanelSlot::Terminal) {
+        let terminal_w =
+            self.panel_anim
+                .width(PanelSlot::Terminal, terminal_open, terminal_target, window);
+        if dock_steady.is_some() && document_open && self.panel_anim.active(PanelSlot::Terminal) {
             // The terminal's slide owns the split for these 140ms: give the
             // document exactly the width the terminal gave up.
             document_w = (body_w - terminal_w).max(0.);
             self.panel_anim.set_drawn(PanelSlot::Document, document_w);
         }
-        let document_opening_or_closing = self.panel_anim.active(PanelSlot::Document);
+        let document_opening_or_closing =
+            dock_steady.is_some() && self.panel_anim.active(PanelSlot::Document);
         // The terminal lays itself out at a width that does not move during a
         // slide — its PTY size is read off the laid-out bounds, so animating
         // *it* would reflow the shell on every frame. The wrapper clips
@@ -9609,7 +9624,13 @@ impl Render for Tty7App {
             if document_opening_or_closing {
                 body_w
             } else {
-                (body_w - document_target).max(0.)
+                (body_w
+                    - if dock_steady.is_some() {
+                        document_target
+                    } else {
+                        0.
+                    })
+                .max(0.)
             }
         } else {
             self.panel_anim
@@ -9618,8 +9639,8 @@ impl Render for Tty7App {
                 .max(0.)
         };
         let terminal_present = terminal_open || self.panel_anim.active(PanelSlot::Terminal);
-        let document_present = dock_steady.is_some()
-            && (document_open || self.panel_anim.active(PanelSlot::Document));
+        let document_present =
+            dock_steady.is_some() && (document_open || self.panel_anim.active(PanelSlot::Document));
 
         let tab_landing = self.tab_landing(window, cx);
         let detach_caret = self.detach_caret(window, cx);
@@ -9769,45 +9790,64 @@ impl Render for Tty7App {
         // pair and starts choosing between them. Filling, nothing changes: both
         // are rendered, ordered by `overlay_top`, and the front one wins on
         // paint order as it always has.
-        let (overlays, document_column) =
-            if dock_steady.is_some() || self.panel_anim.active(PanelSlot::Document) {
-                (
-                    Vec::new(),
-                    document_present
-                        .then(|| {
-                            self.render_document_column(document_w, document_chrome, window, cx)
-                        })
-                        .flatten(),
-                )
-            } else {
-                let diff_overlay = self.render_diff_overlay(
-                    crate::ui::document_column::DocumentChrome::Fill,
-                    window,
-                    cx,
-                );
-                let code_overlay = self.render_code_overlay(
-                    crate::ui::document_column::DocumentChrome::Fill,
-                    window,
-                    cx,
-                );
-                let mut pair = vec![
-                    (OverlayTop::Diff, diff_overlay),
-                    (OverlayTop::Code, code_overlay),
-                ];
-                if self
-                    .tabs
-                    .get(self.active)
-                    .is_some_and(|t| t.overlay_top == OverlayTop::Diff)
-                {
-                    pair.reverse();
-                }
-                (
-                    pair.into_iter()
-                        .filter_map(|(_, el)| el)
-                        .collect::<Vec<gpui::AnyElement>>(),
-                    None,
-                )
-            };
+        let (overlays, document_column) = if dock_steady.is_some() {
+            (
+                Vec::new(),
+                document_present
+                    .then(|| self.render_document_column(document_w, document_chrome, window, cx))
+                    .flatten(),
+            )
+        } else {
+            let diff_overlay = self.render_diff_overlay(
+                crate::ui::document_column::DocumentChrome::Fill,
+                window,
+                cx,
+            );
+            let code_overlay = self.render_code_overlay(
+                crate::ui::document_column::DocumentChrome::Fill,
+                window,
+                cx,
+            );
+            let mut pair = vec![
+                (OverlayTop::Diff, diff_overlay),
+                (OverlayTop::Code, code_overlay),
+            ];
+            if self
+                .tabs
+                .get(self.active)
+                .is_some_and(|t| t.overlay_top == OverlayTop::Diff)
+            {
+                pair.reverse();
+            }
+            (
+                pair.into_iter()
+                    .filter_map(|(_, el)| el)
+                    .map(|overlay| {
+                        // Fill uses a fixed-size inner surface, just like
+                        // the docked PTY. Reveal it from the document edge
+                        // without resizing its contents on every frame.
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(px(document_w.max(0.)))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(px(self.document_body_px(window, cx).max(0.)))
+                                    .child(overlay),
+                            )
+                            .into_any_element()
+                    })
+                    .collect::<Vec<gpui::AnyElement>>(),
+                None,
+            )
+        };
         let document_px = if document_present { document_w } else { 0. };
 
         // The panel draws its own content at its steady width; the wrapper is
@@ -13648,6 +13688,32 @@ mod displayed_gpui_tests {
                 Some(true),
                 "switching tabs hands the frame loop to the new tab"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn a_visible_external_editor_keeps_repainting_without_becoming_the_terminal(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 2);
+        app.update_in(&mut vcx, |app, window, cx| {
+            let terminal = app.tabs[0].tree_id.get();
+            let editor = app.tabs[1].tree_id.get();
+            app.external_editor_tabs
+                .push(crate::ui::code_editor::ExternalEditorTab {
+                    path: "/project/hello.rs".into(),
+                    tab: editor,
+                    terminal: Some(terminal),
+                });
+            app.select_external_editor(editor, window, cx);
+            app.declare_displayed_panes(cx);
+            assert_eq!(displayed_for_test(cx, pane_id(app, 0)), Some(true));
+            assert_eq!(displayed_for_test(cx, pane_id(app, 1)), Some(true));
+            app.toggle_code_panel(window, cx);
+            app.declare_displayed_panes(cx);
+            assert_eq!(displayed_for_test(cx, pane_id(app, 0)), Some(true));
+            assert_eq!(displayed_for_test(cx, pane_id(app, 1)), Some(false));
+            assert_eq!(app.active, 0);
         });
     }
 

@@ -100,8 +100,10 @@ tty7-plus 保留这套基础，并补上一条从手机直接连到同一个 dae
   不再向 shell 发送 NUL、ESC 和 FS；每一项都可以在 **设置 → 快捷键**（或
   `config.json` 的 `keybindings`）中改键或解绑。
 - **外部编辑器**：**设置 → 通用 → 编辑器 → 文件打开方式** 可选择内置编辑器
-  （默认）、Helix（`hx`）或 Vim（`vim`）。搜索命中会带上行号和列号；远程主机
-  上的文件始终使用内置编辑器。
+  （默认）、Helix（`hx`）或 Vim（`vim`），三者共用同一个编辑区、文件页签、
+  停靠/填满布局和 140 ms 切换动画，不会在左侧栏新增 Terminal 项。打开文件后
+  焦点进入编辑器；macOS 下 Helix/Vim 同时切到上次使用的英文（ASCII）键盘布局。
+  搜索命中会传入对应位置；远程主机上的文件始终使用内置编辑器。
 - **全局文档布局**：**文档布局** 选择 **停靠在终端旁** 或 **填满窗口**，对所有
   标签页和窗口生效，并在重启后保留。
 - **文件树显示隐藏文件**：面板标题栏的眼睛图标切换 dotfile 显示，选择会以
@@ -319,7 +321,7 @@ target/release/tty7-relay \
 |---|---|---|---|
 | `files_show_hidden` | bool | `false` | 在文件面板显示 dotfile 和 dot 目录。切换后持久化。 |
 | `file_open_with` | `"built_in"`、`"helix"`、`"vim"` | `"built_in"` | 从文件树、快速打开和搜索结果打开文件时使用的编辑器。远程文件始终使用内置编辑器。 |
-| `document_layout` | `"dock"`、`"fill"` | `"dock"` | 内置编辑器和 diff 视图的全局布局，对所有标签页和窗口生效。 |
+| `document_layout` | `"dock"`、`"fill"` | `"dock"` | 编辑器（内置、Helix 或 Vim）和 diff 视图的全局布局，对所有标签页和窗口生效。 |
 | `check_for_updates` | bool | 强制 `false` | 为配置兼容保留；上游更新检查已禁用。 |
 | `auto_download_updates` | bool | 强制 `false` | 为配置兼容保留；上游更新下载已禁用。 |
 

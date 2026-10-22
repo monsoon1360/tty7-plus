@@ -33,6 +33,8 @@ pub(crate) struct TabEditor {
     pub(crate) active: usize,
     #[serde(default)]
     pub(crate) visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) external: Option<TabId>,
     /// The right group of a split editor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) split: Option<SplitEditor>,
@@ -216,6 +218,7 @@ mod tests {
                     files: vec![PathBuf::from("/src/main.rs"), PathBuf::from("/README.md")],
                     active: 1,
                     visible: true,
+                    external: None,
                     split: Some(SplitEditor {
                         files: vec![PathBuf::from("/src/lib.rs")],
                         active: 0,

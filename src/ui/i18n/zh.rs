@@ -712,7 +712,9 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::SettingsDefaultTerminalSetFailed => "无法将 tty7 设为默认终端：{error}",
         L10nKey::SettingsVersion => "版本",
-        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus 已禁用上游更新，避免覆盖本分支的改动",
+        L10nKey::SettingsUpstreamUpdatesDisabled => {
+            "tty7-plus 已禁用上游更新，避免覆盖本分支的改动"
+        }
         L10nKey::SettingsUpdates => "更新",
         L10nKey::SettingsUpdateAndRelaunch => "更新并重新启动",
         L10nKey::SettingsUpdateViewRelease => "查看发布页面",
@@ -1228,15 +1230,21 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsMore => "……另有 {n} 项",
         L10nKey::SettingsEditor => "编辑器",
         L10nKey::SettingsDocumentLayout => "文档布局",
-        L10nKey::SettingsDocumentLayoutDesc => "所有标签页和窗口共用。选择内置编辑器及差异视图停靠在终端旁，或铺满窗口。",
-        L10nKey::SettingsSearchDocumentLayoutKeywords => "文档 布局 全局 停靠 铺满 窗口 document layout dock fill",
+        L10nKey::SettingsDocumentLayoutDesc => {
+            "所有标签页和窗口共用。选择编辑器及差异视图停靠在终端旁，或铺满窗口。"
+        }
+        L10nKey::SettingsSearchDocumentLayoutKeywords => {
+            "文档 布局 全局 停靠 铺满 窗口 document layout dock fill"
+        }
         L10nKey::SettingsFileOpenWith => "文件打开方式",
         L10nKey::SettingsFileOpenWithDesc => {
-            "在文件树、快速打开和搜索结果中打开文件时使用的编辑器。Helix 和 Vim 会在新标签页中打开；远程文件始终使用内置编辑器。"
+            "在文件树、快速打开和搜索结果中打开文件时使用的编辑器。Helix 和 Vim 与内置编辑器共用同一个编辑区；远程文件始终使用内置编辑器。"
         }
         L10nKey::SettingsFileOpenWithHelix => "Helix",
         L10nKey::SettingsFileOpenWithVim => "Vim",
-        L10nKey::SettingsSearchFileOpenWithKeywords => "编辑器 文件 打开 外部 helix vim editor file open",
+        L10nKey::SettingsSearchFileOpenWithKeywords => {
+            "编辑器 文件 打开 外部 helix vim editor file open"
+        }
         L10nKey::SettingsEditorGitGutter => "Git 更改标记",
         L10nKey::SettingsEditorGitGutterDesc => "在行号旁和滚动条上标出与暂存版本不同的行。",
         L10nKey::SettingsEditorLsp => "语言服务器",

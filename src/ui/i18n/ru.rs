@@ -870,7 +870,9 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
             "Не удалось назначить tty7 терминалом по умолчанию: {error}"
         }
         L10nKey::SettingsVersion => "Версия",
-        L10nKey::SettingsUpstreamUpdatesDisabled => "Обновления tty7 отключены для сохранения изменений tty7-plus",
+        L10nKey::SettingsUpstreamUpdatesDisabled => {
+            "Обновления tty7 отключены для сохранения изменений tty7-plus"
+        }
         L10nKey::SettingsUpdates => "Обновления",
         L10nKey::SettingsUpdateAndRelaunch => "Обновить и перезапустить",
         L10nKey::SettingsUpdateViewRelease => "Что нового",
@@ -1419,15 +1421,21 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsMore => "…и ещё {n}",
         L10nKey::SettingsEditor => "Редактор",
         L10nKey::SettingsDocumentLayout => "Расположение документов",
-        L10nKey::SettingsDocumentLayoutDesc => "Общий параметр для всех вкладок и окон: встроенный редактор и сравнение рядом с терминалом или во всё окно.",
-        L10nKey::SettingsSearchDocumentLayoutKeywords => "документ расположение глобальный окно document layout dock fill",
+        L10nKey::SettingsDocumentLayoutDesc => {
+            "Общий параметр для всех вкладок и окон: редактор и сравнение рядом с терминалом или во всё окно."
+        }
+        L10nKey::SettingsSearchDocumentLayoutKeywords => {
+            "документ расположение глобальный окно document layout dock fill"
+        }
         L10nKey::SettingsFileOpenWith => "Способ открытия файлов",
         L10nKey::SettingsFileOpenWithDesc => {
-            "Редактор, в котором открывается файл, выбранный в дереве файлов, быстром открытии или поиске. Helix и Vim открываются в новой вкладке; удалённые файлы всегда открываются встроенным редактором."
+            "Редактор для файлов из дерева, быстрого открытия или поиска. Helix и Vim используют ту же область документов, что и встроенный редактор; удалённые файлы всегда открываются встроенным редактором."
         }
         L10nKey::SettingsFileOpenWithHelix => "Helix",
         L10nKey::SettingsFileOpenWithVim => "Vim",
-        L10nKey::SettingsSearchFileOpenWithKeywords => "редактор файл открыть внешний helix vim editor file open",
+        L10nKey::SettingsSearchFileOpenWithKeywords => {
+            "редактор файл открыть внешний helix vim editor file open"
+        }
         L10nKey::SettingsEditorGitGutter => "Метки изменений Git",
         L10nKey::SettingsEditorGitGutterDesc => {
             "Отмечать строки, которые отличаются от версии в индексе, рядом с номерами строк и на полосе прокрутки."

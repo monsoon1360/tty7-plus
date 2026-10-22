@@ -187,7 +187,7 @@ A window too narrow to give both the terminal and the document a readable width
 fills for that file only — widen it and the column comes back, without your
 setting having changed.
 
-## Opening files somewhere else
+## Choosing the editor
 
 **Settings → General → Editor → File open method** decides what a file picked
 in the file tree, in quick open or in a search result opens in:
@@ -195,16 +195,23 @@ in the file tree, in quick open or in a search result opens in:
 | Method | What happens |
 |---|---|
 | **Built-in editor** | The column above. The default. |
-| **Helix** | A new editor tab running `hx <path>` — `hx <path>:<line>:<column>` from a search hit. |
-| **Vim** | A new editor tab running `vim <path>`, or `vim +<line> <path>` from a search hit. |
+| **Helix** | The same document region running `hx <path>` — `hx <path>:<line>:<column>` from a search hit. |
+| **Vim** | The same document region running `vim <path>`, or `vim +<line> <path>` from a search hit. |
 
-The tab opens in the current pane's directory, so a relative path means the
-same thing there as in the terminal beside it. Opening the same file again
-switches to the tab it already has rather than starting a second editor.
-Press **Ctrl+2** in Helix or Vim to return to the originating terminal;
-**Ctrl+3** returns to the editor. The association and editor launch arguments
-survive app relaunches. A terminal is never hidden while it is the
-only content in the workspace.
+All three methods share the document region, its file tabs, Dock/Fill layout
+and 140 ms open/close animations. Helix and Vim have dedicated backing sessions,
+not extra Terminal rows in the sidebar or terminal switcher. Their processes
+start in the current terminal's directory. Opening the same file again selects
+its existing file tab rather than starting another editor.
+
+Opening a file puts keyboard focus in its editor. On macOS, Helix and Vim also
+select the user's last ASCII-capable keyboard layout so modal commands do not
+start an IME composition.
+
+**Ctrl+2** focuses the terminal, hiding a document that fills it; **Ctrl+3**
+toggles the shared editor region. In Dock mode both can remain visible and
+typeable. Editor selection and launch arguments survive app relaunches. A
+terminal is never hidden while it is the only content in the workspace.
 
 Files on a remote host always open in the built-in editor: `hx` and `vim` are
 programs on this machine, and the file is not. The setting covers the file

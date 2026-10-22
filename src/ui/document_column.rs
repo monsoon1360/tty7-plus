@@ -26,6 +26,7 @@ use crate::core::config::{
     Config, DOCUMENT_RATIO_MAX, DOCUMENT_RATIO_MIN, DOCUMENT_RATIO_STOPS, DocumentLayout,
 };
 use crate::ui::app::{DOCUMENT_MIN_W, OverlayTop, TERMINAL_MIN_W, Tty7App, document_column_px};
+#[cfg(test)]
 use crate::ui::i18n::t;
 use crate::ui::right_panel::RESIZE_HANDLE_WIDTH;
 
@@ -201,6 +202,58 @@ impl Tty7App {
             OverlayTop::Code => Some(self.render_editor_header_only(chrome, window, cx)),
             OverlayTop::Diff => self.render_diff_header_only(chrome, window, cx),
         }
+    }
+
+    /// An external editor occupies the same document slot as the built-in
+    /// editor. Its backing tab stays off the workspace navigation path.
+    pub(crate) fn render_external_editor(
+        &mut self,
+        chrome: DocumentChrome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let index = self.external_editor_index()?;
+        let tab = self.tabs.get(index)?;
+        let pane = tab.pane.render(
+            &crate::ui::pane::PaneChrome {
+                dim_inactive: false,
+                rearrangeable: false,
+                hovered: self.pane_hover.clone(),
+                lifted: None,
+                drag: self.pane_drag.clone(),
+            },
+            window,
+            cx,
+        );
+        let header = chrome
+            .renders_own_header()
+            .then(|| self.render_editor_header_only(chrome, window, cx));
+        // Only the outer document wrapper animates. A PTY reads its grid size
+        // from layout, so keep this surface at its destination width for the
+        // entire slide rather than reflowing Helix/Vim on every frame.
+        let body_width = self.document_body_px(window, cx);
+        let width = if chrome.is_dock() && self.terminal_visible {
+            document_column_px(body_width, self.document_ratio.get()).unwrap_or(body_width)
+        } else {
+            body_width
+        };
+        let shell = v_flex().id("code-panel");
+        let shell = if chrome == DocumentChrome::Fill {
+            shell
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(crate::ui::theme::overlay_background(cx))
+                .children(crate::ui::app::overlay_surface_layers(cx))
+        } else {
+            shell.w(px((width - 1.).max(0.))).h_full().flex_none()
+        };
+        Some(
+            shell
+                .children(header)
+                .child(div().flex_1().min_h_0().w_full().child(pane))
+                .into_any_element(),
+        )
     }
 
     pub(crate) fn render_document_column(
@@ -847,80 +900,105 @@ mod gpui_tests {
     }
 
     #[gpui::test]
-    fn external_editor_and_terminal_shortcuts_return_to_each_other(cx: &mut TestAppContext) {
+    fn external_editor_uses_the_document_region_without_switching_terminals(
+        cx: &mut TestAppContext,
+    ) {
         use crate::ui::code_editor::ExternalEditorTab;
-        let (app, mut vcx) = window_with(cx, 1440., 3);
+        let (app, mut vcx) = window_with(cx, 1440., 2);
         app.update_in(&mut vcx, |app, window, cx| {
-            app.toggle_code_panel(window, cx);
-            app.set_document_layout(DocumentLayout::Fill, cx);
-            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::Helix;
             let terminal = app.tabs[0].tree_id.get();
-            let editor = app.tabs[2].tree_id.get();
+            let editor = app.tabs[1].tree_id.get();
             app.external_editor_tabs.push(ExternalEditorTab {
                 path: "/project/hello.rs".into(),
                 tab: editor,
                 terminal: Some(terminal),
             });
-            app.active = 2;
-            app.focus_active(window, cx);
+            app.select_external_editor(editor, window, cx);
         });
         vcx.run_until_parked();
-        for _ in 0..3 {
-            vcx.simulate_keystrokes("ctrl-2");
-            assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
-            assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
-            assert!(!app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
-            assert_eq!(layout(&mut vcx), DocumentLayout::Fill);
-            vcx.simulate_keystrokes("ctrl-3");
-            assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 2);
+        assert!(dock_px(&app, &mut vcx).is_some());
+        for layout in [DocumentLayout::Dock, DocumentLayout::Fill] {
+            app.update_in(&mut vcx, |app, window, cx| {
+                app.set_document_layout(layout, cx);
+                app.focus_editor(window, cx);
+            });
+            vcx.run_until_parked();
+            assert!(app.update_in(&mut vcx, |app, window, cx| {
+                app.active == 0
+                    && app.external_editor_index() == Some(1)
+                    && app.tabs[1].pane.focused_leaf(window, cx).is_some()
+            }));
+            for _ in 0..3 {
+                vcx.simulate_keystrokes("ctrl-2");
+                assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
+                assert!(app.update_in(&mut vcx, |app, _, _| app.terminal_visible));
+                // In Dock both regions remain; Fill yields to the terminal.
+                if layout == DocumentLayout::Dock {
+                    vcx.simulate_keystrokes("ctrl-3");
+                }
+                assert!(!app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+                vcx.simulate_keystrokes("ctrl-3");
+                assert!(app.update_in(&mut vcx, |app, window, cx| {
+                    app.active == 0 && app.tabs[1].pane.focused_leaf(window, cx).is_some()
+                }));
+            }
         }
-        app.update_in(&mut vcx, |app, window, cx| {
-            app.tabs.remove(0);
-            app.active = 1;
-            app.focus_active(window, cx);
+        // An editor that exits does not steal the selected terminal.
+        app.update_in(&mut vcx, |app, _, cx| {
+            app.tabs.remove(1);
+            cx.notify();
         });
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("ctrl-2");
-        assert_eq!(
-            app.update_in(&mut vcx, |app, _, _| app.active),
-            0,
-            "a closed origin falls back to another terminal"
-        );
+        assert!(app.update_in(&mut vcx, |app, _, _| {
+            app.active == 0 && !app.code_panel_visible() && app.terminal_visible
+        }));
     }
 
     #[gpui::test]
-    fn restored_helix_is_recognized_without_a_launch_link(cx: &mut TestAppContext) {
+    fn legacy_selected_editor_is_reseated_in_the_document_region(cx: &mut TestAppContext) {
+        use crate::ui::code_editor::ExternalEditorTab;
+        let (app, mut vcx) = window_with(cx, 1440., 2);
+        app.update_in(&mut vcx, |app, _, cx| {
+            let terminal = app.tabs[0].tree_id.get();
+            let editor = app.tabs[1].tree_id.get();
+            app.external_editor_tabs.push(ExternalEditorTab {
+                path: "/project/hello.rs".into(),
+                tab: editor,
+                terminal: Some(terminal),
+            });
+            app.active = 1;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(app.update_in(&mut vcx, |app, _, _| {
+            app.active == 0 && app.external_editor_index() == Some(1) && app.code_panel_visible()
+        }));
+    }
+
+    #[gpui::test]
+    fn manually_running_helix_does_not_hide_a_user_terminal(cx: &mut TestAppContext) {
         use std::io::Write as _;
         let (app, mut vcx, mut streams) = test_window::harness_with_tabs(cx, 2);
-        app.update_in(&mut vcx, |app, window, cx| {
-            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::Helix;
-            app.active = 1;
-            app.focus_active(window, cx);
-        });
         crate::daemon::protocol::DaemonMsg::Output(b"\x1b]133;C;hx '/project/a b.rs'\x07".to_vec())
             .encode(&mut streams[1])
             .unwrap();
         streams[1].flush().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !app.update_in(&mut vcx, |app, _, cx| app.is_external_editor_tab(1, cx)) {
+        while !app.update_in(&mut vcx, |app, _, cx| {
+            app.tabs[1].pane.terminals()[0]
+                .read(cx)
+                .terminal
+                .running_command()
+                .contains("hx")
+        }) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the restored command must identify Helix"
+                "the shell command must arrive"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         vcx.run_until_parked();
-        vcx.simulate_keystrokes("ctrl-2");
-        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
-        vcx.simulate_keystrokes("ctrl-3");
-        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 1);
-        vcx.simulate_keystrokes("ctrl-2");
-        vcx.update(|_, cx| {
-            cx.global_mut::<Config>().file_open_with = crate::core::config::FileOpenWith::BuiltIn
-        });
-        vcx.simulate_keystrokes("ctrl-3");
-        assert_eq!(app.update_in(&mut vcx, |app, _, _| app.active), 0);
-        assert!(app.update_in(&mut vcx, |app, _, _| app.code_panel_visible()));
+        assert!(!app.update_in(&mut vcx, |app, _, cx| app.is_external_editor_tab(1, cx)));
     }
 
     #[gpui::test]

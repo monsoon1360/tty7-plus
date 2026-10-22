@@ -305,7 +305,7 @@ impl Tty7App {
 
         let keys: Rc<Vec<Option<GroupKey>>> = Rc::new(self.sidebar_group_keys(cx));
         let groups = &self.sidebar_groups;
-        let sections = sidebar_sections(&keys, groups);
+        let sections = self.sidebar_terminal_sections(&keys, cx);
         // A search outranks a fold. Typing something that matches a row inside
         // a folded group has to show that row — a box that says nothing
         // matches while the match sits behind a chevron is just lying.
@@ -2786,12 +2786,47 @@ impl Tty7App {
             .collect()
     }
 
+    /// Editor processes back the document area, not terminal navigation.
+    /// Keep real tab indices so selection, drop targets and group membership
+    /// still address the backing workspace without renumbering it.
+    fn sidebar_terminal_sections(
+        &self,
+        keys: &[Option<GroupKey>],
+        cx: &gpui::App,
+    ) -> Vec<GroupSection> {
+        let mut sections = sidebar_sections(keys, &self.sidebar_groups);
+        for section in &mut sections {
+            section
+                .tabs
+                .retain(|&i| !self.is_external_editor_tab(i, cx));
+        }
+        sections.retain(|section| section.pinned().is_some() || !section.tabs.is_empty());
+        // A hidden first member must not decide an auto group's visible order.
+        let pinned = sections.iter().take_while(|s| s.pinned().is_some()).count();
+        sections[pinned..].sort_unstable_by_key(|s| {
+            (
+                s.key.is_none(),
+                s.tabs.first().copied().unwrap_or(usize::MAX),
+            )
+        });
+        if !sections
+            .iter()
+            .any(|s| s.key.as_ref().is_some_and(|k| k.auto().is_some()))
+            && let Some(ungrouped) = sections.iter_mut().find(|s| s.key.is_none())
+        {
+            ungrouped.name = None;
+        }
+        sections
+    }
+
     pub(crate) fn visual_tab_order(&self, cx: &gpui::App) -> Vec<usize> {
         if cx.global::<Config>().tab_bar_position != crate::core::config::TabBarPosition::Left {
-            return (0..self.tabs.len()).collect();
+            return (0..self.tabs.len())
+                .filter(|&i| !self.is_external_editor_tab(i, cx))
+                .collect();
         }
         let keys = self.sidebar_group_keys(cx);
-        sidebar_sections(&keys, &self.sidebar_groups)
+        self.sidebar_terminal_sections(&keys, cx)
             .into_iter()
             .flat_map(|s| s.tabs)
             .collect()
@@ -2802,10 +2837,10 @@ impl Tty7App {
     /// no run holds `index`.
     pub(crate) fn tab_run(&self, index: usize, cx: &gpui::App) -> Vec<usize> {
         if cx.global::<Config>().tab_bar_position != crate::core::config::TabBarPosition::Left {
-            return (0..self.tabs.len()).collect();
+            return self.visual_tab_order(cx);
         }
         let keys = self.sidebar_group_keys(cx);
-        sidebar_sections(&keys, &self.sidebar_groups)
+        self.sidebar_terminal_sections(&keys, cx)
             .into_iter()
             .map(|s| s.tabs)
             .find(|tabs| tabs.contains(&index))
@@ -3027,9 +3062,6 @@ fn ssh_host(remote: Option<&crate::daemon::protocol::RemoteContext>) -> Option<S
         .map(|r| r.target.clone())
 }
 
-#[cfg(test)]
-use crate::core::group_key::group_names;
-
 /// How far to move the sidebar's scroll offset so a newly active row shows.
 /// A row with any part in view stays put — clicking a row must not move the
 /// list under the pointer; one out of view comes in at the nearest edge.
@@ -3199,6 +3231,74 @@ mod fold_tests {
     /// being dropped into a group that is shut.
     fn drawn(app: &Tty7App, i: usize) -> bool {
         app.sidebar_slots.borrow()[i].size.height > px(0.)
+    }
+
+    #[gpui::test]
+    fn document_editors_do_not_occupy_terminal_rows_or_navigation(cx: &mut TestAppContext) {
+        use crate::core::config::TabBarPosition;
+        use crate::ui::code_editor::ExternalEditorTab;
+
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 5);
+        app.update(&mut vcx, |app, cx| {
+            cx.global_mut::<Config>().tab_bar_position = TabBarPosition::Left;
+            cx.global_mut::<Config>().sidebar_auto_grouping = true;
+            app.active = 1;
+            for i in [0, 2] {
+                app.external_editor_tabs.push(ExternalEditorTab {
+                    path: PathBuf::from(format!("/w/file-{i}.rs")),
+                    tab: app.tabs[i].tree_id.get(),
+                    terminal: Some(app.tabs[1].tree_id.get()),
+                });
+            }
+            for (i, repo) in [
+                (0, "/w/alpha"),
+                (1, "/w/beta"),
+                (2, "/w/hidden"),
+                (3, "/w/alpha"),
+            ] {
+                *app.tabs[i].auto_group.borrow_mut() = Some(AutoKey::Repo(PathBuf::from(repo)));
+            }
+            let keys = app.sidebar_group_keys(cx);
+            let sections = app.sidebar_terminal_sections(&keys, cx);
+            assert_eq!(
+                sections.iter().map(|s| s.tabs.clone()).collect::<Vec<_>>(),
+                vec![vec![1], vec![3], vec![4]],
+                "only visible terminals decide auto-group order and counts"
+            );
+            assert_eq!(app.visual_tab_order(cx), vec![1, 3, 4]);
+            assert!(app.tab_run(0, cx).is_empty());
+            assert_eq!(app.tab_run(3, cx), vec![3]);
+            for mru in [false, true] {
+                let rows = app.tab_rows_for(app.workspace, mru, cx);
+                assert_eq!(rows.len(), 3);
+                assert!(rows.iter().all(|row| [1, 3, 4].contains(&row.index)));
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        app.update(&mut vcx, |app, _| {
+            assert!(!drawn(app, 0));
+            assert!(!drawn(app, 2));
+            assert!([1, 3, 4].into_iter().all(|i| drawn(app, i)));
+            assert_eq!(app.tabs.len(), 5, "backing editors are not closed");
+        });
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.activate_visual(1, window, cx);
+            assert_eq!(app.active, 3);
+            cx.global_mut::<Config>().tab_bar_position = TabBarPosition::Top;
+            assert_eq!(app.visual_tab_order(cx), vec![1, 3, 4]);
+            assert_eq!(app.tab_run(1, cx), vec![1, 3, 4]);
+            app.activate_visual(2, window, cx);
+            assert_eq!(app.active, 4);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        app.update(&mut vcx, |app, _| {
+            let slots = app.strip_slots.borrow();
+            assert_eq!(slots[0].size.width, px(0.));
+            assert_eq!(slots[2].size.width, px(0.));
+            assert!(slots[4].size.width > px(0.));
+        });
     }
 
     /// Put tab `i` in a directory and tell the cache that directory is in the

@@ -541,6 +541,27 @@ pub fn tab_views_for(cx: &App, client_ws: WorkspaceId) -> Option<(Vec<TabView>, 
     Some((tab_views_of(ws, panes), ws.active_tab))
 }
 
+/// Dedicated document-editor sessions stay out of another workspace's
+/// terminal switcher too. A shell merely running an editor is still a terminal.
+pub(crate) fn is_external_editor_tab(cx: &App, client_ws: WorkspaceId, tab: TabId) -> bool {
+    let view = match crate::core::session::WorkspaceStore::all(cx).get(client_ws) {
+        Some(entry) => view_of(cx, entry),
+        None => local_view_of(cx, client_ws),
+    };
+    let Some((ws, panes)) = view else {
+        return false;
+    };
+    let Some(tab) = ws.tabs.iter().find(|candidate| candidate.id == tab) else {
+        return false;
+    };
+    panes.iter().any(|pane| {
+        pane.shell
+            .as_ref()
+            .is_some_and(|shell| crate::ui::code_editor::is_external_editor_program(&shell.program))
+            && tab.root.contains(pane.id)
+    })
+}
+
 fn local_view_of(cx: &App, id: WorkspaceId) -> Option<(&Workspace, &[PaneRecord])> {
     let machine = MachineMirrors::machine(cx, HostId::LOCAL)?;
     let ws = machine.workspaces.iter().find(|w| w.id == id)?;

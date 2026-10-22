@@ -702,6 +702,7 @@ mod gpui_tests {
             files: vec![a.clone(), b.clone()],
             active: 1,
             visible: true,
+            external: None,
             split: Some(SplitEditor {
                 files: vec![c.clone()],
                 active: 0,
@@ -755,6 +756,7 @@ mod gpui_tests {
             files: vec![],
             active: 0,
             visible: true,
+            external: None,
             split: Some(SplitEditor {
                 files: vec![c.clone()],
                 active: 0,
@@ -857,6 +859,7 @@ mod gpui_tests {
             files: vec![a.clone(), b.clone()],
             active: 0,
             visible: true,
+            external: None,
             split: Some(SplitEditor {
                 files: vec![c.clone()],
                 active: 0,

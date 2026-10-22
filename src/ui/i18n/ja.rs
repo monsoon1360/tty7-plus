@@ -814,7 +814,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
             "tty7 をデフォルトのターミナルに設定できませんでした: {error}"
         }
         L10nKey::SettingsVersion => "バージョン",
-        L10nKey::SettingsUpstreamUpdatesDisabled => "tty7-plus の変更を保護するため、上流の更新を無効にしています",
+        L10nKey::SettingsUpstreamUpdatesDisabled => {
+            "tty7-plus の変更を保護するため、上流の更新を無効にしています"
+        }
         L10nKey::SettingsUpdates => "アップデート",
         L10nKey::SettingsUpdateAndRelaunch => "更新して再起動",
         L10nKey::SettingsUpdateViewRelease => "リリースページを開く",
@@ -1368,15 +1370,21 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::EditorProblemsMore => "…ほか {n} 件",
         L10nKey::SettingsEditor => "エディタ",
         L10nKey::SettingsDocumentLayout => "ドキュメントの配置",
-        L10nKey::SettingsDocumentLayoutDesc => "すべてのタブとウィンドウで共有します。内蔵エディタと差分をターミナル横に配置するか、ウィンドウ全体に表示します。",
-        L10nKey::SettingsSearchDocumentLayoutKeywords => "文書 配置 全体 ドック ウィンドウ document layout dock fill",
+        L10nKey::SettingsDocumentLayoutDesc => {
+            "すべてのタブとウィンドウで共有します。エディタと差分をターミナル横に配置するか、ウィンドウ全体に表示します。"
+        }
+        L10nKey::SettingsSearchDocumentLayoutKeywords => {
+            "文書 配置 全体 ドック ウィンドウ document layout dock fill"
+        }
         L10nKey::SettingsFileOpenWith => "ファイルを開く方法",
         L10nKey::SettingsFileOpenWithDesc => {
-            "ファイルツリー、クイックオープン、検索で選んだファイルを開くエディタ。Helix と Vim は新しいタブで開きます。リモートのファイルは常に内蔵エディタを使います。"
+            "ファイルツリー、クイックオープン、検索で選んだファイルを開くエディタ。Helix と Vim は内蔵エディタと同じ編集領域を使います。リモートのファイルは常に内蔵エディタを使います。"
         }
         L10nKey::SettingsFileOpenWithHelix => "Helix",
         L10nKey::SettingsFileOpenWithVim => "Vim",
-        L10nKey::SettingsSearchFileOpenWithKeywords => "エディタ ファイル 開く 外部 helix vim editor file open",
+        L10nKey::SettingsSearchFileOpenWithKeywords => {
+            "エディタ ファイル 開く 外部 helix vim editor file open"
+        }
         L10nKey::SettingsEditorGitGutter => "Git 変更マーカー",
         L10nKey::SettingsEditorGitGutterDesc => {
             "ステージ済みの版と異なる行を、行番号の横とスクロールバーに示します。"

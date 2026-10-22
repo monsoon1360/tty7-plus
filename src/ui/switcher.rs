@@ -624,7 +624,9 @@ impl Tty7App {
             self.switcher_step_right(&layout, forward, window, cx);
             return;
         }
-        let n = self.tabs.len();
+        let n = (0..self.tabs.len())
+            .filter(|&i| !self.is_external_editor_tab(i, cx))
+            .count();
         let cycling = n >= 2;
         let held = window.modifiers();
         self.open_switcher_in(
@@ -1016,6 +1018,7 @@ impl Tty7App {
             };
             return order
                 .into_iter()
+                .filter(|&i| !self.is_external_editor_tab(i, cx))
                 .map(|i| {
                     let tab = &self.tabs[i];
                     TabRow {
@@ -1066,6 +1069,7 @@ impl Tty7App {
         views
             .into_iter()
             .enumerate()
+            .filter(|(_, v)| !crate::ui::machine_mirror::is_external_editor_tab(cx, id, v.id))
             .map(|(i, v)| TabRow {
                 label: tab_view_label(&v, i, home.as_deref()),
                 // The label only stands in for the path when it came *from* the
