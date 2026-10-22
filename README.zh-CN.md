@@ -11,6 +11,7 @@
 <br />
 
 [![Fork of tty7](https://img.shields.io/badge/fork%20of-l0ng--ai%2Ftty7-3FDD8C)](https://github.com/l0ng-ai/tty7)
+[![Release](https://img.shields.io/github/v/release/monsoon1360/tty7-plus?include_prereleases&label=release)](https://github.com/monsoon1360/tty7-plus/releases)
 [![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-blue)](#环境要求)
 [![Android](https://img.shields.io/badge/android-8.0%2B-3DDC84?logo=android&logoColor=white)](#android-应用)
@@ -29,7 +30,8 @@
 > [!IMPORTANT]
 > **tty7-plus 是 [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7) 的社区分支。**
 > 它与上游项目没有隶属关系。本仓库已禁用上游自动更新，因为上游安装包会覆盖
-> 本分支并丢失定制改动。本仓库目前不发布桌面安装包，请从源码构建。详见
+> 本分支并丢失定制改动。预构建产物以 prerelease 形式发布；macOS DMG 为 adhoc
+> 签名，Android APK 为 debug 签名。详见 [安装与部署](#安装与部署) 和
 > [上游与维护](#上游与维护)。
 
 ## 为什么会有这个分支
@@ -144,6 +146,21 @@ flowchart LR
 | **Relay 主机** | 任意 Linux 主机，具有公网 TCP 端口（默认 `8443`）和与 relay 主机名匹配的 TLS 证书 |
 
 ## 安装与部署
+
+### 预构建版本
+
+最新构建发布在
+[**Releases**](https://github.com/monsoon1360/tty7-plus/releases)。当前
+`v26.9.4` prerelease 包含：
+
+| 文件 | 平台 | 说明 |
+|---|---|---|
+| `tty7-26.9.4-macos-arm64.dmg` | macOS Apple Silicon | adhoc 签名，未公证。首次打开请右键 → **打开**，或执行 `xattr -dr com.apple.quarantine /Applications/tty7.app`。 |
+| `tty7-plus-26.9.4-android-debug.apk` | Android 8.0+ | debug 签名，用于测试。若已安装其他签名的版本，请先卸载。 |
+| `SHA256SUMS.txt` | — | 用 `shasum -a 256 -c SHA256SUMS.txt` 校验。 |
+
+本 prerelease 没有 Windows、Linux 或 Intel Mac 产物。请从源码构建，或使用对应
+平台的打包脚本。
 
 ### 从源码构建桌面端
 

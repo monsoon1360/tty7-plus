@@ -11,6 +11,7 @@
 <br />
 
 [![Fork of tty7](https://img.shields.io/badge/fork%20of-l0ng--ai%2Ftty7-3FDD8C)](https://github.com/l0ng-ai/tty7)
+[![Release](https://img.shields.io/github/v/release/monsoon1360/tty7-plus?include_prereleases&label=release)](https://github.com/monsoon1360/tty7-plus/releases)
 [![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-blue)](#requirements)
 [![Android](https://img.shields.io/badge/android-8.0%2B-3DDC84?logo=android&logoColor=white)](#android-app)
@@ -30,8 +31,9 @@
 > **tty7-plus is a community fork of [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7).**
 > It is not affiliated with the upstream project. Upstream's automatic updater is
 > disabled here, because an upstream package would replace the fork and discard its
-> changes. This repository does not publish desktop installers yet — build from
-> source. See [Upstream and maintenance](#upstream-and-maintenance).
+> changes. Prebuilt artifacts are published as prereleases; the macOS DMG is adhoc
+> signed and the Android APK is debug signed. See [Install](#install) and
+> [Upstream and maintenance](#upstream-and-maintenance).
 
 ## Why this fork
 
@@ -164,6 +166,21 @@ daemon, and remote workspaces run that daemon on another machine over SSH.
 | **Relay host** | Any Linux host with a public TCP port (default `8443`) and a TLS certificate for the relay's hostname |
 
 ## Install
+
+### Prebuilt release
+
+The latest build is published on
+[**Releases**](https://github.com/monsoon1360/tty7-plus/releases). The current
+`v26.9.4` prerelease ships:
+
+| File | Platform | Notes |
+|---|---|---|
+| `tty7-26.9.4-macos-arm64.dmg` | macOS Apple Silicon | Adhoc signed, not notarized. First open with right-click → **Open**, or run `xattr -dr com.apple.quarantine /Applications/tty7.app`. |
+| `tty7-plus-26.9.4-android-debug.apk` | Android 8.0+ | Debug signature, intended for testing. Uninstall a build signed with a different key first. |
+| `SHA256SUMS.txt` | — | Verify with `shasum -a 256 -c SHA256SUMS.txt`. |
+
+There are no Windows, Linux, or Intel Mac artifacts in this prerelease. Build
+from source below, or use the packaging scripts for your platform.
 
 ### Desktop from source
 
