@@ -1,0 +1,356 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish, for example v26.9.4-plus.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.95.0"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      android_version: ${{ steps.meta.outputs.android_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::release tag must start with v, got $TAG"
+            exit 1
+          fi
+          VERSION=$(grep -m1 '^version = "' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          ANDROID_VERSION=$(grep -m1 'versionName = ' mobile/app/build.gradle.kts \
+            | sed -E 's/.*"([^"]+)".*/\1/')
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Cargo.toml version must be semver, got $VERSION"
+            exit 1
+          fi
+          if ! [[ "$ANDROID_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Android versionName must be semver, got $ANDROID_VERSION"
+            exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "android_version=$ANDROID_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            os: macos
+            arch: arm64
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            os: macos
+            arch: x86_64
+            target: x86_64-apple-darwin
+          - runner: windows-latest
+            os: windows
+            arch: x86_64
+            target: x86_64-pc-windows-msvc
+          - runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake clang libxkbcommon-dev \
+            libxkbcommon-x11-dev libfontconfig1-dev libfreetype6-dev \
+            libwayland-dev libx11-dev libxcb1-dev libzstd-dev libssl-dev \
+            libkrb5-dev libfuse2 file imagemagick
+          echo "LIBGSSAPI_IMPL=mit" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build desktop and helper binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET"
+          cargo build --release --locked --features updater \
+            --bin tty7-updater --target "$TARGET"
+
+      - name: Package macOS
+        if: matrix.os == 'macos'
+        shell: bash
+        run: bash .github/scripts/bundle-macos.sh "$TARGET" "$ARCH"
+
+      - name: Package Linux tarball
+        if: matrix.os == 'linux'
+        shell: bash
+        run: bash .github/scripts/bundle-linux.sh "$TARGET" "$ARCH"
+
+      - name: Package Linux AppImage
+        if: matrix.os == 'linux'
+        shell: bash
+        run: bash .github/scripts/bundle-appimage.sh "$TARGET" "$ARCH"
+
+      - name: Package Windows
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          & ./.github/scripts/bundle-windows.ps1 "${{ matrix.target }}" "${{ matrix.arch }}"
+          & ./.github/scripts/verify-windows-package.ps1 "${{ matrix.arch }}"
+
+      - name: Stage relay binary
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/$TARGET/release/tty7-relay" \
+             "dist/tty7-relay-${VERSION}-${{ matrix.os }}-${ARCH}"
+          chmod +x "dist/tty7-relay-${VERSION}-${{ matrix.os }}-${ARCH}"
+
+      - name: Stage relay binary (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/tty7-relay.exe" `
+            "dist/tty7-relay-${{ needs.version.outputs.version }}-windows-x86_64.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*-setup.exe
+            dist/tty7-relay-*
+          if-no-files-found: error
+
+  relay:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            arch: aarch64
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C strip=symbols
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: relay-${{ matrix.target }}
+
+      - name: Build static relay
+        run: |
+          cargo zigbuild --release --locked -p tty7-relay \
+            --target ${{ matrix.target }}
+
+      - name: Assert the relay is static
+        run: |
+          bash .github/scripts/assert-static.sh \
+            "target/${{ matrix.target }}/release/tty7-relay"
+
+      - name: Stage the relay asset
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/tty7-relay" \
+             "dist/tty7-relay-${VERSION}-linux-${{ matrix.arch }}-musl"
+          chmod +x "dist/tty7-relay-${VERSION}-linux-${{ matrix.arch }}-musl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-relay-linux-${{ matrix.arch }}
+          path: dist/tty7-relay-*
+          if-no-files-found: error
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode the release signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set"
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/tty7-release.jks"
+          {
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/tty7-release.jks"
+            echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: mobile
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Verify and stage the APK
+        env:
+          EXPECTED_CERT: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          APK=mobile/app/build/outputs/apk/release/app-release.apk
+          test -f "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d \
+            | sort -V | tail -1)/apksigner
+          CERTS=$("$APKSIGNER" verify --print-certs "$APK")
+          if grep -q "CN=Android Debug" <<<"$CERTS"; then
+            echo "$CERTS"
+            echo "::error::APK is signed with the debug key"
+            exit 1
+          fi
+          DIGESTS=$(grep -o 'certificate SHA-256 digest: [0-9a-f]*' <<<"$CERTS" \
+            | awk '{print $NF}' | sort -u)
+          if [ -n "$EXPECTED_CERT" ] && [ "$DIGESTS" != "$EXPECTED_CERT" ]; then
+            echo "$CERTS"
+            echo "::error::APK is not signed with the expected release key"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "$APK" \
+            "dist/tty7-plus-${{ needs.version.outputs.android_version }}-android-release.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  publish:
+    needs: [version, desktop, relay, android]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      ANDROID_VERSION: ${{ needs.version.outputs.android_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          find . -maxdepth 1 -type f -printf '%P\n' \
+            | LC_ALL=C sort | xargs -r sha256sum > SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Build release notes
+        env:
+          ANDROID_CERT: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          sed -e "s|@VERSION@|$VERSION|g" \
+              -e "s|@ANDROID_VERSION@|$ANDROID_VERSION|g" \
+              -e "s|@ANDROID_CERT@|${ANDROID_CERT:-see APK certificate}|g" \
+              .github/release-notes.md > "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          TITLE="tty7-plus $TAG"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --notes-file "$RUNNER_TEMP/notes.md" --prerelease
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$TITLE" \
+              --notes-file "$RUNNER_TEMP/notes.md" --prerelease
+          fi
