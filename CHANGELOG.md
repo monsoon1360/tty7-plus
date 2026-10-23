@@ -158,23 +158,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deleteContentBackward` events no longer disappear when an input method sends
   key code 229 instead of Backspace. A paired Backspace event deletes only once,
   and Chinese composition/candidate editing remains local until committed.
-- **Codex mobile scrolling and return to latest.** Full-screen gestures send at
-  most 20 wheel lines per batch, coalescing small moves over 32 ms and draining
-  full batches at 16 ms intervals. A bounded window permits up to 80
-  unacknowledged rows to keep movement flowing during network round trips; only
-  matching input RPC replies return row credit.
-  Unrelated screen revisions never acknowledge wheel input. A reversal or new
-  touch can use a fixed 20-row reserve, while old requests keep their charges
-  until their actual replies arrive: repeated cancellation cannot exceed 100
-  outstanding rows or 16 requests. Duplicate and stale-generation replies are
-  ignored; obsolete replies reclaim only their own charges. An adaptive timeout
-  leaves at least 500 ms for a reply, including when a formerly fast link slows
-  down, then holds further sends until actual link progress or a reversal,
-  including with zero unsent debt. Up to 200 unsent rows are retained, old-direction movement is
-  cleared on reversal, and a temporary screen lead of up to three rows eases
-  back after delivery. A shorter 1:1 coast replaces the local-history fling. Native keys, including Esc for Codex's return-to-latest
-  action, cancel queued scrolling and the local lead so an old fling cannot pull
-  the view back. No extra floating return control covers the terminal.
+- **Codex mobile scrolling and return to latest.** Full-screen gestures coalesce
+  remote wheel input, retain unsent whole lines, clear old-direction movement on
+  reversal, and use a shorter 1:1 coast instead of the local-history fling.
+  Native keys, including Esc for Codex's return-to-latest action, cancel queued
+  scrolling so an old fling cannot pull the view back. No extra floating return
+  control covers the terminal.
   Screen presentation JSON is built off the Android UI thread, and unchanged
   geometry no longer repeats local scroll-to-bottom work on every update.
 - **Android terminal gestures and contrast.** Gestures now capture pointers on a

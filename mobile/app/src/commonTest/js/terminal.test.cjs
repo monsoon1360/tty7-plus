@@ -77,7 +77,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await call('Emulation.setTouchEmulationEnabled', {enabled:true});
   await call('Page.bringToFront');
   await wait('typeof window.tty7Begin === "function"');
-  await evaluate(`window.calls={focus:0,history:0,input:[],scroll:[],grids:[],rendered:0,begun:false}; window.Tty7={ready(){},resize(cols,rows){calls.grids.push([cols,rows])},begun(){calls.begun=true},rendered(){calls.rendered++},failed(g,m){throw new Error(m)},history(){calls.history++},focusInput(){calls.focus++},input(g,t){calls.input.push(t)},scroll(g,b,t){calls.scroll.push({generation:g,batch:b});calls.input.push(t)}}; window.tty7Begin(1)`);
+  await evaluate(`window.calls={focus:0,history:0,input:[],grids:[],rendered:0,begun:false}; window.Tty7={ready(){},resize(cols,rows){calls.grids.push([cols,rows])},begun(){calls.begun=true},rendered(){calls.rendered++},failed(g,m){throw new Error(m)},history(){calls.history++},focusInput(){calls.focus++},input(g,t){calls.input.push(t)}}; window.tty7Begin(1)`);
   await wait('calls.begun');
   await wait('calls.grids.length > 0');
   assert.equal(await evaluate('inputReady'), false, 'Initial phone grid is measured before subscription sync');
@@ -418,7 +418,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
     const rendered = await evaluate('calls.rendered');
     await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(appState)},${appSequence})`);
     await wait(`calls.rendered === ${rendered + 1}`);
-    await evaluate(`calls.input = []; applicationScrollAckEwma = 0; ${synced ? `window.tty7Synced(${appGeneration})` : ''}`);
+    await evaluate(`calls.input = []; ${synced ? `window.tty7Synced(${appGeneration})` : ''}`);
   };
   const wheelCount = `(calls.input.join('').match(/\\x1b\\[<6[45];\\d+;\\d+M/g) || []).length`;
   const wheels = inputs => inputs.join('').match(/\x1b\[<6[45];\d+;\d+M/g) || [];
@@ -432,39 +432,10 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
     await touch('touchEnd',100,460);
     await wait(`${wheelCount} > 0`);
   };
-  // The native bridge reports completion of this batch's input RPC. Screen
-  // revisions carry no input ID and must never act as a delivery reply.
-  const ackApplicationScroll = async () => {
-    // Drain current-intent receipts. Obsolete requests still consume transport
-    // credit, but acknowledging them is explicit in the cancellation tests.
-    for (let n = 0; n < 32; n++) {
-      const id = await evaluate('[...applicationScrollBatches].find(([,b]) => !b.obsolete)?.[0] || 0');
-      if (id) await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${id})`);
-      await settle(40);
-      if (await evaluate('!applicationScrollInFlight && !applicationScrollSendTimer')) break;
-    }
-    await wait('!applicationScrollInFlight && !applicationScrollSendTimer && !visualSettle');
-  };
-  const applyApplicationScreen = async ({lines = [], full = false} = {}) => {
-    const revision = await evaluate('appliedRevision');
-    const epoch = await evaluate('appliedEpoch');
-    const cols = await evaluate('terminal.cols');
-    const rows = await evaluate('terminal.rows');
-    const rendered = await evaluate('calls.rendered');
-    const next = {cols, rows, epoch, revision:String(++appSequence), base_revision:full ? null : revision,
-      cursor:{row:Math.max(0, rows - 2), col:0, shape:'block', visible:true, blink:false}, alternate:true,
-      modes:{app_cursor:false,app_keypad:false,bracketed_paste:true,mouse:true,sgr_mouse:true,alternate_scroll:true},
-      lines};
-    await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(next)},${appSequence})`);
-    await wait(`calls.rendered === ${rendered + 1}`);
-  };
+
 
   await startApp();
   await evaluate('scrollLocally(-65.25 * screen.clientHeight / terminal.rows)');
-  for (let batch = 0; batch < 6 && wheels(await evaluate('calls.input')).length < 65; batch++) {
-    await ackApplicationScroll();
-    await settle(20);
-  }
   await wait(`${wheelCount} >= 65`);
   await settle(150);
   const largeScroll = await evaluate('calls.input');
@@ -500,211 +471,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   t.diagnostic('PASS: wheel batching preserves whole-line debt, clears it on reversal, and stops it on a new touch');
 
   await startApp();
-  await evaluate('applicationScrollAckEwma = 400; scrollLocally(-200.25 * applicationScrollRowHeight())');
-  assert.equal(wheels(await evaluate('calls.input')).length, 20, 'The first bounded batch starts immediately');
-  await wait(`${wheelCount} === 80`);
-  assert.equal(await evaluate('applicationScrollOutstandingRows()'), 80);
-  assert.equal(await evaluate('applicationScrollBatches.size'), 4);
-  await settle(50);
-  assert.equal(wheels(await evaluate('calls.input')).length, 80,
-    'The row window fills without waiting one RTT per batch, then holds at 80 rows');
-  const receiptIds = await evaluate('[...applicationScrollBatches.keys()]');
-  const awaitingLead = await evaluate('visualOffset');
-  const awaitingLatency = await evaluate('applicationScrollAckEwma');
-  await applyApplicationScreen();
-  await applyApplicationScreen({lines:[{row:0,ansi:paint('Streaming status update')}]});
-  await applyApplicationScreen({full:true,lines:[{row:0,ansi:paint('Resynced status')}]});
-  assert.equal(wheels(await evaluate('calls.input')).length, 80,
-    'Empty patches, streaming output and snapshots cannot refill transport credit');
-  assert.deepEqual(await evaluate('[...applicationScrollBatches.keys()]'), receiptIds);
-  assert.equal(await evaluate('visualOffset'), awaitingLead, 'Unrelated output cannot remove the local lead');
-  assert.equal(await evaluate('applicationScrollAckEwma'), awaitingLatency, 'Unrelated output cannot train RPC latency');
-  await evaluate(`window.tty7ScrollAcknowledged(${appGeneration - 1},${receiptIds[0]});
-    window.tty7ScrollAcknowledged(${appGeneration},${receiptIds.at(-1) + 1})`);
-  assert.equal(wheels(await evaluate('calls.input')).length, 80, 'Wrong generation and unknown IDs return no credit');
-  const replyLatency = await evaluate(`(() => {
-    applicationScrollAckEwma = 0;
-    const elapsed = performance.now() - applicationScrollBatches.get(${receiptIds[2]}).sentAt;
-    window.tty7ScrollAcknowledged(${appGeneration},${receiptIds[2]});
-    return {elapsed,measured:applicationScrollAckEwma};
-  })()`);
-  assert.ok(Math.abs(replyLatency.elapsed - replyLatency.measured) < 1,
-    'An out-of-order reply measures its own batch timestamp');
-  await wait(`${wheelCount} === 100`);
-  assert.equal(await evaluate('applicationScrollOutstandingRows()'), 80,
-    'A 20-row reply returns exactly 20 rows of credit');
-  assert.equal(await evaluate(`applicationScrollBatches.has(${receiptIds[0]})`), true,
-    'An out-of-order reply cannot acknowledge another batch');
-  await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${receiptIds[2]})`);
-  await settle(40);
-  assert.equal(wheels(await evaluate('calls.input')).length, 100, 'A duplicate reply cannot refill credit twice');
-  t.diagnostic('PASS: bounded row pipelining preserves exact per-batch credit and rejects unrelated screen/duplicate/stale replies');
-
-  await startApp();
-  const pacing = await evaluate(`(() => {
-    scrollLocally(-65 * applicationScrollRowHeight());
-    const firstSentAt = applicationScrollSentAt;
-    window.tty7ScrollAcknowledged(${appGeneration},[...applicationScrollBatches.keys()][0]);
-    return {firstSentAt,packets:calls.input.length};
-  })()`);
-  assert.equal(pacing.packets, 1, 'An immediate reply cannot synchronously drain wheel debt');
-  await wait(`${wheelCount} >= 40`);
-  const secondSentAt = await evaluate('[...applicationScrollBatches.values()][0].sentAt');
-  assert.ok(secondSentAt - pacing.firstSentAt >= 15,
-    'Backlogged full batches retain at least 16 ms between sends, allowing timer rounding');
-  await ackApplicationScroll();
-  assert.equal(wheels(await evaluate('calls.input')).length, 65);
-  assert.equal(await evaluate('visualOffset'), 0);
-  await startApp();
-  const finePacing = await evaluate(`(() => {
-    scrollLocally(-4 * applicationScrollRowHeight());
-    const firstSentAt = applicationScrollSentAt;
-    scrollLocally(-4 * applicationScrollRowHeight());
-    return firstSentAt;
-  })()`);
-  await wait(`${wheelCount} === 8`);
-  const fineSecond = await evaluate('[...applicationScrollBatches.values()][1].sentAt');
-  assert.ok(fineSecond - finePacing >= 31, 'Small moves keep a 32 ms coalescing interval');
-  await ackApplicationScroll();
-  t.diagnostic('PASS: full batches can advance every frame while small moves retain coalescing');
-
-  for (const previousRtt of [0,40]) {
-    await startApp();
-    await evaluate(`(async () => {
-      applicationScrollAckEwma = ${previousRtt};
-      for (let move=0;move<16;move++) {
-        if (move) await new Promise(resolve => setTimeout(resolve,16));
-        scrollLocally(-(move === 15 ? 5 : 4) * applicationScrollRowHeight());
-      }
-    })()`);
-    await wait(`${wheelCount} === 65`);
-    assert.equal(await evaluate('applicationScrollBatches.size <= 16'), true);
-    assert.equal(await evaluate('applicationScrollStalled'), false,
-      'Neither a cold link nor a previously fast link stops before a 400 ms RTT reply can arrive');
-    assert.equal(await evaluate('applicationScrollOutstandingRows()'), 65);
-    await ackApplicationScroll();
-  }
-  t.diagnostic('PASS: timeout grace covers continuous drags on cold and previously faster links');
-
-  await startApp();
-  await evaluate('applicationScrollAckEwma = 400; scrollLocally(-200 * applicationScrollRowHeight())');
-  await wait(`${wheelCount} === 80`);
-  const obsoleteIds = await evaluate('[...applicationScrollBatches.keys()]');
-  await evaluate('scrollLocally(40 * applicationScrollRowHeight())');
-  assert.equal(wheels(await evaluate('calls.input')).length, 100,
-    'A full old-direction window leaves one reserved 20-row batch for reversal');
-  assert.ok(wheels(await evaluate('calls.input')).at(-1).startsWith('\x1b[<65;'));
-  const reversalId = await evaluate('[...applicationScrollBatches.keys()].at(-1)');
-  await evaluate('stopScrolling(); scrollLocally(40 * applicationScrollRowHeight())');
-  await settle(50);
-  assert.equal(wheels(await evaluate('calls.input')).length, 100,
-    'A fresh touch cannot erase outstanding transport charges or grow the reserve');
-  await evaluate('scrollLocally(-40 * applicationScrollRowHeight()); scrollLocally(40 * applicationScrollRowHeight())');
-  await settle(40);
-  assert.equal(await evaluate('applicationScrollOutstandingRows()'), 100,
-    'Repeated reversals cannot grow the row window beyond its one fixed reserve');
-  await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${obsoleteIds[0]})`);
-  await wait(`${wheelCount} === 120`);
-  assert.equal(await evaluate('applicationScrollOutstandingRows()'), 100);
-  assert.ok(wheels(await evaluate('calls.input')).at(-1).startsWith('\x1b[<65;'),
-    'A canceled batch reply refills transport capacity for the latest intent only');
-  assert.equal(await evaluate(`applicationScrollBatches.has(${reversalId})`), true,
-    'An obsolete reply cannot acknowledge another outstanding batch');
-  await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${obsoleteIds[0]})`);
-  await settle(40);
-  assert.equal(wheels(await evaluate('calls.input')).length, 120);
-  t.diagnostic('PASS: reversal has reserved credit, while cancellation and repeated direction changes cannot reset the transport bound');
-
-  for (const direction of [-1, 1]) {
-    await startApp();
-    await evaluate(`scrollLocally(${direction} * applicationScrollRowHeight())`);
-    const expiredBatch = await evaluate('[...applicationScrollBatches.keys()][0]');
-    assert.equal(await evaluate('applicationScrollDebt'), 0);
-    await wait('applicationScrollStalled && !visualSettle');
-    await applyApplicationScreen({lines:[{row:0,ansi:paint('Unrelated late output')}]});
-    assert.equal(await evaluate('applicationScrollStalled'), true);
-    await evaluate(`scrollLocally(${-direction} * applicationScrollRowHeight())`);
-    assert.equal(wheels(await evaluate('calls.input')).length, 2, 'A zero-debt reversal recovers in either direction');
-    const reversedBatch = await evaluate('[...applicationScrollBatches.keys()].at(-1)');
-    await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${expiredBatch})`);
-    assert.equal(await evaluate(`applicationScrollBatches.has(${reversedBatch})`), true,
-      'An expired obsolete reply can only reclaim its own transport charge');
-    assert.equal(await evaluate('applicationScrollStalled'), false);
-    await ackApplicationScroll();
-    assert.equal(await evaluate('visualOffset'), 0);
-  }
-  t.diagnostic('PASS: zero-debt timeout reversals recover in both directions without confusing old and new receipts');
-
-  await startApp();
-  await evaluate('scrollLocally(-120.25 * applicationScrollRowHeight())');
-  await wait('applicationScrollStalled && !visualSettle');
-  assert.equal(wheels(await evaluate('calls.input')).length, 80, 'Missing input replies eventually hold the filled row window');
-  await applyApplicationScreen();
-  assert.equal(await evaluate('applicationScrollStalled'), true, 'A late screen cannot release the timeout hold');
-  await ackApplicationScroll();
-  assert.equal(wheels(await evaluate('calls.input')).length, 120, 'Matching late replies drain retained whole-row debt');
-  assert.equal(await evaluate('applicationScrollStalled'), false);
-  t.diagnostic('PASS: missing replies hold further sends, and actual late receipts recover the pipeline');
-
-  await startApp();
-  await evaluate('applicationScrollAckEwma = 400');
-  for (let i=0;i<16;i++) {
-    await evaluate('scrollLocally(-applicationScrollRowHeight())');
-    await settle(33);
-  }
-  assert.equal(await evaluate('applicationScrollBatches.size'), 16);
-  await evaluate('scrollLocally(-applicationScrollRowHeight())');
-  await settle(40);
-  assert.equal(wheels(await evaluate('calls.input')).length, 16,
-    'Tiny wheel batches also have a request-count bound');
-  const tinyId = await evaluate('[...applicationScrollBatches.keys()][0]');
-  await evaluate(`window.tty7ScrollAcknowledged(${appGeneration},${tinyId})`);
-  await wait(`${wheelCount} === 17`);
-  assert.equal(await evaluate('applicationScrollBatches.size'), 16);
-  t.diagnostic('PASS: a count limit also bounds small outstanding RPCs');
-
-  await startApp();
-  // Fill the viewport like the phone grid does: the mount must clip the lead
-  // instead of adding scrollable overflow below the screen.
-  const tallRows = Array.from({length:38},(_,i)=>({row:i,ansi:paint('row '+i)}));
-  const tall = {cols:40, rows:38, epoch:String(appGeneration), revision:String(++appSequence),
-    base_revision:null, cursor:{row:37,col:0,shape:'block',visible:true,blink:false}, alternate:true,
-    modes:{app_cursor:false,app_keypad:false,bracketed_paste:true,mouse:true,sgr_mouse:true,alternate_scroll:true},
-    lines:tallRows};
-  const tallRendered = await evaluate('calls.rendered');
-  await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(tall)},${appSequence})`);
-  await wait(`calls.rendered === ${tallRendered + 1}`);
-  const rowHeight = await evaluate('applicationScrollRowHeight()');
-  const liveScrollHeight = await evaluate('viewport.scrollHeight');
-  await evaluate('scrollLocally(-applicationScrollRowHeight())');
-  const leading = await evaluate('visualOffset');
-  // A downward drag reveals older output, so the content leads downward.
-  assert.ok(leading >= rowHeight - 0.5 && leading <= rowHeight + 0.5,
-    'One unconfirmed row leads the rendered screen by one row');
-  assert.match(await evaluate('screen.style.transform'), /translate3d\(/);
-  assert.equal(await evaluate('viewport.scrollHeight'), liveScrollHeight,
-    'The local lead does not extend the scrollable viewport');
-  await ackApplicationScroll();
-  assert.equal(await evaluate('visualOffset'), 0, 'The delivered input batch settles the temporary local lead');
-  assert.equal(await evaluate('screen.style.transform'), '');
-  t.diagnostic('PASS: the screen leads by undelivered rows and settles without moving the viewport');
-
-  await startApp();
-  await evaluate('scrollLocally(-0.5 * applicationScrollRowHeight())');
-  assert.equal(await evaluate('visualOffset'), 0, 'Sub-row travel waits for a whole wheel line');
-  assert.equal(wheels(await evaluate('calls.input')).length, 0);
-  await evaluate('scrollLocally(-2 * applicationScrollRowHeight())');
-  assert.ok(await evaluate('visualOffset') > 0);
-  await evaluate('scrollLocally(applicationScrollRowHeight())');
-  assert.ok(await evaluate('visualOffset') < 0, 'Reversing direction moves the local lead immediately');
-  await evaluate('stopScrolling()');
-  assert.equal(await evaluate('visualOffset'), 0);
-  t.diagnostic('PASS: reversing direction replaces the local lead instead of fighting it');
-
-  await startApp();
   await startFling();
-  assert.ok(await evaluate('visualOffset') > 0,
-    'A real downward drag leads the screen before the application answers');
   const keyFocus = await evaluate('calls.focus');
   const shortcut = '\x1b';
   const afterKey = await evaluate(`(() => {
@@ -716,17 +483,12 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.equal(afterKey.at(-1), shortcut);
   assert.equal(await evaluate('calls.focus'), keyFocus);
   assert.equal(await evaluate('document.activeElement === input'), false, 'A native shortcut does not focus the IME');
-  assert.equal(await evaluate('visualOffset'), 0, 'The shortcut removes the local lead');
   await settle();
   assert.deepEqual(await evaluate('calls.input'), afterKey, 'The shortcut cancels old wheel batches and inertia');
 
   await startApp();
   await evaluate(`scrollLocally(-65.25 * screen.clientHeight / terminal.rows);
     window.tty7Key(${appGeneration - 1},${JSON.stringify(shortcut)})`);
-  for (let batch = 0; batch < 6 && wheels(await evaluate('calls.input')).length < 65; batch++) {
-    await ackApplicationScroll();
-    await settle(20);
-  }
   await wait(`${wheelCount} >= 65`);
   await settle(150);
   const staleKeyInput = await evaluate('calls.input');

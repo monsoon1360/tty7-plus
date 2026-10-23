@@ -536,10 +536,6 @@ class RemoteController(
                     HistoryPage.fromJson(request("history", "workspace_id" to JsonPrimitive(workspace),
                         "pane_id" to JsonPrimitive(pane.id), "subscription_id" to JsonPrimitive(historyFeed.subscriptionId!!),
                         "cursor" to (cursor?.let(::JsonPrimitive) ?: JsonNull), target = historyFeed).jsonObject)
-                }, onScroll = { scrollFeed, text ->
-                    check(isCurrent() && mutable.value.terminal === scrollFeed && scrollFeed.synced)
-                    request("input", "workspace_id" to JsonPrimitive(workspace), "pane_id" to JsonPrimitive(pane.id),
-                        "data" to JsonPrimitive(platform.encodeInput(text)), input = scrollFeed)
                 }) { parsedFeed, frame ->
                     acknowledgeParsed(parsedFeed, frame, generation, session, remote)
                 }

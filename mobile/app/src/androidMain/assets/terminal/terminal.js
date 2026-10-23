@@ -220,30 +220,6 @@ let sentGrid = '';
 let applicationScreen = null;
 let applicationScrollDebt = 0;
 let applicationScrollTimer = 0;
-// Pace wheel batches by their input RPC replies, never by screen revisions:
-// terminal output has no causal link to a particular input. Bound outstanding
-// rows instead of serializing every batch behind a network round trip.
-const maxApplicationScrollBatch = 20;
-const minApplicationScrollInterval = 32;
-const bulkApplicationScrollInterval = 16;
-const maxApplicationScrollOutstandingRows = 80;
-const applicationScrollReverseReserve = 20;
-const maxApplicationScrollOutstandingBatches = 16;
-const maxApplicationScrollDebt = 200;
-const maxApplicationScrollLeadRows = 3;
-let applicationScrollSentRows = 0;
-let applicationScrollSentSign = 0;
-let applicationScrollSentAt = 0;
-let applicationScrollLastBatchRows = 0;
-let applicationScrollInFlight = false;
-let applicationScrollStalled = false;
-let applicationScrollAckEwma = 0;
-let applicationScrollTimeouts = 0;
-let applicationScrollBatchId = 0;
-const applicationScrollBatches = new Map();
-let applicationScrollSendTimer = 0;
-let visualOffset = 0;
-let visualSettle = 0;
 let surfaceHeight = '';
 let surfaceWidth = '';
 let surfaceRows = 0;
@@ -285,12 +261,7 @@ function sizeSurface() {
     // xterm already calculated these pixel dimensions. Reading inline styles
     // avoids forcing DOM layout in every remote gesture after a screen patch.
     cellSize = {width:parseFloat(width) / terminal.cols || 8, height:parseFloat(height) / terminal.rows || 16};
-    // Include the mount's 2px top/bottom padding. The mount clips the screen
-    // so a local scroll lead cannot extend the viewport's scrollable area, and
-    // the surface must not lose its last rows to that clipping at rest.
-    const heightPx = parseFloat(height);
-    terminal.element.style.height = Number.isFinite(heightPx) ? `${heightPx + 4}px` : height;
-    if (visualOffset || applicationScrollSentRows) updateVisualOffset();
+    terminal.element.style.height = height;
     requestPhoneGrid();
     if (following) returnLive();
 }
@@ -305,7 +276,6 @@ function returnLive() {
     historyOpening = false;
     cancelAnimationFrame(coast);
     coast = 0;
-    setVisualOffset(0);
     if (touch?.axis === 'y') touch.blocked = true;
     historyPendingScroll = 0;
     terminal.scrollToBottom();
@@ -570,171 +540,12 @@ function applicationScrolls() {
     const modes = applicationScreen?.modes;
     return inputReady && history.hidden && applicationScreen?.alternate && (modes.mouse || modes.alternate_scroll);
 }
-function applicationScrollRowHeight() {
-    return Math.max(1, cellSize.height);
-}
-function applicationScrollDirection() {
-    if (applicationScrollDebt) return Math.sign(applicationScrollDebt);
-    return applicationScrollSentRows ? applicationScrollSentSign : 0;
-}
-/// How far the rendered screen may run ahead of the application, in pixels.
-/// Only whole rows in queued or undelivered input count; beyond three rows the
-/// lead is held and the exposed edge is the pending strip.
-function applicationScrollTarget() {
-    if (applicationScrollStalled) return 0;
-    const direction = applicationScrollDirection();
-    if (!direction) return 0;
-    // Whole rows only: a sub-row remainder is never sent and must not leave a
-    // permanent fractional lead when the gesture ends.
-    const unsent = applicationScrollDebt * direction > 0 ? Math.floor(Math.abs(applicationScrollDebt)) : 0;
-    const sent = applicationScrollSentSign === direction ? applicationScrollSentRows : 0;
-    const rows = Math.min(maxApplicationScrollLeadRows, unsent + sent);
-    return -direction * rows * applicationScrollRowHeight();
-}
-function setVisualOffset(offset) {
-    if (visualSettle) { cancelAnimationFrame(visualSettle); visualSettle = 0; }
-    visualOffset = offset;
-    // The screen, not its ancestors: the IME target stays fixed and the
-    // viewport's scrollHeight is not extended by a transformed container.
-    screen.style.transform = offset ? `translate3d(0,${offset.toFixed(2)}px,0)` : '';
-    screen.style.willChange = offset ? 'transform' : '';
-}
-function animateVisualOffset(target) {
-    if (visualSettle) { cancelAnimationFrame(visualSettle); visualSettle = 0; }
-    if (Math.abs(visualOffset - target) < 0.25) { setVisualOffset(target); return; }
-    const from = visualOffset;
-    const started = performance.now();
-    const step = now => {
-        const progress = Math.min(1, (now - started) / 120);
-        const eased = 1 - Math.pow(1 - progress, 3);
-        setVisualOffset(from + (target - from) * eased);
-        if (progress < 1) visualSettle = requestAnimationFrame(step);
-        else { visualSettle = 0; setVisualOffset(target); }
-    };
-    visualSettle = requestAnimationFrame(step);
-}
-function updateVisualOffset() {
-    setVisualOffset(applicationScrollTarget());
-}
-function applicationScrollOutstandingRows() {
-    let rows = 0;
-    for (const batch of applicationScrollBatches.values()) rows += batch.rows;
-    return rows;
-}
-function applicationScrollCredit() {
-    // Canceled movement still occupies transport capacity until its real reply.
-    // Reserve one batch for a fresh touch/reversal without growing the window on
-    // every reversal. All outstanding rows, including obsolete ones, are counted.
-    const obsolete = [...applicationScrollBatches.values()].some(batch => batch.obsolete);
-    return Math.max(0, maxApplicationScrollOutstandingRows +
-        (obsolete ? applicationScrollReverseReserve : 0) - applicationScrollOutstandingRows());
-}
-function refreshApplicationScroll() {
-    applicationScrollSentRows = 0;
-    for (const batch of applicationScrollBatches.values()) {
-        if (!batch.obsolete) applicationScrollSentRows += batch.rows;
-    }
-    applicationScrollInFlight = applicationScrollSentRows > 0;
-}
-function cancelApplicationScroll() {
-    applicationScrollDebt = 0;
-    for (const batch of applicationScrollBatches.values()) batch.obsolete = true;
-    applicationScrollSentRows = 0;
-    applicationScrollSentSign = 0;
-    applicationScrollSentAt = 0;
-    applicationScrollLastBatchRows = 0;
-    applicationScrollInFlight = false;
-    applicationScrollStalled = false;
-    applicationScrollTimeouts = 0;
-    clearTimeout(applicationScrollTimer);
-    clearTimeout(applicationScrollSendTimer);
-    applicationScrollTimer = applicationScrollSendTimer = 0;
-    setVisualOffset(0);
-}
-function applicationScrollTimeout() {
-    // The row window already bounds traffic. Leave at least 500ms for a reply,
-    // including when a previously fast mobile link becomes slower mid-gesture.
-    const measured = applicationScrollAckEwma || 200;
-    const base = Math.max(500, Math.min(1200, Math.round(measured * 2.5)));
-    return Math.min(1500, Math.round(base * Math.min(4, 1 + applicationScrollTimeouts * 0.5)));
-}
-function armApplicationScrollTimeout() {
-    clearTimeout(applicationScrollTimer);
+function flushApplicationScroll() {
     applicationScrollTimer = 0;
-    if (applicationScrollStalled) return;
-    let deadline = Infinity;
-    for (const batch of applicationScrollBatches.values()) {
-        if (!batch.obsolete) deadline = Math.min(deadline, batch.deadline);
-    }
-    if (deadline !== Infinity) applicationScrollTimer = setTimeout(applicationScrollAckTimedOut,
-        Math.max(1, Math.ceil(deadline - performance.now())));
-}
-function applicationScrollAckTimedOut() {
-    applicationScrollTimer = 0;
-    if (!applicationScrollInFlight) return;
-    applicationScrollTimeouts++;
-    applicationScrollStalled = true;
-    clearTimeout(applicationScrollSendTimer);
-    applicationScrollSendTimer = 0;
-    // Keep the receipts and direction. A real reply or a fresh direction can
-    // recover even when the unsent debt is exactly zero.
-    animateVisualOffset(0);
-}
-window.tty7ScrollAcknowledged = function(gen, id) {
-    if (gen !== generation) return;
-    const batch = applicationScrollBatches.get(id);
-    if (!batch) return;
-    applicationScrollBatches.delete(id);
-    if (!batch.obsolete) {
-        const now = performance.now();
-        const latency = Math.max(0, now - batch.sentAt);
-        applicationScrollAckEwma = applicationScrollAckEwma
-            ? applicationScrollAckEwma * 0.75 + latency * 0.25 : latency;
-        applicationScrollStalled = false;
-        applicationScrollTimeouts = 0;
-        // A valid reply proves link progress, not completion of other batches.
-        // Give other overdue receipts time to arrive; their rows remain charged.
-        for (const pending of applicationScrollBatches.values()) {
-            if (!pending.obsolete && pending.deadline <= now) pending.deadline = now + applicationScrollTimeout();
-        }
-        refreshApplicationScroll();
-        // Delivery does not confirm application paint. Only settle the lead;
-        // screen revisions cannot refill the transport window.
-        animateVisualOffset(applicationScrollTarget());
-    }
-    armApplicationScrollTimeout();
-    scheduleApplicationScroll();
-};
-function scheduleApplicationScroll() {
-    if (applicationScrollStalled || applicationScrollSendTimer) return;
-    if (!applicationScrolls()) { cancelApplicationScroll(); return; }
-    if (Math.abs(applicationScrollDebt) < 1 || applicationScrollCredit() < 1 ||
-        applicationScrollBatches.size >= maxApplicationScrollOutstandingBatches) return;
-    const interval = Math.abs(applicationScrollDebt) >= maxApplicationScrollBatch ||
-        applicationScrollLastBatchRows >= maxApplicationScrollBatch
-        ? bulkApplicationScrollInterval : minApplicationScrollInterval;
-    const delay = applicationScrollSentAt ? interval - (performance.now() - applicationScrollSentAt) : 0;
-    if (delay > 0) {
-        applicationScrollSendTimer = setTimeout(() => {
-            applicationScrollSendTimer = 0;
-            scheduleApplicationScroll();
-        }, Math.ceil(delay));
-    } else sendApplicationScroll();
-}
-function sendApplicationScroll() {
-    if (applicationScrollStalled || applicationScrollBatches.size >= maxApplicationScrollOutstandingBatches) return;
-    if (!applicationScrolls()) { cancelApplicationScroll(); return; }
-    const limit = Math.min(maxApplicationScrollBatch, applicationScrollCredit());
-    const lines = Math.max(-limit, Math.min(limit, Math.trunc(applicationScrollDebt)));
+    if (!applicationScrolls()) { applicationScrollDebt = 0; return; }
+    const lines = Math.max(-20, Math.min(20, Math.trunc(applicationScrollDebt)));
     if (!lines) return;
     applicationScrollDebt -= lines;
-    applicationScrollSentSign = Math.sign(lines);
-    applicationScrollSentAt = performance.now();
-    applicationScrollLastBatchRows = Math.abs(lines);
-    const id = ++applicationScrollBatchId;
-    applicationScrollBatches.set(id, {rows:Math.abs(lines), sentAt:applicationScrollSentAt,
-        deadline:applicationScrollSentAt + applicationScrollTimeout(), obsolete:false});
-    refreshApplicationScroll();
     const modes = applicationScreen.modes;
     let sequence;
     if (modes.mouse) {
@@ -744,10 +555,8 @@ function sendApplicationScroll() {
         sequence = modes.sgr_mouse ? `\x1b[<${button};${col};${row}M` :
             `\x1b[M${String.fromCharCode(button + 32, Math.min(col,223) + 32, Math.min(row,223) + 32)}`;
     } else sequence = modes.app_cursor ? (lines < 0 ? '\x1bOA' : '\x1bOB') : (lines < 0 ? '\x1b[A' : '\x1b[B');
-    armApplicationScrollTimeout();
-    updateVisualOffset();
-    if (window.Tty7) window.Tty7.scroll(generation, id, sequence.repeat(Math.abs(lines)));
-    scheduleApplicationScroll();
+    if (window.Tty7) window.Tty7.input(generation, sequence.repeat(Math.abs(lines)));
+    if (Math.abs(applicationScrollDebt) >= 1) applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
 }
 function scrollLocally(amount) {
     if (historyOpening) {
@@ -767,16 +576,13 @@ function scrollLocally(amount) {
     // Full-screen programs own their transcript (Codex, vim, less, tmux).
     // Match the desktop's wheel route rather than opening shell history.
     if (applicationScrolls()) {
-        if (amount * (applicationScrollDebt || applicationScrollSentSign) < 0) {
-            cancelApplicationScroll();
+        if (amount * applicationScrollDebt < 0) applicationScrollDebt = 0;
+        applicationScrollDebt += amount / Math.max(1, cellSize.height);
+        // Coalesce touch/120 Hz move events before paying for another remote
+        // RPC. Retain every unsent whole line, including beyond a 20-line batch.
+        if (!applicationScrollTimer && Math.abs(applicationScrollDebt) >= 1) {
+            applicationScrollTimer = setTimeout(flushApplicationScroll, 32);
         }
-        applicationScrollDebt = Math.max(-maxApplicationScrollDebt,
-            Math.min(maxApplicationScrollDebt,
-                applicationScrollDebt + amount / applicationScrollRowHeight()));
-        // Start immediately, then coalesce moves while the bounded row window
-        // has room. Only matching RPC replies return transport credit.
-        scheduleApplicationScroll();
-        updateVisualOffset();
         return true;
     }
     const remaining = moveScroll(viewport, amount);
@@ -806,7 +612,9 @@ function focusInput() {
 function stopScrolling() {
     cancelAnimationFrame(frame);
     cancelAnimationFrame(coast);
-    cancelApplicationScroll();
+    clearTimeout(applicationScrollTimer);
+    applicationScrollTimer = 0;
+    applicationScrollDebt = 0;
     touch = undefined;
     frame = coast = 0;
     pendingX = pendingY = 0;
@@ -970,8 +778,8 @@ window.tty7Begin = function(gen) {
     generation = gen;
     inputReady = false;
     applicationScreen = null;
+    applicationScrollDebt = 0;
     sentGrid = '';
-    applicationScrollBatches.clear();
     stopScrolling();
     touch = undefined;
     activePointers.clear();
