@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use super::kit::{self, BtnKind, Tk, fs};
 use super::*;
+use gpui_component::ActiveTheme as _;
 
 /// What a menu row does when picked.
 pub(crate) type PickFn = Rc<dyn Fn(&mut Tty7App, &mut Window, &mut Context<Tty7App>)>;
@@ -147,6 +148,7 @@ impl Tty7App {
                         .min_w(px(kit::CONTROL_W)),
                 ))
             })
+            .debug_selector(move || id.to_string())
             .into_any_element()
     }
 
@@ -444,6 +446,14 @@ impl Tty7App {
         let entry = settings_search_entries()
             .iter()
             .find(|entry| t(entry.title) == label);
+        let card_row = entry.is_some_and(|entry| {
+            matches!(entry.section, SettingsSection::Ai | SettingsSection::Git)
+        });
+        let description_color = if card_row {
+            cx.theme().muted_foreground
+        } else {
+            tk.k5
+        };
         let modified = entry.is_some_and(|entry| entry.modified(cx.global::<Config>()));
         let capture = self
             .active_settings()
@@ -472,7 +482,15 @@ impl Tty7App {
         // The control never shrinks, so on a narrow pane it would squeeze the
         // label column to a letter per line. Below the width where both still
         // fit, the control goes on a line of its own instead.
-        let stacked = self.settings_row_under(STACK_ROW_BELOW, cx);
+        let stacked = self.settings_row_under(STACK_ROW_BELOW, cx)
+            || entry.is_some_and(|entry| {
+                matches!(
+                    entry.title,
+                    L10nKey::SettingsDeepSeekKey
+                        | L10nKey::SettingsAiTestConnection
+                        | L10nKey::SettingsGitRules
+                )
+            });
         // The reset sits on the label's own line, beside the name it resets,
         // so a changed row keeps the height of an unchanged one. Rows the
         // catalog cannot reset in place still say they differ.
@@ -515,6 +533,8 @@ impl Tty7App {
         let labels = v_flex()
             .gap(px(2.))
             .min_w_0()
+            .when(card_row && !stacked, |col| col.flex_1())
+            .when(card_row && stacked, |col| col.w_full())
             .when(gated, |col| col.opacity(0.45))
             .child(title_line)
             .when(!desc.is_empty(), |col| {
@@ -522,7 +542,7 @@ impl Tty7App {
                     div()
                         .text_size(fs(12.))
                         .line_height(px(17.))
-                        .text_color(tk.k5)
+                        .text_color(description_color)
                         .child(desc),
                 )
             });
@@ -531,6 +551,7 @@ impl Tty7App {
             .role(gpui::Role::Group)
             .aria_label(a11y_name)
             .flex()
+            .when(card_row, |row| row.w_full().min_w_0())
             .when(stacked, |row| row.flex_col().items_start().gap(px(8.)))
             .when(!stacked, |row| {
                 row.flex_row().items_center().justify_between().gap(px(32.))

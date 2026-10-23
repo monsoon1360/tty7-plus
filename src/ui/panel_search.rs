@@ -232,15 +232,16 @@ impl Tty7App {
         // Until the answer for this query arrives, the last one stays on
         // screen under a "Searching…" summary rather than blinking out on
         // every keystroke. A state with no hits to keep says "Searching…" on
-        // its own. Only hits from the same host are kept: a row opens its
-        // path on the active host, so another machine's hits would open the
-        // wrong file (or none) there.
+        // its own. Keep results only within the same host and project roots:
+        // rows open on the active project, not the source of an earlier query.
         let Some(landed) = run.landed().filter(|l| Some(&l.key) == run.wanted()) else {
             return match run.landed() {
                 Some(l)
                     if matches!(l.outcome, Outcome::Found(_))
                         && !l.groups.is_empty()
-                        && run.wanted().is_some_and(|w| w.host == l.key.host) =>
+                        && run
+                            .wanted()
+                            .is_some_and(|w| w.host == l.key.host && w.roots == l.key.roots) =>
                 {
                     Body::Results
                 }
@@ -645,7 +646,6 @@ fn first_line(e: &str) -> &str {
 #[cfg(test)]
 mod gpui_tests {
     use super::*;
-    use crate::core::config::RightPanelTab;
     use crate::daemon::protocol::DaemonMsg;
     use crate::ui::app::{render_probe, test_window};
     use gpui::{Focusable as _, TestAppContext, VisualTestContext};
@@ -676,7 +676,7 @@ mod gpui_tests {
             .encode(&mut pane)
             .expect("the pane's socket takes the cwd");
         app.update_in(&mut vcx, |app, _, cx| {
-            app.set_right_panel_tab(RightPanelTab::Search, cx);
+            app.find_in_files(cx);
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
@@ -837,6 +837,41 @@ mod gpui_tests {
             "an emptied field clears the results"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[gpui::test]
+    fn switching_projects_hides_previous_content_results_while_searching(cx: &mut TestAppContext) {
+        let _serial = serial();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let first = std::fs::canonicalize(first.path()).unwrap();
+        let second = std::fs::canonicalize(second.path()).unwrap();
+        std::fs::write(first.join("first.txt"), "needle in first project\n").unwrap();
+        std::fs::write(second.join("second.txt"), "needle in second project\n").unwrap();
+        let (app, mut vcx, mut pane) = search_panel_on(cx, &first);
+        type_query(&app, &mut vcx, "needle");
+        landed(&app, &mut vcx);
+        assert_eq!(groups(&app, &mut vcx), vec![("first.txt".into(), vec![1])]);
+        DaemonMsg::Cwd(second.clone()).encode(&mut pane).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            vcx.executor().advance_clock(Duration::from_millis(20));
+            app.update_in(&mut vcx, |_, _, cx| cx.notify());
+            vcx.background_executor.run_until_parked();
+            let changed = app.update_in(&mut vcx, |app, _, cx| {
+                app.project_roots(cx).map(|(_, roots)| roots) == Some(vec![second.clone()])
+            });
+            if changed {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        app.update_in(&mut vcx, |app, window, cx| {
+            assert!(matches!(app.panel_search_body(window, cx), Body::Searching));
+        });
+        landed(&app, &mut vcx);
+        assert_eq!(groups(&app, &mut vcx), vec![("second.txt".into(), vec![1])]);
     }
 
     #[gpui::test]

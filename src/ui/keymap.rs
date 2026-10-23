@@ -669,7 +669,6 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
         ("ScmToggleGraph", ""),
         ("ToggleDiffViewMode", ""),
         ("ToggleSftp", ""),
-        ("ShowSshForwards", ""),
         ("ToggleCodePanel", "ctrl-3"),
         // Deliberately unbound. Docking is the default and Esc already gets the
         // terminal back, so a default chord here would only be one more thing
@@ -682,15 +681,9 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
         // to the editor that has the focus when you would reach for them.
         ("ToggleDocumentPreview", ""),
         ("ToggleDocumentWrap", ""),
-        // Implemented, dispatchable, and until now unbindable: `set_binding`
-        // only fills slots that exist here, so `"ShowRightPanelInfo": "ctrl-1"`
-        // in config.json was dropped without a word, and the Keybindings page —
-        // which reads this list — never showed them at all.
-        ("ShowRightPanelInfo", ""),
         ("ShowRightPanelFiles", ""),
         ("ShowRightPanelSearch", ""),
         ("ShowRightPanelChanges", ""),
-        ("ShowRightPanelGitHub", ""),
         ("EditorSave", "secondary-s"),
         ("EditorSaveAs", "secondary-shift-s"),
         ("EditorGoToLine", "ctrl-g"),
@@ -986,10 +979,6 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
             CommandGroup::View,
             t(L10nKey::CmdToggleDocumentWrap).to_string(),
         ),
-        "ShowRightPanelInfo" => (
-            CommandGroup::View,
-            t(L10nKey::CmdRightPanelInfo).to_string(),
-        ),
         "ShowRightPanelChanges" => (
             CommandGroup::View,
             t(L10nKey::CmdRightPanelChanges).to_string(),
@@ -1001,10 +990,6 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
         "ShowRightPanelSearch" => (
             CommandGroup::View,
             t(L10nKey::CmdRightPanelSearch).to_string(),
-        ),
-        "ShowRightPanelGitHub" => (
-            CommandGroup::View,
-            t(L10nKey::CmdRightPanelGitHub).to_string(),
         ),
         "FindInTerminal" => (
             CommandGroup::Terminal,
@@ -1141,10 +1126,6 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
         ),
         "RestartSshSession" => (CommandGroup::Ssh, t(L10nKey::CmdSshReconnect).to_string()),
         "ToggleSftp" => (CommandGroup::Ssh, t(L10nKey::CmdSshRemoteFiles).to_string()),
-        "ShowSshForwards" => (
-            CommandGroup::Ssh,
-            t(L10nKey::CmdSshPortForwarding).to_string(),
-        ),
         "ForkAgentSession" => (CommandGroup::Agents, t(L10nKey::CmdForkSession).to_string()),
         "ForkAgentSessionRight" => (
             CommandGroup::Agents,
@@ -1809,11 +1790,9 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "ToggleLeftPanel" => KeyBinding::new(keystroke, ToggleLeftPanel, None),
         "ToggleTerminalArea" => KeyBinding::new(keystroke, ToggleTerminalArea, None),
         "ToggleRightPanel" => KeyBinding::new(keystroke, ToggleRightPanel, None),
-        "ShowRightPanelInfo" => KeyBinding::new(keystroke, ShowRightPanelInfo, None),
         "ShowRightPanelChanges" => KeyBinding::new(keystroke, ShowRightPanelChanges, None),
         "ShowRightPanelFiles" => KeyBinding::new(keystroke, ShowRightPanelFiles, None),
         "ShowRightPanelSearch" => KeyBinding::new(keystroke, ShowRightPanelSearch, None),
-        "ShowRightPanelGitHub" => KeyBinding::new(keystroke, ShowRightPanelGitHub, None),
         "ScmCommit" => KeyBinding::new(keystroke, ScmCommit, action_context(action)),
         "ScmCommitAmend" => KeyBinding::new(keystroke, ScmCommitAmend, action_context(action)),
         "ScmStageAll" => KeyBinding::new(keystroke, ScmStageAll, None),
@@ -1850,7 +1829,6 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "MinimizeWindow" => KeyBinding::new(keystroke, MinimizeWindow, None),
         "ZoomWindow" => KeyBinding::new(keystroke, ZoomWindow, None),
         "ToggleSftp" => KeyBinding::new(keystroke, ToggleSftp, None),
-        "ShowSshForwards" => KeyBinding::new(keystroke, ShowSshForwards, None),
         "ToggleCodePanel" => KeyBinding::new(keystroke, ToggleCodePanel, None),
         "ToggleDocumentFill" => KeyBinding::new(keystroke, ToggleDocumentFill, None),
         "DocumentWidthThird" => KeyBinding::new(keystroke, DocumentWidthThird, None),
@@ -1986,11 +1964,9 @@ mod tests {
         let bindable: std::collections::HashSet<&str> =
             default_bindings().into_iter().map(|(a, _)| a).collect();
         for action in [
-            "ShowRightPanelInfo",
             "ShowRightPanelChanges",
             "ShowRightPanelFiles",
             "ShowRightPanelSearch",
-            "ShowRightPanelGitHub",
         ] {
             assert!(bindable.contains(action), "{action} has nowhere to bind to");
             assert!(

@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **AI and Git settings with editable commit drafts.** Configure DeepSeek API
-  credentials in the OS keychain or reuse the local Codex CLI login, choose a
-  commit language and optional multiline rules, and generate into the existing
-  SCM message box. Only the selected commit patch is sent, capped at 24 KiB;
-  generation never stages, commits or pushes, and late results cannot overwrite
-  changed drafts or disconnected repositories.
+- **AI and Git settings with editable commit drafts.** Separate local Codex
+  tools from the additional DeepSeek provider card, with an explicit enable
+  switch, OS-keychain credentials and a content-free connection test. Choose
+  commit language and multiline rules, then generate into the existing SCM
+  message box. Only the selected patch is sent, capped at 24 KiB; generation
+  never stages, commits or pushes, and late results cannot overwrite changed
+  drafts or disconnected repositories.
 - **Local Codex model and reasoning defaults.** Menu launches, resume/fork,
   worktree tasks and integrated local shells share argument precedence without
   editing Codex's global configuration. Explicit options win; SSH/remote Codex,
@@ -43,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be disabled or revoked. See [pairing, security, builds and deployment](docs/remote/workspaces.mdx#android-remote-terminals).
 
 ### Changed
+
+- **Settings alignment and monitor placement.** Align the Git provider and
+  language dropdowns, shorten AI/Git help text, and open new settings windows
+  on the invoking workspace's display instead of always using the primary one.
+
+- **Shorter, lighter AI commit drafts.** Default to a concise subject instead
+  of a long body; explicit body rules remain intact. Unset Git-generation
+  effort uses low Codex reasoning or non-thinking DeepSeek, without changing
+  ordinary interactive Codex defaults. Remove redundant repository probes.
+- **Commit All includes new files and first commits.** With no staged
+  selection, include every non-ignored tracked or untracked change; generation
+  previews that same set without touching the index. Recheck the actual index
+  before auto-staging, preserve explicit selections and amend semantics, and
+  invalidate late AI results when committing.
+- **The right panel has only Source Control and Files.** Remove Info and
+  GitHub UI and their dedicated actions. Old panel choices migrate without
+  losing other settings. Files keeps project content search; SSH automatic
+  and loopback forwarding continue in the background.
 
 - **`Ctrl+1`..`Ctrl+4` toggle the four regions, and each one slides.** The
   sidebar, the terminal area, the editor and the details panel are now
@@ -98,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codex can scroll through output after desktop resizing.** Removed repaint
+  clipping that swallowed normal autowrap and prevented real output from entering
+  scrollback. Cursor-addressed output, including writes below the viewport, keeps
+  normal wrapping and scrolling semantics. Resize-only reflow protection still
+  keeps old screen images out of history; buffered updates are applied before
+  geometry changes. Desktop scrolling and daemon checkpoint regressions verify
+  earlier rows remain readable and the complete emitted text survives.
 - **Helix and Vim share the built-in editor's region.** Opening a file focuses
   the editor without adding a Terminal row to the sidebar or terminal switcher.
   External editors use the same file tabs, Dock/Fill layouts and 140 ms

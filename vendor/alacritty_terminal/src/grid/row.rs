@@ -68,6 +68,13 @@ impl<T: Default> Row<T> {
         self.inner.resize_with(columns, T::default);
     }
 
+    /// Clip a physical screen row without allocating a discarded wrapped tail.
+    pub(crate) fn truncate(&mut self, columns: usize) {
+        self.allocated_bytes = None;
+        self.inner.truncate(columns);
+        self.occ = min(self.occ, columns);
+    }
+
     /// Reduce the number of columns in the row.
     ///
     /// This will return all non-empty cells that were removed.

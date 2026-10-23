@@ -17797,6 +17797,99 @@ mod prompt_handover_tests {
         DaemonMsg::Output(bytes.to_vec()).encode(daemon).unwrap();
     }
 
+    #[gpui::test]
+    fn synchronized_output_after_resize_remains_readable_by_scrolling(cx: &mut TestAppContext) {
+        fn visible_row(view: &TerminalView, row: i32) -> String {
+            let term = view.terminal.term.lock();
+            let grid = term.grid();
+            let line = Line(row - grid.display_offset() as i32);
+            (0..grid.columns())
+                .map(|col| grid[line][Column(col)].c)
+                .collect()
+        }
+
+        let (window, mut daemon) = harness(cx);
+        cx.update(|cx| cx.global_mut::<Config>().mouse_scroll_multiplier = 1.0);
+        cx.run_until_parked();
+        let (old_cols, rows, viewport) = window.update(cx, |view, window, _| {
+            let term = view.terminal.term.lock();
+            (term.columns(), term.screen_lines(), window.viewport_size())
+        }).unwrap();
+        let size = |cols: usize| crate::daemon::protocol::WinSize {
+            cols: cols as u16,
+            rows: rows as u16,
+            cell_w: 8,
+            cell_h: 16,
+        };
+        DaemonMsg::Size(size(old_cols)).encode(&mut daemon).unwrap();
+        let mut repaint = String::from("\x1b[?2026h\x1b[H\x1b[J");
+        for row in 0..rows {
+            let label = format!("original-row-{row}");
+            repaint.push_str(&format!("\x1b[{};1H{label:.<width$}", row + 1, width = old_cols - 1));
+        }
+        repaint.push_str("\x1b[?2026l");
+        output(&mut daemon, repaint.as_bytes());
+        DaemonMsg::Prompt {
+            active: true,
+            at_prompt: false,
+            last_exit: Some(91),
+        }.encode(&mut daemon).unwrap();
+        settle(cx, &window, "the report following the primary-screen image", |view| {
+            view.terminal.last_exit_code() == Some(91)
+        });
+
+        let visual = gpui::VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(gpui::size(viewport.width * 0.75, viewport.height));
+        cx.run_until_parked();
+        let cols = window.update(cx, |view, _, _| {
+            let term = view.terminal.term.lock();
+            assert!(term.columns() < old_cols);
+            assert_eq!(term.screen_lines(), rows);
+            assert_eq!(term.grid().history_size(), 0, "resize must not archive the image");
+            term.columns()
+        }).unwrap();
+        DaemonMsg::Size(size(cols)).encode(&mut daemon).unwrap();
+
+        // Real output at the bottom must still wrap and push the first two rows
+        // into history. Its width follows the actual rendered test window.
+        let first = format!("{:.<cols$}", "new-output-start");
+        let second = format!("{:.<cols$}", "new-output-middle");
+        output(&mut daemon, format!("\x1b[?2026h\x1b[{rows};1H{first}{second}Z\x1b[?2026l").as_bytes());
+        DaemonMsg::Prompt {
+            active: true,
+            at_prompt: false,
+            last_exit: Some(92),
+        }.encode(&mut daemon).unwrap();
+        settle(cx, &window, "the report following the wrapped output", |view| {
+            view.terminal.last_exit_code() == Some(92)
+        });
+        window.update(cx, |view, window, cx| {
+            let bottom = rows as i32 - 1;
+            assert_eq!(visible_row(view, 0), format!("{:.<cols$}", "original-row-2"));
+            assert_eq!(visible_row(view, bottom - 2), first);
+            assert_eq!(visible_row(view, bottom - 1), second);
+            assert_eq!(visible_row(view, bottom), format!("{:<cols$}", "Z"));
+
+            view.on_scroll(&ScrollWheelEvent {
+                delta: ScrollDelta::Lines(gpui::point(0., 2.)),
+                touch_phase: gpui::TouchPhase::Started,
+                ..Default::default()
+            }, window, cx);
+            assert_eq!(visible_row(view, 0), format!("{:.<cols$}", "original-row-0"));
+            assert_eq!(visible_row(view, 1), format!("{:.<cols$}", "original-row-1"));
+            assert_eq!(visible_row(view, bottom), first);
+
+            view.on_scroll(&ScrollWheelEvent {
+                delta: ScrollDelta::Lines(gpui::point(0., -2.)),
+                touch_phase: gpui::TouchPhase::Moved,
+                ..Default::default()
+            }, window, cx);
+            assert_eq!(visible_row(view, bottom - 2), first);
+            assert_eq!(visible_row(view, bottom - 1), second);
+            assert_eq!(visible_row(view, bottom), format!("{:<cols$}", "Z"));
+        }).unwrap();
+    }
+
     /// Waits for the tab's reading of what the pane calls itself to become
     /// `expect`, running out the wait a new title is held for on each pass.
     fn titled(

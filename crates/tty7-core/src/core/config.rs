@@ -826,7 +826,7 @@ impl Default for Config {
             sidebar_collapsed: false,
             right_panel_visible: false,
             right_panel_width: default_right_panel_width(),
-            right_panel_tab: RightPanelTab::Info,
+            right_panel_tab: RightPanelTab::Scm,
             diff_view: DiffViewMode::Split,
             document_layout: DocumentLayout::default(),
             document_ratio: default_document_ratio(),
@@ -1574,23 +1574,16 @@ fn default_prefix() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RightPanelTab {
-    #[default]
-    Info,
     /// The source control panel. Renamed from `Changes` in place rather than
     /// added alongside it: `rename` works in both directions, so a config
     /// written by this version still says `"changes"` and an older build reads
     /// it back unchanged.
+    #[default]
     #[serde(rename = "changes", alias = "scm", alias = "git")]
     Scm,
+    /// File browsing and content search share one panel.
+    #[serde(alias = "search")]
     Files,
-    /// Project-wide content search. Added as a tab of its own, which costs a
-    /// rolled-back build one thing: it does not know `"search"`, falls through
-    /// `de_lenient` to `Info`, and opens there. Nothing else is lost.
-    Search,
-    /// The bound GitHub repository's issues and pull requests. Same rollback
-    /// cost as `Search`.
-    #[serde(rename = "github")]
-    GitHub,
 }
 
 /// What opens when a file link in the grid is clicked.
@@ -3270,6 +3263,36 @@ mod tests {
         assert!(value.get("ssh_profile_frecency").is_none());
         // The SSH preferences are settings like any other and stay put.
         assert_eq!(value["verify_host_keys"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn retired_panel_choices_preserve_other_settings() {
+        for tab in ["info", "github", "unknown"] {
+            let cfg: Config = serde_json::from_value(serde_json::json!({
+                "right_panel_tab": tab,
+                "right_panel_visible": true,
+                "right_panel_width": 333.0,
+                "font_size": 19.0,
+                "verify_host_keys": false
+            }))
+            .unwrap();
+            assert_eq!(cfg.right_panel_tab, RightPanelTab::Scm);
+            assert!(cfg.right_panel_visible);
+            assert_eq!(cfg.right_panel_width, 333.0);
+            assert_eq!(cfg.font_size, 19.0);
+            assert!(!cfg.verify_host_keys);
+        }
+        assert_eq!(Config::default().right_panel_tab, RightPanelTab::Scm);
+    }
+
+    #[test]
+    fn former_search_choice_loads_as_files_and_serializes_current_tab() {
+        let cfg: Config = serde_json::from_str(r#"{"right_panel_tab":"search"}"#).unwrap();
+        assert_eq!(cfg.right_panel_tab, RightPanelTab::Files);
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap()["right_panel_tab"],
+            serde_json::json!("files")
+        );
     }
 
     #[test]

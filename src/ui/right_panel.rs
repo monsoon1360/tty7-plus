@@ -8,23 +8,9 @@ use gpui_component::{
 use std::path::PathBuf;
 
 use crate::core::config::{Config, RightPanelTab};
-use crate::daemon::protocol::{ManagedForward, PaneProcs, PortProbe};
-use crate::ui::app::{
-    CONTENT_INSET, TILE_GLYPH_SM, TILE_GLYPH_XS, TILE_SIZE_SM, TILE_SIZE_XS, Tty7App,
-    tile_trailing_inset,
-};
+use crate::daemon::protocol::PaneProcs;
+use crate::ui::app::{CONTENT_INSET, TILE_GLYPH_SM, TILE_SIZE_SM, Tty7App, tile_trailing_inset};
 use crate::ui::i18n::{L10nKey, t, t_fmt};
-use crate::ui::scrollbar::with_vertical_scrollbar;
-
-/// The tab a stored choice shows. Search was a tab of its own until the
-/// Files tab took over searching file contents; a config that still says
-/// `"search"` opens on Files.
-pub(crate) fn shown_tab(tab: RightPanelTab) -> RightPanelTab {
-    match tab {
-        RightPanelTab::Search => RightPanelTab::Files,
-        tab => tab,
-    }
-}
 
 /// Wide enough for the word tabs, bare, beside the panel toggle at
 /// the default interface size — the Changes count is dropped before a label is
@@ -84,65 +70,26 @@ pub(crate) const HEADING: f32 = 11.5 * STEP;
 /// The word tabs at the top of the panel, a half step under body text.
 pub(crate) const TAB_TEXT: f32 = 12.5 * STEP;
 
-/// How tall a Session, section-heading or search row is.
-const INFO_ROW_H: f32 = 28.;
-
-/// How tall a process row is — a notch tighter than the Session rows, since
-/// the list is read as one block rather than line by line.
-pub(crate) const PROC_ROW_H: f32 = 26.;
-
-/// How far a child process sits in from its parent, the width of the `└`
-/// elbow that marks it.
-const PROC_INDENT: f32 = 14.;
-
-/// The space between two sections of the Info tab.
-pub(crate) const SECTION_GAP: f32 = 16.;
-
-/// Where the Session value column starts, measured from `CONTENT_INSET` —
-/// the label cell, its `ROW_INSET` of leading padding and the gap after it —
-/// at the default 16px rem. The values land at `12 + 76 = 88`.
-const INFO_LABEL_MIN: f32 = 76.;
-
-/// The space between a Session label and its value.
-const INFO_LABEL_GAP: f32 = 9.;
+/// Height of the compact file-search well.
+const SEARCH_WELL_H: f32 = 28.;
 
 /// The leading glyph on a panel row — the file tree's folder and file marks.
 ///
 /// Keep row glyphs on the same 16px grid as the toolbar.
 pub(crate) const ROW_GLYPH: f32 = crate::ui::app::TILE_GLYPH;
 
-// The right panel's type ramp: four steps, a point apart, that the Info and
-// Source Control tabs both draw from so switching between them does not change
-// the apparent size of the panel. The Files tab, in `file_tree.rs`, reaches the
-// same 14px through `text_sm()`, which is the same rem under another name. The
-// steps are close together on purpose: the panel is a dense aside next to the
-// terminal, and the differences between them are meant to be felt as hierarchy
-// rather than seen as different type sizes.
+// Git and Files share this type ramp so switching panels does not change the
+// apparent size of the interface. Files reaches the same body size through
+// `text_sm()`.
 //
-// Every tab of the panel is on this ladder now. The px constants that used to
-// live here — PANEL_TEXT and its steps — went when the interface font scale
-// landed, and `scm/` followed a branch later: it had been cut from main hours
-// before that commit and had copied the ladder as it stood, which left the
-// Source Control tab frozen at the *old* 12/11/10.5 while its neighbours moved
-// to 14/13/12/11 and started tracking `ui_font_size`. Nothing in git conflicted
-// — the two touched different files — so the only thing that would have caught
-// it was a reader noticing that one tab was a step smaller than the rest.
-//
-// Which is the reason to keep reaching for these names rather than spelling a
-// number: a size written as `px(12.)` anywhere in this panel is either a
-// mistake or something that is not type.
 
 /// A row's own padding: lists sit `CONTENT_INSET` in from the panel's edges,
 /// which is where a hovered row's fill starts, and each row pads its content
 /// this much further in. The text column is therefore [`TEXT_INSET`] — 20px —
 /// and the fill bleeds 8px past it on both sides.
 ///
-/// It lives here rather than in one tab because every tab of this panel is the
-/// same list of rows seen from a different angle, and a fill that bleeds 4px
-/// under Source Control and 6px under Info is a panel whose rows visibly do
-/// not belong to each other. Anything in the panel that is text but not a row
-/// — a section heading, an empty-state line — sits at `TEXT_INSET` directly,
-/// so it lines up with the rows under it.
+/// It lives here rather than in one tab so Git and Files share the same row
+/// geometry. Text outside a row sits at `TEXT_INSET` directly.
 pub(crate) const ROW_INSET: f32 = 8.;
 
 /// Where the panel's text column starts, from either edge: the list inset
@@ -154,29 +101,6 @@ pub(crate) const ROW_FILL_RADIUS: gpui::Pixels = px(6.);
 
 /// The space between the Files tab's search well and the tree under it.
 const FILES_SEARCH_GAP: f32 = 10.;
-
-/// How far a heading's trailing tile hangs past the text column, so its glyph
-/// — not its hit box — lines up with the values under it: the Ports `+` sits
-/// `TEXT_INSET - 5` = 15px from the right edge.
-const HEADING_TILE_OUTDENT: f32 = 5.;
-
-/// The Ports heading's add tile, and the mark in it.
-const HEADING_TILE: f32 = 22.;
-const HEADING_TILE_GLYPH: f32 = 12.;
-
-/// Whether this forward is the one that reaches `port` on the far side.
-///
-/// Local forwards only, and only those aimed at the far host's own loopback:
-/// a forward to some third machine happens to carry the same number, and
-/// pairing it with the port row would claim it leads somewhere it does not.
-/// Nor does a switched-off forward: it leads nowhere until it is switched back
-/// on, and its own row is where that switch is.
-pub(crate) fn forwards_port(m: &ManagedForward, port: u16) -> bool {
-    m.enabled
-        && m.kind == crate::daemon::protocol::SshForwardKind::Local
-        && m.target_port == port
-        && crate::daemon::protocol::PortEntry::reaches_loopback(&m.target_host)
-}
 
 /// The strip the row and group action buttons live in, revealed by hovering
 /// `row`.
@@ -239,31 +163,13 @@ const SEARCH_GLYPH_GAP: f32 = 3.;
 pub(crate) struct RightPanelState {
     pub(crate) procs_pane: Option<u64>,
     pub(crate) procs: Option<PaneProcs>,
-    pub(crate) cpu: crate::ui::proc_usage::CpuTracker,
     pub(crate) procs_loading: bool,
     pub(crate) procs_gen: u64,
     pub(crate) procs_forwards: Option<crate::ui::app::ForwardRoute>,
     /// Who to ask about `procs_pane` — `None` means this machine's daemon.
     pub(crate) procs_host: Option<crate::ui::host_ops::SharedHost>,
-    /// Whether the host that owns this pane cannot describe its processes at
-    /// all: an older `tty7-server` on the far end, which does not know the
-    /// request. Kept apart from an empty list, because "nothing is listening"
-    /// and "nobody could tell us" are different sentences and the panel has to
-    /// say which one it means.
-    pub(crate) procs_unsupported: bool,
-    /// The last round trip measured to the machine `procs_pane` lives on.
-    /// `None` before the first ping comes back.
-    pub(crate) link_rtt: Option<std::time::Duration>,
-    /// Which host `link_rtt` was measured against, and — since only a remote
-    /// pane has one — whether the latency row is drawn at all. Held per host
-    /// rather than per pane so that moving between two panes of the same
-    /// machine keeps the number on screen: it belongs to the link the two
-    /// panes share, and blanking it per pane would empty the row for as long
-    /// as the next poll takes to cross the network.
-    pub(crate) link_host: Option<crate::ui::host_ops::HostId>,
-    /// How `procs_pane`'s loopback ports can be reached from this machine.
-    /// Read by the Ports list to decide what a click on a port does, and by
-    /// the watch to decide whether it has to keep looking with the panel shut.
+    /// How this pane's loopback ports can be reached; only remote panes whose
+    /// ports need forwarding require the background watch.
     pub(crate) port_route: crate::terminal::view::PortRoute,
     /// The remote ports already forwarded unasked, per set of forwards.
     ///
@@ -278,7 +184,6 @@ pub(crate) struct RightPanelState {
     /// A few `u16` per connection is not worth reclaiming.
     pub(crate) auto_forwarded:
         std::collections::HashMap<crate::ui::app::ForwardOwnerKey, std::collections::HashSet<u16>>,
-    pub(crate) scroll: gpui::ScrollHandle,
     pub(crate) tree_scroll: gpui::ScrollHandle,
     /// A path the tree should scroll onto, and how many more renders it may
     /// take to get there. The row is usually not drawn yet when the request is
@@ -294,14 +199,7 @@ pub(crate) struct RightPanelState {
 /// a moment.
 pub(crate) const TREE_REVEAL_RENDERS: u8 = 60;
 
-/// How often the process and port list is re-read while it is on screen —
-/// close enough that a process appearing feels immediate.
-const PROCS_POLL: std::time::Duration = std::time::Duration::from_millis(2000);
-
-/// How often it is re-read with the panel shut, where nobody is watching the
-/// list and the only question is whether a new port has appeared. A couple of
-/// extra seconds nobody can feel, against a query that crosses the network on
-/// every remote pane.
+/// How often the background watch looks for new remote listening ports.
 const PORT_WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(5000);
 
 /// How many newly-seen ports one poll may forward. A dev server brings up one
@@ -309,7 +207,7 @@ const PORT_WATCH_POLL: std::time::Duration = std::time::Duration::from_millis(50
 /// loop, and forwarding all of them helps nobody.
 const AUTO_FORWARD_BURST: usize = 4;
 
-/// What the Ports and Forwards sections are describing.
+/// The active pane's forwarding route and process-query host.
 #[derive(Clone)]
 pub(crate) struct PaneForwardCtx {
     pub(crate) pane_id: u64,
@@ -321,151 +219,6 @@ pub(crate) struct PaneForwardCtx {
     /// local daemon — which is what `query_procs` asks — has never heard of
     /// them and answers with an empty list.
     pub(crate) host: Option<crate::ui::host_ops::SharedHost>,
-}
-
-/// What a session row draws in its value column.
-///
-/// Every row used to be a `(&str, String)` pair rendered identically, and the
-/// column paid for it twice: `changes` came out as an inert mono `+0 −0` —
-/// the same fact the sidebar draws in green and red and opens the diff overlay
-/// from — and the agent's state came out as a word where the sidebar has a
-/// coloured dot. A row carries its own shape now, so one pane's facts read the
-/// same whichever surface is showing them.
-enum InfoValue {
-    /// Mono text, truncated from the tail.
-    Text(String),
-    /// A filesystem path, shrunk from the head so the leaf survives.
-    Path(String),
-    /// `+N −M` in the sidebar's two colours, and a click into the diff
-    /// overlay when the setting that governs the sidebar's counts allows it.
-    Diff {
-        added: u32,
-        removed: u32,
-        open: Option<(crate::ui::host_ops::HostId, PathBuf)>,
-    },
-}
-
-/// The table convention for a cell with nothing in it. Needs no translating,
-/// and is shorter to read than any of the sentences it stands in for.
-const EMPTY: &str = "—";
-
-/// A round trip, at the precision the number is worth reading to.
-///
-/// Whole milliseconds up to a second: tenths of a millisecond on a link that
-/// varies by whole ones is noise dressed as measurement. Past a second the
-/// millisecond stops mattering and the second is the unit anyone would say it
-/// in.
-fn format_rtt(rtt: std::time::Duration) -> String {
-    let ms = rtt.as_secs_f64() * 1000.;
-    if ms < 1. {
-        // Loopback and a peer on the same LAN both land here. Rounding to
-        // "0 ms" would read as a failed measurement rather than a fast one.
-        return "<1 ms".to_string();
-    }
-    // Rounded before the comparison, so 999.6 ms is not shown as "1000 ms" —
-    // a millisecond reading that has run past the unit's own range.
-    let rounded = ms.round() as u64;
-    if rounded < 1000 {
-        return format!("{rounded} ms");
-    }
-    format!("{:.1} s", rtt.as_secs_f64())
-}
-
-/// One label/value line of the Session section.
-struct InfoRow {
-    label: &'static str,
-    value: InfoValue,
-    /// What this row's copy tile puts on the clipboard, where copying it is
-    /// plausibly what someone wants — a path, a host, a branch. `None` on the
-    /// rows where it is not ("zsh"), because a hover affordance that appears
-    /// on every row teaches nothing about which rows can do something.
-    copy: Option<String>,
-    /// Set on the working-directory row when the path is on the machine the
-    /// file manager can see, which is the only case Reveal means anything in.
-    reveal: Option<PathBuf>,
-}
-
-impl InfoRow {
-    fn text(label: &'static str, value: String) -> Self {
-        Self {
-            label,
-            value: InfoValue::Text(value),
-            copy: None,
-            reveal: None,
-        }
-    }
-
-    fn copyable(mut self) -> Self {
-        self.copy = match &self.value {
-            InfoValue::Text(v) | InfoValue::Path(v) => Some(v.clone()),
-            _ => None,
-        };
-        self
-    }
-
-    /// Whether the row does anything if you click or hover it. It is what
-    /// decides the hover fill, so the fill never promises an action the row
-    /// does not have.
-    fn interactive(&self) -> bool {
-        self.copy.is_some()
-            || self.reveal.is_some()
-            || matches!(self.value, InfoValue::Diff { open: Some(_), .. })
-    }
-}
-
-/// Widest of the labels actually on screen, so the values line up without a
-/// fixed width guessing at them.
-///
-/// A hardcoded 46px fitted "cwd" and "shell" and nothing else: English
-/// "changes" wrapped mid-word to "change / s", and in Chinese and Japanese
-/// almost every label wrapped — ja "作業ディレクトリ" is eight glyphs. The
-/// clamp keeps the longest of those from eating the panel; anything past it
-/// runs into the gap rather than folding, which `whitespace_nowrap` on the
-/// label guarantees.
-fn info_label_column(rows: &[InfoRow], window: &mut Window, cx: &gpui::App) -> gpui::Pixels {
-    // Shaping needs real pixels, so this is the one place the rem has to be
-    // resolved by hand. Both bounds were measured against a 12px label, so
-    // they are carried as multiples of it rather than as pixels — otherwise
-    // raising `ui_font_size` grows the labels into a clamp fitted to a
-    // smaller face, and every one of them wraps.
-    let rem = window.rem_size().as_f32();
-    let label_px = TEXT * rem;
-    // The label cell is 76 − 9 − 8 = 59px at the default rem — room for
-    // "changes", with the row's padding and the gap after it making up the
-    // rest of the 76 — and grows with the interface size.
-    let min = INFO_LABEL_MIN / 16. * rem - INFO_LABEL_GAP - ROW_INSET;
-    let max = 108. / 12. * label_px;
-    let font = gpui::Font {
-        family: cx.theme().font_family.clone(),
-        features: Default::default(),
-        fallbacks: None,
-        weight: Default::default(),
-        style: Default::default(),
-    };
-    let widest = rows
-        .iter()
-        .map(|row| {
-            let k = row.label;
-            window
-                .text_system()
-                .shape_line(
-                    gpui::SharedString::from(k),
-                    px(label_px),
-                    &[gpui::TextRun {
-                        len: k.len(),
-                        font: font.clone(),
-                        color: gpui::Hsla::default(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    None,
-                )
-                .width
-                .as_f32()
-        })
-        .fold(min, f32::max);
-    px(widest.clamp(min, max).ceil())
 }
 
 impl Tty7App {
@@ -483,8 +236,8 @@ impl Tty7App {
     }
 
     /// The narrowest the panel may be drawn: `MIN_WIDTH`, or wider when the
-    /// interface font or the language makes the three tab labels and the two
-    /// chrome tiles beside them need more than that.
+    /// interface font or language makes the two tab labels and adjacent
+    /// chrome tiles need more than that.
     pub(crate) fn right_panel_min_px(&self, window: &Window, cx: &gpui::App) -> f32 {
         MIN_WIDTH.max(right_panel_tabs_floor(window, cx))
     }
@@ -511,14 +264,12 @@ impl Tty7App {
         cx.notify();
     }
 
+    pub(crate) fn find_in_files(&mut self, cx: &mut Context<Self>) {
+        self.panel_search.focus_pending = true;
+        self.set_right_panel_tab(RightPanelTab::Files, cx);
+    }
+
     pub(crate) fn set_right_panel_tab(&mut self, tab: RightPanelTab, cx: &mut Context<Self>) {
-        // Every way to find in files ends here, and none of them has a
-        // `Window` to move focus with; the Files field takes it on its next
-        // frame.
-        if tab == RightPanelTab::Search {
-            self.panel_search.focus_pending = true;
-        }
-        let tab = shown_tab(tab);
         self.right_panel_tab = tab;
         self.right_panel_visible = true;
         self.update_config(cx, |cfg| {
@@ -553,10 +304,8 @@ impl Tty7App {
         let tab = self.right_panel_tab;
 
         let body = match tab {
-            RightPanelTab::Info => self.render_panel_info(window, cx),
             RightPanelTab::Scm => self.render_panel_scm(window, cx),
-            RightPanelTab::Files | RightPanelTab::Search => self.render_panel_files(window, cx),
-            RightPanelTab::GitHub => self.render_panel_github(window, cx),
+            RightPanelTab::Files => self.render_panel_files(window, cx),
         };
         let (backing, handle) = self.right_panel_resize(window, cx);
 
@@ -598,16 +347,15 @@ impl Tty7App {
                     // not shift the glyph or change its hover target.
                     .child(self.window_chrome(cx))
                 }))
-                // Only the Files and Search tabs step down 8px. Their first row
+                // Only Files steps down 8px. Its first row
                 // is a filled search well whose top edge is the first thing you
-                // see, so it wants air under the tab row. Info and Source Control open on
+                // see, so it wants air under the tab row. Git opens on
                 // bare text centred in a 28px row, which already sits ~7px
-                // under the row's top; adding 8 more put their first line a
+                // under the row's top; adding 8 more put its first line a
                 // visible step lower than the Files well beside them.
                 .children(
-                    (cfg!(target_os = "macos")
-                        && matches!(tab, RightPanelTab::Files | RightPanelTab::Search))
-                    .then(|| div().flex_none().h(px(8.))),
+                    (cfg!(target_os = "macos") && tab == RightPanelTab::Files)
+                        .then(|| div().flex_none().h(px(8.))),
                 )
                 .child(body)
                 .children(self.sftp_transfers_footer(cx))
@@ -825,7 +573,7 @@ impl Tty7App {
         h_flex()
             .flex_none()
             .items_center()
-            .h(px(INFO_ROW_H))
+            .h(px(SEARCH_WELL_H))
             .px(px(CONTENT_INSET))
             .child(
                 h_flex()
@@ -833,7 +581,7 @@ impl Tty7App {
                     .min_w_0()
                     .items_center()
                     .gap(px(SEARCH_GLYPH_GAP))
-                    .h(px(INFO_ROW_H))
+                    .h(px(SEARCH_WELL_H))
                     .px(px(ROW_INSET))
                     .rounded(px(7.))
                     .bg(cx.theme().muted)
@@ -860,26 +608,6 @@ impl Tty7App {
             .into_any_element()
     }
 
-    pub(crate) fn panel_scroll(&self, inner: AnyElement, title: AnyElement) -> AnyElement {
-        let body = div()
-            .id("right-panel-body")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.right_panel.scroll)
-            .child(inner);
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .child(title)
-            .child(with_vertical_scrollbar(
-                "right-panel-body-scrollbar",
-                body,
-                &self.right_panel.scroll,
-            ))
-            .into_any_element()
-    }
-
     pub(crate) fn panel_empty(
         &self,
         text: &str,
@@ -903,794 +631,8 @@ impl Tty7App {
             .into_any_element()
     }
 
-    fn render_panel_info(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let title = self.panel_title(t(L10nKey::PanelInfoTitle), None, None, window, cx);
-        let mut rows: Vec<InfoRow> = Vec::new();
-        // Which pane the sections below describe, and what can be done with
-        // its ports. Worked out once, by the same call the watch uses.
-        let ctx = self.pane_forward_ctx(window, cx);
-        let mut pane_id: Option<u64> = None;
-        // Where the `changes` row's counts lead. Same source as the sidebar's.
-        let mut diff_target: Option<(crate::ui::host_ops::HostId, PathBuf)> = None;
-        let mut git: Option<crate::terminal::git_status::GitStatus> = None;
-
-        if let Some(tab) = self.tabs.get(self.active) {
-            if let Some(leaf) = tab.detail_pane(window, cx) {
-                let view = leaf.read(cx);
-                pane_id = Some(view.pane_id);
-                diff_target = view
-                    .git_status_cwd()
-                    .map(|cwd| (view.host_id(), cwd.to_path_buf()));
-                if let Some(cwd) = view.effective_cwd() {
-                    let home = view.display_home(cx);
-                    // Whether this pane's paths are this machine's decides
-                    // both tiles: reveal only means anything on the machine
-                    // the file manager can see, and only a local path may be
-                    // re-spelled with this OS's separators — a remote one is
-                    // already native where it lives.
-                    let local = view.local_cwd().is_some();
-                    rows.push(InfoRow {
-                        label: t(L10nKey::PanelCwd),
-                        value: InfoValue::Path(compact_path(&cwd, home.as_deref())),
-                        // The compacted `~/…` spelling is for reading; what
-                        // goes on the clipboard is the path a shell can use.
-                        copy: Some(match local {
-                            true => crate::ui::path_display::native_separators(&cwd)
-                                .display()
-                                .to_string(),
-                            false => cwd.display().to_string(),
-                        }),
-                        reveal: local.then(|| cwd.clone()),
-                    });
-                }
-                // A pane on the default shell runs whatever the server picked,
-                // which is not always the login shell the inventory names: a
-                // server started from bash spawns bash. The process at the root
-                // of the pane's tree is the shell itself, so it has the say
-                // once the tree is in.
-                let root = self
-                    .procs(pane_id)
-                    .and_then(|p| p.procs.first())
-                    .filter(|p| p.depth == 0)
-                    .map(|p| p.name.trim_start_matches('-').to_string())
-                    .filter(|name| !name.is_empty());
-                let shell = match view.shell_spec().map(|s| s.program.clone()) {
-                    Some(program) => crate::core::shells::default_shell_name(Some(&program)),
-                    None => root.unwrap_or_else(|| self.default_shell_label(cx)),
-                };
-                rows.push(InfoRow::text(t(L10nKey::PanelShell), shell));
-                if let Some(ssh) = view.ssh_spec() {
-                    rows.push(InfoRow::text(t(L10nKey::PanelSsh), ssh.host.clone()).copyable());
-                }
-                // Only where there is a network between here and the shell. On
-                // a pane of this machine's own the row would be reporting the
-                // round trip to a Unix socket, which is a number with nothing
-                // to compare it against.
-                if self.right_panel.link_host.is_some() {
-                    rows.push(InfoRow::text(
-                        t(L10nKey::PanelLatency),
-                        // A link whose first ping has not come back yet,
-                        // rather than one measured at zero. The dash is the
-                        // table's empty cell, the same one a clean working
-                        // tree gets.
-                        self.right_panel
-                            .link_rtt
-                            .map(format_rtt)
-                            .unwrap_or_else(|| EMPTY.to_string()),
-                    ));
-                }
-                git = view.git_status(cx);
-            }
-            // Read off the same pane the rows above describe, rather than off
-            // `Tab::git_status`, which resolves a split tab to its *first* leaf
-            // while `detail_pane` resolves it to the *last focused* one. The
-            // two agreed while the row was inert text; now that the counts open
-            // a diff, disagreeing means a click that opens a repository other
-            // than the one whose numbers were clicked.
-            if let Some(git) = git {
-                rows.push(InfoRow::text(t(L10nKey::PanelBranch), git.branch.clone()).copyable());
-                rows.push(InfoRow {
-                    label: t(L10nKey::PanelChangesRow),
-                    value: InfoValue::Diff {
-                        added: git.added,
-                        removed: git.removed,
-                        // A clean tree has no diff to open, so the row keeps
-                        // its place in the table but stops being a button.
-                        open: (git.added > 0 || git.removed > 0)
-                            .then_some(diff_target.clone())
-                            .flatten(),
-                    },
-                    copy: None,
-                    reveal: None,
-                });
-            }
-        }
-
-        if rows.is_empty() {
-            return self.panel_scroll(
-                self.panel_empty(
-                    t(L10nKey::PanelNoSession),
-                    Some(t(L10nKey::PanelNoSessionHint)),
-                    cx,
-                ),
-                title,
-            );
-        }
-
-        let label_w = info_label_column(&rows, window, cx);
-        // Rows pad themselves in to `TEXT_INSET`, so their hover fill bleeds
-        // past the text on both sides — the geometry the Source Control tab's
-        // rows are on, one tab over.
-        let mut list = v_flex().px(px(CONTENT_INSET));
-        for (i, row) in rows.into_iter().enumerate() {
-            list = list.child(self.info_row(i, row, label_w, cx));
-        }
-
-        let inner = v_flex()
-            .pb(px(SECTION_GAP))
-            .gap(px(SECTION_GAP))
-            .child(
-                v_flex()
-                    .child(self.panel_subtitle(t(L10nKey::PanelSessionSubtitle), None, cx))
-                    .child(list),
-            )
-            .children(self.procs_section(pane_id, cx))
-            .children(self.ports_section(ctx.as_ref(), cx))
-            .into_any_element();
-        self.panel_scroll(inner, title)
-    }
-
-    /// One label/value line, with whatever it can do revealed on hover.
-    ///
-    /// The two cwd buttons used to sit in a strip of their own under the whole
-    /// table, unlabelled, four rows below the path they acted on and closer to
-    /// the Processes heading than to it — "copy" and "open" with no stated
-    /// object. Hanging them off the row they belong to is what makes them
-    /// answerable, and it buys the panel the hover feedback it had none of.
-    fn info_row(
-        &self,
-        i: usize,
-        row: InfoRow,
-        label_w: gpui::Pixels,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let sf = cx.global::<crate::ui::presets::Surfaces>().sidebar;
-        let mono = cx.theme().mono_font_family.clone();
-        let id = gpui::SharedString::from(format!("panel-info-row-{i}"));
-        let interactive = row.interactive();
-        let tiles_wide = usize::from(row.reveal.is_some()) + usize::from(row.copy.is_some());
-        // "Copy" is honest on a branch or a host, but on the working directory
-        // it is the file tree's *Copy Path*, and the two live a right-click
-        // apart from each other. Say the same words for the same act.
-        let copy_label = match row.value {
-            InfoValue::Path(_) => t(L10nKey::FileTreeContextCopyPath),
-            _ => t(L10nKey::CmdCopy),
-        };
-
-        // "cwd, /tmp/project": the row as one line. The path drawn is split
-        // and may be elided; this is the whole of it.
-        let a11y_name = format!(
-            "{}, {}",
-            row.label,
-            match &row.value {
-                InfoValue::Text(v) | InfoValue::Path(v) => v.clone(),
-                InfoValue::Diff { added, removed, .. } => format!("+{added} −{removed}"),
-            }
-        );
-        let value = match row.value {
-            // A path identifies a pane by its last segment, and plain
-            // truncation eats exactly that: a deep checkout read
-            // "/private/tmp/claude-501…" and told you nothing. Let the head
-            // absorb the shrinking so the leaf survives, the way a file
-            // manager shows a path.
-            InfoValue::Path(v) => {
-                let (head, leaf) = crate::ui::path_display::split_path_leaf(&v);
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .text_size(rems(TEXT))
-                    .text_color(cx.theme().foreground)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_shrink(999.)
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(head),
-                    )
-                    .child(div().min_w_0().flex_shrink(1.).truncate().child(leaf))
-                    .into_any_element()
-            }
-            InfoValue::Text(v) => div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_size(rems(TEXT))
-                .text_color(cx.theme().foreground)
-                .child(v)
-                .into_any_element(),
-            InfoValue::Diff {
-                added,
-                removed,
-                open,
-            } => {
-                let clean = added == 0 && removed == 0;
-                // Sized to the two numbers, not to the row: `flex_1` here made
-                // the whole rest of the line a button, so a click on the empty
-                // half of the row opened the overlay and a pointer crossing it
-                // underlined counts it was nowhere near. The slack belongs to
-                // the value slot around this, which is what holds it.
-                let counts = h_flex()
-                    .flex_none()
-                    .items_baseline()
-                    .gap(px(6.))
-                    .text_size(rems(TEXT_MONO))
-                    .font_family(mono.clone())
-                    // A clean tree said "+0 −0", which is two numbers to read
-                    // before learning there was nothing to read. The dash is
-                    // the table convention for an empty cell, and it needs no
-                    // translating.
-                    .when(clean, |this| {
-                        this.child(
-                            div()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(EMPTY.to_string()),
-                        )
-                    })
-                    .when(added > 0, |this| {
-                        this.child(
-                            div()
-                                .text_color(cx.theme().success)
-                                .child(format!("+{added}")),
-                        )
-                    })
-                    .when(removed > 0, |this| {
-                        this.child(
-                            div()
-                                .text_color(cx.theme().danger)
-                                .child(format!("−{removed}")),
-                        )
-                    });
-                match open {
-                    // The row's hover fill says the line reacts; the underline
-                    // says where the button inside it starts — the same pair
-                    // the sidebar's counts wear.
-                    Some((host, cwd)) => counts
-                        .id(("panel-info-diff", i))
-                        .cursor_pointer()
-                        .hover(|s| s.underline())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.toggle_diff_overlay(host, cwd.clone(), window, cx);
-                        }))
-                        .into_any_element(),
-                    None => counts.into_any_element(),
-                }
-            }
-        };
-
-        // The strip is opaque and pinned to the row's right edge, so whatever
-        // sits under it is unreadable for as long as the pointer is on the row
-        // — and on the working-directory row what sits there is the leaf, the
-        // one segment the head-first elision exists to keep. Hold that much
-        // width back from the value for good rather than only while hovered:
-        // taking it on hover would re-elide the path under the pointer, which
-        // is the pixel-shifting the strip is absolutely positioned to avoid.
-        let value = h_flex()
-            .flex_1()
-            .min_w_0()
-            .items_baseline()
-            .when(tiles_wide > 0, |this| {
-                this.pr(px(tiles_wide as f32 * (TILE_SIZE_XS + 1.) + 4.))
-            })
-            .child(value);
-
-        let mut tiles = action_strip(&id, sf.hover);
-        let mut has_tiles = false;
-        if let Some(cwd) = row.reveal {
-            has_tiles = true;
-            tiles = tiles.child(
-                self.info_tile(
-                    "panel-info-reveal",
-                    IconName::FolderOpen,
-                    reveal_label(),
-                    cx,
-                )
-                .on_click(move |_, _window, cx| {
-                    cx.reveal_path(&crate::ui::path_display::native_separators(&cwd))
-                }),
-            );
-        }
-        if let Some(text) = row.copy {
-            has_tiles = true;
-            tiles = tiles.child(
-                self.info_tile(("panel-info-copy", i), IconName::Copy, copy_label, cx)
-                    .on_click(move |_, _window, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
-                    }),
-            );
-        }
-        // A row with nothing to reveal gets no strip at all, rather than an
-        // empty one carrying a hover subscription for a set of buttons that
-        // does not exist.
-        let actions = has_tiles.then_some(tiles);
-
-        h_flex()
-            .id(id.clone())
-            .role(gpui::Role::Label)
-            .aria_label(a11y_name)
-            .group(id)
-            .relative()
-            .items_center()
-            .gap(px(INFO_LABEL_GAP))
-            .h(px(INFO_ROW_H))
-            .px(px(ROW_INSET))
-            .rounded(ROW_FILL_RADIUS)
-            .text_size(rems(TEXT))
-            // Only rows that can do something light up, so the fill is never a
-            // promise the row cannot keep.
-            .when(interactive, |this| {
-                this.hover(|s| s.bg(gpui::rgb(sf.hover)))
-            })
-            .child(
-                div()
-                    .flex_none()
-                    .w(label_w)
-                    .text_size(rems(TEXT))
-                    .whitespace_nowrap()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(row.label),
-            )
-            .child(value)
-            .children(actions)
-            .into_any_element()
-    }
-
-    /// The tile an Info row's hover strip is made of — the [`TILE_SIZE_XS`]
-    /// box the Source Control rows use, because three `TILE_SIZE_SM` squares
-    /// would eat a quarter of the width a path has to live in.
-    fn info_tile(
-        &self,
-        id: impl Into<gpui::ElementId>,
-        icon: IconName,
-        tooltip: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Button {
-        crate::ui::tab_strip::chrome_tile_sized(
-            Button::new(id).icon(Icon::new(icon)),
-            TILE_SIZE_XS,
-            TILE_GLYPH_XS,
-            false,
-            cx,
-        )
-        .rounded(px(4.))
-        .tooltip(tooltip)
-    }
-
-    /// A section heading of the Info tab: a 28px row, the label a half step
-    /// under captions, medium and muted. Sections are told apart by the space
-    /// between them, not by rules, so there is no divider to ask for.
-    pub(crate) fn panel_subtitle(
-        &self,
-        text: &str,
-        trailing: Option<AnyElement>,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        h_flex()
-            .flex_none()
-            .h(px(INFO_ROW_H))
-            .items_center()
-            .justify_between()
-            .pl(px(TEXT_INSET))
-            .pr(px(if trailing.is_some() {
-                TEXT_INSET - HEADING_TILE_OUTDENT
-            } else {
-                TEXT_INSET
-            }))
-            .child(
-                // Weight and ink, not capitals, set a compact heading apart.
-                div()
-                    .text_size(rems(HEADING))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.to_string()),
-            )
-            .when_some(trailing, |this, t| this.child(t))
-            .into_any_element()
-    }
-
-    fn procs_section(&self, pane_id: Option<u64>, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let procs = &self.procs(pane_id)?.procs;
-        if procs.len() < 2 {
-            return None;
-        }
-        let mono = cx.theme().mono_font_family.clone();
-        let hover = gpui::rgb(cx.global::<crate::ui::presets::Surfaces>().sidebar.hover);
-        let mut list = v_flex().px(px(CONTENT_INSET));
-        for p in procs {
-            let depth = f32::from(p.depth);
-            list = list.child(
-                h_flex()
-                    .h(px(PROC_ROW_H))
-                    .items_center()
-                    .gap(px(6.))
-                    .px(px(ROW_INSET))
-                    .rounded(ROW_FILL_RADIUS)
-                    .hover(move |s| s.bg(hover))
-                    // A child hangs off its parent by an elbow in the last
-                    // column of its indent; the root has neither.
-                    .when(p.depth > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .w(px(depth * PROC_INDENT))
-                                .flex()
-                                .justify_end()
-                                .pr(px(2.))
-                                .text_size(rems(META))
-                                .text_color(cx.theme().muted_foreground)
-                                .child("└"),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(rems(TEXT))
-                            // Which of these has the terminal is the one thing
-                            // the list is read for, and a hue apart from its
-                            // neighbours was carrying it alone — a difference
-                            // a light theme flattens and colour vision can
-                            // miss. Weight says it a second way.
-                            .text_color(cx.theme().foreground)
-                            .when(p.foreground, |d| d.font_weight(gpui::FontWeight::MEDIUM))
-                            .child(p.name.clone()),
-                    )
-                    .child(crate::ui::proc_usage::row_cells(
-                        p,
-                        &self.right_panel.cpu,
-                        mono.clone(),
-                        cx,
-                    )),
-            );
-        }
-        let total = crate::ui::proc_usage::total_row(procs, &self.right_panel.cpu, mono, cx);
-        let list = list.children(total);
-        Some(
-            v_flex()
-                .child(self.panel_subtitle(t(L10nKey::PanelProcessesSubtitle), None, cx))
-                .child(list)
-                .into_any_element(),
-        )
-    }
-
-    /// The ports this pane is serving, and what it takes to reach them.
-    ///
-    /// One list, not two. Ports and forwards used to be separate sections, so
-    /// a remote :3000 and the forward that reaches :3000 sat under different
-    /// headings with nothing saying they were the same thing — and the ports
-    /// half offered no way to build the forward the other half was for. A row
-    /// is a port here, and the forward, when there is one, is where that row
-    /// says it comes out.
-    fn ports_section(
-        &self,
-        ctx: Option<&PaneForwardCtx>,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let ctx = ctx?;
-        let pane_id = ctx.pane_id;
-        // No answer yet for this pane defaults to a probe that is fine, not a
-        // broken one: the panel has nothing to doubt until it has been told
-        // something.
-        let (ports, probe) = self
-            .procs(Some(pane_id))
-            .map(|p| (p.ports.clone(), p.probe.clone()))
-            .unwrap_or_default();
-        let forwards: Vec<ManagedForward> = self
-            .loopback_panel
-            .managed
-            .iter()
-            .filter(|m| m.pane_id == pane_id)
-            .cloned()
-            .collect();
-        let form_open = self.loopback_panel.form_pane_id == Some(pane_id);
-        // A pane that cannot hold a forward and is serving nothing has no
-        // section: the heading alone would be an empty promise.
-        //
-        // Unless the reason it is serving nothing is that nobody managed to
-        // look. Then the heading and one muted line under it are the only
-        // place the panel can admit it does not know, and a silently absent
-        // section is the bug (#731): someone whose server is plainly up reads
-        // the missing section as tty7 saying there is no server.
-        if ports.is_empty() && forwards.is_empty() && ctx.route.is_none() && probe.is_ok() {
-            return None;
-        }
-
-        let sf = cx.global::<crate::ui::presets::Surfaces>().sidebar;
-        let mono = cx.theme().mono_font_family.clone();
-        let openable = ctx.port_route != crate::terminal::view::PortRoute::Blocked;
-        let mut list = v_flex().px(px(CONTENT_INSET)).py(px(1.));
-        // Which forwards a port row has already accounted for; whatever is
-        // left over gets a row of its own below.
-        let mut paired: Vec<u64> = Vec::new();
-
-        for (i, p) in ports.iter().enumerate() {
-            let forward = forwards.iter().find(|m| forwards_port(m, p.port));
-            if let Some(f) = forward {
-                paired.push(f.id);
-            }
-            // What a click and a copy are about: the address that works from
-            // here. Once a forward exists that is the local end of it, not the
-            // far side's own spelling of the port.
-            let here = forward.map(|f| f.bind_port);
-            let authority = here
-                .map(|local| format!("127.0.0.1:{local}"))
-                .unwrap_or_else(|| p.authority());
-            // Keyed by the row, not by the port: `listening_ports` drops a
-            // duplicate only when the port *and* the pid match, so a
-            // pre-forking server — nginx, gunicorn, a node cluster — puts one
-            // row per worker on screen, all on port 8000. Sharing an id makes
-            // gpui hand them one interactive state between them, and a click on
-            // the last row lights up the tooltip and the pressed fill on all
-            // the others.
-            let id = gpui::SharedString::from(format!("panel-port-{}-{}", p.port, p.pid));
-            let mut tiles_wide = 1;
-            let mut actions = action_strip(&id, sf.hover);
-            if openable {
-                tiles_wide += 1;
-                let port = p.port;
-                let direct = p.authority();
-                actions = actions.child(
-                    self.info_tile(
-                        ("panel-port-open", i),
-                        IconName::Globe,
-                        t(L10nKey::PanelOpenInBrowser),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.open_pane_port(port, direct.clone(), cx)
-                    })),
-                );
-            }
-            actions = actions.child(
-                self.info_tile(
-                    ("panel-port-copy", i),
-                    IconName::Copy,
-                    t(L10nKey::CmdCopy),
-                    cx,
-                )
-                .on_click({
-                    let authority = authority.clone();
-                    move |_, _window, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(authority.clone()));
-                    }
-                }),
-            );
-            if let Some(f) = forward {
-                tiles_wide += 2;
-                let forward_id = f.id;
-                // Switched off, the forward stops speaking for this row and
-                // comes out as a row of its own with the switch to turn it
-                // back on.
-                actions = actions.child(
-                    crate::ui::tab_strip::chrome_tile_sized(
-                        Button::new(("panel-port-switch-off", i))
-                            .icon(Icon::empty().path("icons/power.svg")),
-                        TILE_SIZE_XS,
-                        TILE_GLYPH_XS,
-                        false,
-                        cx,
-                    )
-                    .rounded(px(4.))
-                    .tooltip(t(L10nKey::ForwardTooltipTurnOff))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_managed_forward_enabled(pane_id, forward_id, false, window, cx)
-                    })),
-                );
-                actions = actions.child(
-                    self.info_tile(
-                        ("panel-port-unforward", i),
-                        IconName::Close,
-                        t(L10nKey::ForwardTooltipRemove),
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, _window, cx| {
-                        this.remove_managed_forward(pane_id, forward_id, cx)
-                    })),
-                );
-            }
-            list = list.child(
-                h_flex()
-                    .id(id.clone())
-                    .group(id)
-                    .relative()
-                    .items_center()
-                    .gap(px(8.))
-                    .h(px(PROC_ROW_H))
-                    .px(px(ROW_INSET))
-                    .rounded(ROW_FILL_RADIUS)
-                    .hover(|s| s.bg(gpui::rgb(sf.hover)))
-                    .child(info_chip(
-                        &p.port.to_string(),
-                        cx.theme().accent,
-                        cx.theme().foreground,
-                        &mono,
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            // Room held back for the strip, so the process name
-                            // ends where the buttons begin instead of under
-                            // them. Same reservation the Info rows make.
-                            .pr(px(tiles_wide as f32 * (TILE_SIZE_XS + 1.) + 4.))
-                            .text_size(rems(TEXT_MONO))
-                            .font_family(mono.clone())
-                            .text_color(cx.theme().muted_foreground)
-                            .child(p.name.clone()),
-                    )
-                    // Where the port comes out on this machine. Just the
-                    // number: the host is always this machine's loopback, and
-                    // spelling it out on every row would bury the one part
-                    // that differs.
-                    .children(here.map(|local| {
-                        div()
-                            .flex_none()
-                            .text_size(rems(META_MONO))
-                            .font_family(mono.clone())
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("→ :{local}"))
-                    }))
-                    .child(actions),
-            );
-        }
-
-        // Forwards no port row spoke for: the remote and dynamic ones, and any
-        // local forward pointed somewhere this pane is not itself serving.
-        for forward in forwards.iter().filter(|m| !paired.contains(&m.id)) {
-            list = list.child(self.forward_row(forward, &mono, cx));
-        }
-
-        let add = ctx.route.is_some().then(|| {
-            crate::ui::tab_strip::chrome_tile_sized(
-                Button::new(("ssh-forward-add-toggle", pane_id))
-                    .icon(Icon::empty().path("icons/plus.svg")),
-                HEADING_TILE,
-                HEADING_TILE_GLYPH,
-                form_open,
-                cx,
-            )
-            .rounded(px(5.))
-            .tooltip(if form_open {
-                t(L10nKey::Cancel)
-            } else {
-                t(L10nKey::ForwardTooltipAdd)
-            })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.toggle_managed_forward_form(pane_id, window, cx)
-            }))
-            .into_any_element()
-        });
-
-        Some(
-            v_flex()
-                .child(self.panel_subtitle(t(L10nKey::PanelPortsSubtitle), add, cx))
-                .when(
-                    ports.is_empty() && forwards.is_empty() && !form_open,
-                    |this| {
-                        // "Nothing is listening" and "nobody could tell us"
-                        // look identical on screen unless the panel says which
-                        // one it means — and every one of the second kind is a
-                        // fixable thing: a far end running a server too old to
-                        // answer, a probe that could not be run at all, a
-                        // server started under `sudo` whose sockets this user
-                        // is not allowed to see. Still one muted line in the
-                        // place the word "None" would have gone; the panel is
-                        // reporting what it knows, not raising an alarm.
-                        let key = match (self.right_panel.procs_unsupported, &probe) {
-                            (true, _) => L10nKey::PanelPortsUnsupported,
-                            (false, PortProbe::Unavailable(_)) => L10nKey::PanelPortsProbeFailed,
-                            (false, PortProbe::Restricted) => L10nKey::PanelPortsRestricted,
-                            (false, PortProbe::Ok) => L10nKey::PanelPortsEmpty,
-                        };
-                        this.child(
-                            div()
-                                .px(px(TEXT_INSET))
-                                .min_h(px(PROC_ROW_H))
-                                .flex()
-                                .items_center()
-                                .text_size(rems(TEXT))
-                                .text_color(cx.theme().muted_foreground)
-                                .child(t(key)),
-                        )
-                    },
-                )
-                .child(list)
-                .when(form_open, |this| this.child(self.forward_form(pane_id, cx)))
-                .into_any_element(),
-        )
-    }
-
-    /// Open one of this pane's ports in a browser, building the forward it
-    /// needs first when it needs one.
-    ///
-    /// The forward is the part the user should not have to think about: they
-    /// asked to see :3000, and where :3000 has to be tunnelled to be seen,
-    /// that is this function's problem and not theirs.
-    pub(crate) fn open_pane_port(
-        &mut self,
-        port: u16,
-        direct_authority: String,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::terminal::view::PortRoute;
-        match self.right_panel.port_route {
-            PortRoute::Blocked => {}
-            PortRoute::Direct => cx.open_url(&format!("http://{direct_authority}")),
-            PortRoute::Forward => {
-                if let Some(f) = self
-                    .loopback_panel
-                    .managed
-                    .iter()
-                    .find(|m| forwards_port(m, port))
-                {
-                    cx.open_url(&format!("http://127.0.0.1:{}", f.bind_port));
-                    return;
-                }
-                let Some(route) = self.right_panel.procs_forwards.clone() else {
-                    return;
-                };
-                let owner = route.owner_key();
-                cx.spawn(async move |this, cx| {
-                    let built = cx
-                        .background_executor()
-                        .spawn(async move { route.ensure_loopback("127.0.0.1", port) })
-                        .await;
-                    let _ = this.update_in(cx, |app, window, cx| match built {
-                        Ok(f) => {
-                            // Claimed, so the watch does not offer this port a
-                            // second time after the user has just opened it.
-                            app.right_panel
-                                .auto_forwarded
-                                .entry(owner)
-                                .or_default()
-                                .insert(port);
-                            cx.open_url(&format!("http://127.0.0.1:{}", f.local_port));
-                            if let Some(pane_id) = app.right_panel.procs_pane {
-                                app.refresh_managed_forwards(pane_id, cx);
-                            }
-                        }
-                        Err(e) => window.push_notification(
-                            crate::ui::host_ops::failure(
-                                t_fmt(
-                                    L10nKey::LoopbackForwardFailed,
-                                    &[("port", &port.to_string()), ("error", &e.to_string())],
-                                ),
-                                &e,
-                            ),
-                            cx,
-                        ),
-                    });
-                })
-                .detach();
-            }
-        }
-    }
-
-    fn procs(&self, pane_id: Option<u64>) -> Option<&PaneProcs> {
-        (pane_id.is_some() && self.right_panel.procs_pane == pane_id)
-            .then_some(self.right_panel.procs.as_ref())?
-    }
-
-    /// What the Ports and Forwards sections are describing: which pane, how
-    /// forward requests about it reach a daemon, and whether the loopback
-    /// ports it is serving can be opened from this machine.
-    ///
-    /// One answer for both readers. The panel draws from it and the watch polls
-    /// from it, and when they were each working it out for themselves the panel
-    /// could offer to open a port the watch had already given up on.
+    /// Which pane to watch, how its forward requests reach a daemon, and
+    /// whether its loopback ports need tunnelling.
     pub(crate) fn pane_forward_ctx(
         &self,
         window: &Window,
@@ -1731,12 +673,6 @@ impl Tty7App {
         let host = ctx.as_ref().and_then(|c| c.host.clone());
         let route = ctx.and_then(|c| c.route);
         self.sync_procs(pane_id, route, host, cx);
-    }
-
-    /// Whether the process/port poll should run at all this round.
-    fn procs_wanted(&self) -> bool {
-        (self.right_panel_visible && self.right_panel_tab == RightPanelTab::Info)
-            || self.watching_ports()
     }
 
     /// Whether the poll has to keep going with the panel closed: on a pane
@@ -1841,38 +777,28 @@ impl Tty7App {
         cx: &mut Context<Self>,
     ) {
         let Some(pane_id) = pane_id else { return };
-        self.right_panel.procs_forwards = forwards.clone();
+        let source_changed = self.right_panel.procs_pane != Some(pane_id)
+            || self.right_panel.procs_host.as_ref().map(|host| host.id())
+                != host.as_ref().map(|host| host.id())
+            || self
+                .right_panel
+                .procs_forwards
+                .as_ref()
+                .map(|route| route.owner_key())
+                != forwards.as_ref().map(|route| route.owner_key());
+        self.right_panel.procs_forwards = forwards;
         self.right_panel.procs_host = host.clone();
-        // Per host, not per pane — see `link_host`. A pane of this machine's
-        // own has no host at all, which is what clears the section rather than
-        // leaving the last remote pane's numbers under a local one.
-        let link_host = host.as_ref().map(|h| h.id());
-        if self.right_panel.link_host != link_host {
-            self.right_panel.link_host = link_host;
-            self.right_panel.link_rtt = None;
-        }
-        if self.right_panel.procs_pane != Some(pane_id) {
+        if source_changed {
             self.right_panel.procs_pane = Some(pane_id);
             self.right_panel.procs = None;
-            self.loopback_panel.managed.clear();
             self.right_panel.procs_gen += 1;
             self.right_panel.procs_loading = false;
-            self.right_panel.procs_unsupported = false;
         }
-        // Asked before the first query as well as before every later one. This
-        // used to be reached only from the Info panel's own render, where the
-        // panel being open was implied; driven from the app's render it is not,
-        // and starting a round trip per frame for a pane nobody is watching is
-        // both wasted IPC and, under a test executor, a queue that never
-        // empties.
-        if !self.right_panel.procs_loading && self.procs_wanted() {
+        // Only remote panes that need automatic forwarding warrant polling.
+        if !self.right_panel.procs_loading && self.watching_ports() {
             self.right_panel.procs_loading = true;
-            // A new chain follows a gap — the panel was shut, or the pane
-            // changed — and a CPU% across the gap would be its long average
-            // shown as if it were now. A dash for one round is honest.
-            self.right_panel.cpu = Default::default();
             let generation = self.right_panel.procs_gen;
-            self.spawn_procs_query(pane_id, generation, forwards, host, cx);
+            self.spawn_procs_query(pane_id, generation, host, cx);
         }
     }
 
@@ -1880,21 +806,11 @@ impl Tty7App {
         &mut self,
         pane_id: u64,
         generation: u64,
-        forwards: Option<crate::ui::app::ForwardRoute>,
         host: Option<crate::ui::host_ops::SharedHost>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
-            let route = forwards.clone();
-            // Only while someone is looking. This poll also runs with the panel
-            // shut, watching for ports to forward, and a round trip per round
-            // for a row nobody can see is the far end's time spent on nothing.
-            let want_link = this
-                .read_with(cx, |app, _| {
-                    app.right_panel_visible && app.right_panel_tab == RightPanelTab::Info
-                })
-                .unwrap_or(false);
-            let (procs, managed, link) = cx
+            let procs = cx
                 .background_executor()
                 .spawn(async move {
                     // A remote workspace's pane runs on the peer, so the peer
@@ -1904,18 +820,10 @@ impl Tty7App {
                     // could not be asked, which is not the same as an empty
                     // answer — see `Host::pane_procs`.
                     let procs = match &host {
-                        Some(host) => {
-                            use crate::ui::host_ops::Host as _;
-                            host.pane_procs(pane_id)
-                        }
+                        Some(host) => host.pane_procs(pane_id),
                         None => Some(crate::terminal::RemoteTerminal::query_procs(pane_id)),
                     };
-                    let managed = route.map(|r| r.list()).unwrap_or_default();
-                    let link = match (want_link, &host) {
-                        (true, Some(host)) => host.link_rtt(),
-                        _ => None,
-                    };
-                    (procs, managed, link)
+                    procs
                 })
                 .await;
             let keep_polling = this
@@ -1923,57 +831,36 @@ impl Tty7App {
                     if app.right_panel.procs_gen != generation {
                         return false;
                     }
-                    app.right_panel.procs_unsupported = procs.is_none();
-                    // A host that could not answer leaves the last list it did
-                    // answer with in place: blanking it on one failed poll
-                    // would make the panel flicker on a link that hiccups.
+                    // A failed probe leaves the last known ports in place.
                     if let Some(procs) = procs {
-                        app.right_panel
-                            .cpu
-                            .sample(&procs.procs, std::time::Instant::now());
                         app.right_panel.procs = Some(procs);
                     }
-                    if forwards.is_some() {
-                        app.loopback_panel.managed = managed;
-                    }
-                    // Only when this round actually asked. A round that did not
-                    // leaves the last answer in place, so reopening the panel
-                    // shows the number it was closed on rather than a dash
-                    // until the next poll lands.
-                    if want_link {
-                        app.right_panel.link_rtt = link;
-                    }
                     cx.notify();
-                    let wanted = app.procs_wanted();
+                    let wanted = app.watching_ports();
                     if !wanted {
                         app.right_panel.procs_loading = false;
                     }
                     wanted
                 })
                 .unwrap_or(false);
-            // After the list has landed, so the ports it forwards are the ones
-            // this poll actually saw.
-            let _ = this.update(cx, |app, cx| app.auto_forward_ports(cx));
             if !keep_polling {
                 return;
             }
-            let gap = this
-                .read_with(cx, |app, _| {
-                    match app.right_panel_visible && app.right_panel_tab == RightPanelTab::Info {
-                        true => PROCS_POLL,
-                        false => PORT_WATCH_POLL,
-                    }
-                })
-                .unwrap_or(PORT_WATCH_POLL);
-            cx.background_executor().timer(gap).await;
+            // The list and route are from the same generation. Never forward
+            // a stale host's listeners through a newly selected host's route.
+            let _ = this.update(cx, |app, cx| {
+                if app.right_panel.procs_gen == generation {
+                    app.auto_forward_ports(cx);
+                }
+            });
+            cx.background_executor().timer(PORT_WATCH_POLL).await;
             let _ = this.update(cx, |app, cx| {
                 if app.right_panel.procs_gen != generation {
                     return;
                 }
-                if app.procs_wanted() {
-                    let forwards = app.right_panel.procs_forwards.clone();
+                if app.watching_ports() {
                     let host = app.right_panel.procs_host.clone();
-                    app.spawn_procs_query(pane_id, generation, forwards, host, cx);
+                    app.spawn_procs_query(pane_id, generation, host, cx);
                 } else {
                     app.right_panel.procs_loading = false;
                 }
@@ -2130,169 +1017,5 @@ pub fn reveal_label() -> &'static str {
         t(L10nKey::PanelRevealInFinder)
     } else {
         t(L10nKey::PanelOpenFolder)
-    }
-}
-
-/// `home` is the home directory of the machine `path` lives on. A remote
-/// pane's cwd is measured against *its* host's home, never this machine's
-/// (#580) — and against nothing at all while the host has not said.
-fn compact_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
-    crate::ui::path_display::abbreviate_home(&path.to_string_lossy(), home).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{InfoRow, InfoValue, format_rtt, forwards_port};
-    use crate::daemon::protocol::{ForwardStatus, ManagedForward, SshForwardKind};
-
-    fn forward(kind: SshForwardKind, target_host: &str, target_port: u16) -> ManagedForward {
-        ManagedForward {
-            id: 1,
-            pane_id: 7,
-            kind,
-            bind_host: "127.0.0.1".to_string(),
-            bind_port: 51000,
-            target_host: target_host.to_string(),
-            target_port,
-            description: None,
-            status: ForwardStatus::Listening,
-            enabled: true,
-        }
-    }
-
-    /// A port row and the forward that reaches it are one line, so this is
-    /// what decides whether a forward is *that* row's or a line of its own.
-    #[test]
-    fn a_port_row_claims_only_the_forward_that_reaches_it() {
-        assert!(forwards_port(
-            &forward(SshForwardKind::Local, "localhost", 3000),
-            3000
-        ));
-        assert!(
-            forwards_port(&forward(SshForwardKind::Local, "127.0.0.1", 3000), 3000),
-            "the far side's loopback spells itself several ways"
-        );
-        assert!(
-            !forwards_port(&forward(SshForwardKind::Local, "localhost", 3000), 8080),
-            "a different port is a different row"
-        );
-        assert!(
-            !forwards_port(&forward(SshForwardKind::Local, "10.0.0.5", 3000), 3000),
-            "same number, another machine — pairing them would claim it leads \
-             somewhere it does not"
-        );
-        assert!(
-            !forwards_port(&forward(SshForwardKind::Remote, "localhost", 3000), 3000),
-            "a remote forward listens on the far side, so it is not how this \
-             port is reached from here"
-        );
-    }
-
-    /// A switched-off forward reaches nothing, so it must not take over the
-    /// port row — its own row is the only place its switch is.
-    #[test]
-    fn a_switched_off_forward_is_not_the_way_to_a_port() {
-        let mut off = forward(SshForwardKind::Local, "localhost", 3000);
-        off.enabled = false;
-        assert!(!forwards_port(&off, 3000));
-    }
-
-    fn diff(added: u32, removed: u32, open: bool) -> InfoRow {
-        InfoRow {
-            label: "changes",
-            value: InfoValue::Diff {
-                added,
-                removed,
-                open: open.then(|| {
-                    (
-                        crate::ui::host_ops::HostId::LOCAL,
-                        std::path::PathBuf::from("/w/repo"),
-                    )
-                }),
-            },
-            copy: None,
-            reveal: None,
-        }
-    }
-
-    #[test]
-    fn a_row_lights_up_only_when_there_is_something_behind_it() {
-        // The hover fill is the panel's only "this line does something", so a
-        // row that cannot do anything must not draw one.
-        assert!(
-            !InfoRow::text("shell", "zsh".into()).interactive(),
-            "a plain readout is not a control"
-        );
-        assert!(
-            InfoRow::text("branch", "main".into())
-                .copyable()
-                .interactive(),
-            "a copy tile is something to hover for"
-        );
-        assert!(
-            InfoRow {
-                reveal: Some(std::path::PathBuf::from("/w/repo")),
-                ..InfoRow::text("cwd", "/w/repo".into())
-            }
-            .interactive(),
-            "so is Reveal, even with nothing else on the row"
-        );
-    }
-
-    #[test]
-    fn counts_are_a_button_only_when_there_is_a_diff_to_open() {
-        assert!(
-            diff(3, 1, true).interactive(),
-            "changes with somewhere to go open the overlay"
-        );
-        // Both halves have to hold: a clean tree has no diff to show, and the
-        // setting that governs the sidebar's counts can take the target away
-        // from a dirty one.
-        assert!(
-            !diff(0, 0, false).interactive(),
-            "a clean tree is a readout, not a link"
-        );
-        assert!(
-            !diff(3, 1, false).interactive(),
-            "no target means no link, however dirty the tree"
-        );
-    }
-
-    #[test]
-    fn a_round_trip_is_read_at_the_precision_it_is_worth() {
-        use std::time::Duration;
-        // A peer on the same machine or the same LAN. "0 ms" would read as a
-        // measurement that failed rather than one that was fast.
-        assert_eq!(format_rtt(Duration::from_micros(120)), "<1 ms");
-        assert_eq!(format_rtt(Duration::from_micros(999)), "<1 ms");
-        assert_eq!(format_rtt(Duration::from_millis(1)), "1 ms");
-        assert_eq!(format_rtt(Duration::from_micros(23_400)), "23 ms");
-        assert_eq!(format_rtt(Duration::from_millis(999)), "999 ms");
-        // Rounding up out of the millisecond's own range hands the number to
-        // the unit above rather than printing a four-digit millisecond.
-        assert_eq!(format_rtt(Duration::from_micros(999_600)), "1.0 s");
-        // Past a second the millisecond has stopped carrying information, and
-        // the second is the unit anyone would say the number in.
-        assert_eq!(format_rtt(Duration::from_millis(1_450)), "1.4 s");
-        assert_eq!(format_rtt(Duration::from_secs(4)), "4.0 s");
-    }
-
-    #[test]
-    fn copyable_takes_the_text_the_row_shows_and_nothing_else() {
-        // `copyable()` reads the value it was given; rows built with an
-        // explicit clipboard string (the cwd, which copies the real path
-        // rather than the `~/…` spelling) set `copy` themselves.
-        assert_eq!(
-            InfoRow::text("ssh", "box".into())
-                .copyable()
-                .copy
-                .as_deref(),
-            Some("box")
-        );
-        assert_eq!(
-            diff(3, 1, true).copyable().copy,
-            None,
-            "there is no sensible clipboard form of two coloured numbers"
-        );
     }
 }

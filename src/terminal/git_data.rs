@@ -397,25 +397,6 @@ impl ScmData {
         self.index.get(host, root).cloned()
     }
 
-    /// Three-valued, and the middle value is the one that matters: `None` for
-    /// "never looked", `Some(None)` for "looked, and there is no repository
-    /// there". A directory that is not a repository is a perfectly normal
-    /// thing for a pane to be sitting in, and without somewhere to record the
-    /// negative answer the next look asks again — every frame.
-    pub fn known_status(
-        &self,
-        host: HostId,
-        root: &Path,
-    ) -> Option<Option<Arc<WorkingTreeStatus>>> {
-        self.read_at.get(host, root)?;
-        Some(self.status_for(host, root))
-    }
-
-    /// Whether this root has been read at all, whatever the answer was.
-    pub fn probed(&self, host: HostId, root: &Path) -> bool {
-        self.read_at.get(host, root).is_some()
-    }
-
     pub fn epoch(&self, host: HostId, root: &Path) -> u64 {
         self.epoch.get(host, root).copied().unwrap_or(0)
     }
@@ -1086,14 +1067,12 @@ impl Tty7App {
         let was_commit = matches!(op, GitOp::Commit { .. });
         if let GitOp::Commit { message, .. } = &op {
             self.scm.amend = false;
-            self.scm.committing = Some((
-                crate::ui::scm::state::RepoKey {
-                    host: id,
-                    root: root.clone(),
-                },
-                head.clone(),
-                message.clone(),
-            ));
+            let repo = crate::ui::scm::state::RepoKey {
+                host: id,
+                root: root.clone(),
+            };
+            self.scm.generating.remove(&repo);
+            self.scm.committing = Some((repo, head.clone(), message.clone()));
         }
 
         let op_root = root.clone();
@@ -1799,14 +1778,10 @@ mod tests {
     fn a_directory_that_is_not_a_repository_is_only_asked_once() {
         let mut data = ScmData::default();
         let plain = Path::new("/tmp/notes");
-        assert_eq!(data.known_status(HostId::LOCAL, plain), None);
+        assert!(data.is_stale(HostId::LOCAL, plain));
 
         land(&mut data, plain, None);
-        assert_eq!(
-            data.known_status(HostId::LOCAL, plain),
-            Some(None),
-            "'there is no repository here' is an answer, not a missing one"
-        );
+        assert!(data.status_for(HostId::LOCAL, plain).is_none());
         assert!(
             !data.is_stale(HostId::LOCAL, plain),
             "otherwise every frame spawns another rev-parse for a plain directory"
@@ -1823,19 +1798,11 @@ mod tests {
     fn a_repository_that_goes_away_stops_being_reported_as_one() {
         let mut data = ScmData::default();
         land(&mut data, &root(), Some(fake_status()));
-        assert!(
-            data.known_status(HostId::LOCAL, &root())
-                .flatten()
-                .is_some()
-        );
+        assert!(data.status_for(HostId::LOCAL, &root()).is_some());
 
         data.bump(HostId::LOCAL, &root());
         land(&mut data, &root(), None);
-        assert_eq!(
-            data.known_status(HostId::LOCAL, &root()),
-            Some(None),
-            "the last good answer must not outlive the repository"
-        );
+        assert!(data.status_for(HostId::LOCAL, &root()).is_none());
     }
 
     #[test]

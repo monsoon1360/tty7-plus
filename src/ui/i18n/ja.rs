@@ -4,6 +4,28 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
     Some(match key {
         L10nKey::SettingsNavAi => "AI",
         L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsAiLocalTools => "ローカルツール",
+        L10nKey::SettingsAiProviders => "追加の AI プロバイダー",
+        L10nKey::SettingsCodexCardDesc => "ローカルの Codex ログインを使用。",
+        L10nKey::SettingsDeepSeekEnabled => "DeepSeek を有効にする",
+        L10nKey::SettingsDeepSeekEnabledDesc => "無効にしてもキーと設定は保持します。",
+        L10nKey::SettingsAiDisabled => "無効",
+        L10nKey::SettingsAiKeyWorking => "キーの状態を更新中…",
+        L10nKey::SettingsAiTestConnection => "接続をテスト",
+        L10nKey::SettingsAiTestDesc => "リポジトリ内容を送らず接続を確認します。",
+        L10nKey::SettingsAiTesting => "テスト中…",
+        L10nKey::SettingsAiTestSuccess => "接続成功 · {ms} ミリ秒",
+        L10nKey::SettingsAiSaveReplacementFirst => {
+            "交換用キーを保存してからテストしてください。保存済みのキーのみを使用します。"
+        }
+        L10nKey::SettingsAiSaveSettingsFirst => {
+            "有効な API URL とモデルを先に保存してください。設定の保存に失敗した場合は再試行してください。"
+        }
+        L10nKey::SettingsGitEnableDeepSeek => "DeepSeek 設定を開く",
+        L10nKey::SettingsGitAiSummary => "生成後に編集できます。",
+        L10nKey::AiDeepseekDisabled => {
+            "DeepSeek は無効です。AI 設定で有効にしてから生成してください。他のプロバイダーには自動で切り替えません。"
+        }
         L10nKey::SettingsCodexModel => "Codex 既定モデル",
         L10nKey::SettingsCodexEffort => "Codex 推論強度",
         L10nKey::SettingsDeepSeekUrl => "API ベース URL",
@@ -17,30 +39,16 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
             "AI LLM DeepSeek Codex model reasoning API Key モデル 推論 模型 推理"
         }
         L10nKey::SettingsGitAiKeywords => "AI Git commit language rules コミット 言語 ルール",
-        L10nKey::SettingsCodexModelDesc => {
-            "空欄の場合は Codex のモデル設定を使用します。ローカル CLI のログインを再利用します。"
-        }
-        L10nKey::SettingsCodexScope => {
-            "次回のローカル Codex 起動から適用され、SSH と WSL には影響しません。既存の端末は一度開き直して shell 統合を読み込んでください。独自の shell 引数を使う場合、手動コマンドには適用されませんが、メニュー起動には適用されます。既存のエイリアスと関数は保持され、Codex のグローバル設定は変更しません。"
-        }
-        L10nKey::SettingsAiEffortDesc => {
-            "既定ではプロバイダー設定を上書きしません。非対応の強度はプロバイダーのエラーを表示します。"
-        }
-        L10nKey::SettingsDeepSeekDesc => "CLI Agent とは独立した API 設定です。",
-        L10nKey::SettingsDeepSeekUrlDesc => {
-            "認証情報、クエリ、フラグメントのない HTTPS を使用します。ローカルゲートウェイにはループバック HTTP を使用できます。"
-        }
-        L10nKey::SettingsDeepSeekKeyDesc => {
-            "システムのキーチェーンのみに保存します。設定ディレクトリを移動した場合は再設定が必要です。設定のリセットでは削除されません。"
-        }
+        L10nKey::SettingsCodexModelDesc => "空欄で Codex の既定モデルを使用。",
+        L10nKey::SettingsCodexScope => "ローカルのみ。Codex のグローバル設定は変更しません。",
+        L10nKey::SettingsAiEffortDesc => "コミット生成は軽量な既定値を使用。",
+        L10nKey::SettingsDeepSeekDesc => "独立した API サービス。",
+        L10nKey::SettingsDeepSeekUrlDesc => "互換 API のアドレスに対応。",
+        L10nKey::SettingsDeepSeekKeyDesc => "システムのキーチェーンのみに保存。",
         L10nKey::SettingsGitAiTitle => "Git コミットメッセージ",
-        L10nKey::SettingsGitAiDesc => {
-            "編集可能な下書きのみを生成し、コミットは手動で行います。生成時に変更 diff を選択したサービスに送信します。リモートリポジトリもこのコンピューターからサービスを呼び出します。"
-        }
+        L10nKey::SettingsGitAiDesc => "コミット対象の変更のみ送信し、コミットは手動です。",
         L10nKey::SettingsGitLanguageDesc => "生成するコミットメッセージの言語。",
-        L10nKey::SettingsGitRulesDesc => {
-            "任意の指示。Enter で改行し、フォーカスを離すと保存します。"
-        }
+        L10nKey::SettingsGitRulesDesc => "Enter で改行、フォーカスを離すと保存。",
         L10nKey::SettingsGitRulesPlaceholder => {
             "例：Conventional Commits を使用し、タイトルを 72 文字以内にする。"
         }
@@ -63,7 +71,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
             "認証情報、クエリ、フラグメントのない HTTPS またはループバック HTTP を使用してください。"
         }
         L10nKey::AiNetworkError => "AI サービスに接続できませんでした。",
-        L10nKey::AiRequestTimeout => "AI 生成がタイムアウトしました。",
+        L10nKey::AiRequestTimeout => "AI リクエストがタイムアウトしました。",
         L10nKey::AiResponseTooLarge => "AI の応答がサイズ制限を超えました。",
         L10nKey::AiUnauthorized => "AI サービスの認証に失敗しました。API Key を確認してください。",
         L10nKey::AiRateLimited => {
@@ -71,7 +79,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::AiHttpError => "AI サービスが HTTP {status} を返しました。",
         L10nKey::AiInvalidResponse => "AI サービスの応答が不正です。",
-        L10nKey::AiEmptyResponse => "AI サービスがコミットメッセージを返しませんでした。",
+        L10nKey::AiEmptyResponse => "AI サービスが応答内容を返しませんでした。",
         L10nKey::AiCodexMissing => {
             "Codex CLI をインストールしてログインし、AI 設定を行ってください。"
         }
@@ -88,13 +96,15 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::ScmAiFailed => "コミットメッセージを生成できませんでした。",
         L10nKey::ScmAiBusy => "このリポジトリのメッセージを生成中です。",
         L10nKey::ScmAiCommitting => "コミット処理中です。",
-        L10nKey::ScmAiNoChanges => "生成に使用できる追跡済み変更がありません。",
+        L10nKey::ScmAiNoChanges => {
+            "除外されていない新規ファイルを含め、コミット可能な変更がありません。"
+        }
         L10nKey::ScmAiConfigure => "Git 設定で AI プロバイダーを選択してください。",
         L10nKey::ScmAiMissingCodex => {
             "Codex CLI をインストールしてログインし、AI 設定を行ってください。"
         }
         L10nKey::ScmAiOpenSettings => "AI 設定を開く",
-        L10nKey::ScmAiConflicts => "競合を解決してからコミットメッセージを生成してください。",
+        L10nKey::ScmAiConflicts => "先にマージ競合を解決してください。",
         L10nKey::ScmAiReadFailed => "コミット状態を読み取れませんでした。",
         L10nKey::AiCodexLoginRequired => {
             "Codex が状態 {status} で終了しました。ローカル Codex CLI にログインしてから再試行してください。"
@@ -1333,25 +1343,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::ForwardDisconnected => "切断済み",
         L10nKey::ForwardDisconnectedFrom => "{host} から切断されました",
         L10nKey::SshEditProfile => "接続を編集…",
-        L10nKey::ForwardTooltipAdd => "フォワードを追加",
-        L10nKey::ForwardTooltipRemove => "削除",
-        L10nKey::ForwardTooltipTurnOn => "オンにする",
-        L10nKey::ForwardTooltipTurnOff => "オフにする — ルールは残ります",
-        L10nKey::ForwardSwitchFailed => "フォワードを切り替えられませんでした — {error}",
         L10nKey::SettingsFwdEnabled => "接続時にこのルールを開く",
-        L10nKey::ForwardLocal => "ローカル",
-        L10nKey::ForwardRemote => "リモート",
-        L10nKey::ForwardDynamic => "ダイナミック",
-        L10nKey::ForwardBindLabel => "バインド",
-        L10nKey::ForwardToLabel => "転送先",
-        L10nKey::ForwardSocksLabel => "SOCKS",
-        L10nKey::ForwardAdd => "追加",
-        L10nKey::ForwardPortLabel => "リモートポート",
-        L10nKey::ForwardPortHere => "localhost:{port} で開きます",
-        L10nKey::ForwardNeedsPort => "ポートは 1 から 65535 までの数字です。",
-        L10nKey::ForwardAdvancedToggle => "詳細",
-        L10nKey::ForwardSimpleToggle => "シンプル",
-        L10nKey::ForwardRequestFailed => "セッションに届きませんでした。何も変更していません",
         L10nKey::FileTreePlaceholderFileName => "ファイル名",
         L10nKey::FileTreePlaceholderFolderName => "フォルダ名",
         L10nKey::FileTreePlaceholderNewName => "新しい名前",
@@ -1551,16 +1543,10 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::SearchPlaceholderLocations => "見つかった場所を絞り込む…",
         L10nKey::SearchLocationsNone => "見つかりませんでした",
         L10nKey::LspFindReferences => "すべての参照を検索",
-        L10nKey::PanelInfoTitle => "情報",
         L10nKey::PanelChangesTitle => "変更",
         L10nKey::PanelScmTitle => "変更",
         L10nKey::PanelFilesTitle => "ファイル",
         L10nKey::PanelSearchTitle => "検索",
-        L10nKey::PanelGitHubTitle => "GitHub",
-        L10nKey::PanelNoSession => "アクティブなセッションがありません",
-        L10nKey::PanelNoSessionHint => {
-            "タブを開くと、そのシェル、ディレクトリ、プロセスがここに表示されます"
-        }
         L10nKey::PanelNoWorkingDirectory => "作業ディレクトリがありません",
         L10nKey::PanelNoWorkingDirectoryHint => {
             "このペインはまだ作業ディレクトリを報告していません"
@@ -1572,25 +1558,7 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         }
         L10nKey::PanelNoChanges => "未コミットの変更はありません",
         L10nKey::PanelNoChangesHint => "ワーキングツリーはクリーンです",
-        L10nKey::PanelSessionSubtitle => "セッション",
-        L10nKey::PanelProcessesSubtitle => "プロセス",
-        L10nKey::PanelProcessesTotal => "合計",
-        L10nKey::PanelPortsSubtitle => "ポート",
-        L10nKey::PanelLatency => "遅延",
-        L10nKey::PanelPortsUnsupported => "リモートの tty7-server が古く、ポートを列挙できません。",
-        L10nKey::PanelPortsProbeFailed => {
-            "このペインが何をリッスンしているか確認できませんでした。"
-        }
-        L10nKey::PanelPortsRestricted => {
-            "他のユーザーで動いているプロセスがあり、そのポートは見えません。"
-        }
-        L10nKey::PanelPortsEmpty => "転送中のポートはありません",
         L10nKey::PortAutoForwarded => "リモートの :{port} は http://localhost:{local} で開けます",
-        L10nKey::PanelCwd => "作業ディレクトリ",
-        L10nKey::PanelShell => "シェル",
-        L10nKey::PanelSsh => "ssh",
-        L10nKey::PanelBranch => "ブランチ",
-        L10nKey::PanelChangesRow => "変更",
         L10nKey::PanelAgentWorking => "作業中",
         L10nKey::PanelAgentWaiting => "待機中",
         L10nKey::PanelAgentDone => "完了",
@@ -2004,11 +1972,9 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdShowCodePanel => "コードパネルを表示",
         L10nKey::CmdTabBarMoveToTop => "タブバー: 上部へ移動",
         L10nKey::CmdTabBarMoveToLeftSidebar => "タブバー: 左サイドバーへ移動",
-        L10nKey::CmdRightPanelInfo => "右パネル: 情報",
         L10nKey::CmdRightPanelChanges => "右パネル: 変更",
         L10nKey::CmdRightPanelFiles => "右パネル: ファイル",
         L10nKey::CmdRightPanelSearch => "右パネル: 検索",
-        L10nKey::CmdRightPanelGitHub => "右パネル: GitHub",
         L10nKey::CmdChangeTheme => "テーマを変更…",
         L10nKey::CmdResetFontSize => "フォントサイズをリセット",
         L10nKey::CmdEnterFullScreen => "全画面表示",
@@ -2076,7 +2042,6 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdSshManageProfiles => "SSH: プロファイルを管理…",
         L10nKey::CmdSshReconnect => "SSH: 再接続",
         L10nKey::CmdSshRemoteFiles => "SSH: リモートファイル",
-        L10nKey::CmdSshPortForwarding => "SSH: ポートフォワーディング",
         L10nKey::CmdSshSaveConnection => "SSH: この接続をホストとして保存…",
         L10nKey::CmdSshSaveConnectionSubtitle => "この接続を保存済みホストとして残します",
         L10nKey::CmdSshConnectWithInput => "SSH: {input} に接続",
@@ -2460,79 +2425,6 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::TabTooltipPhoneActive => "スマートフォンで使用中",
         L10nKey::TabTooltipAsleep => "休止中 — 選択すると復帰",
         L10nKey::TabWakeFailed => "タブを復帰できませんでした：どのペインも起動できません",
-        // ---- The right panel's GitHub tab ----
-        L10nKey::GitHubIssues => "イシュー",
-        L10nKey::GitHubPulls => "プルリクエスト",
-        L10nKey::GitHubOpen => "オープン",
-        L10nKey::GitHubClosed => "クローズ済み",
-        L10nKey::GitHubMerged => "マージ済み",
-        L10nKey::GitHubDraft => "下書き",
-        L10nKey::GitHubNotPlanned => "対応予定なし",
-        L10nKey::GitHubRefresh => "再読み込み",
-        L10nKey::GitHubOpenOnGitHub => "GitHub で開く",
-        L10nKey::GitHubShowRemote => "表示するリモート",
-        L10nKey::GitHubLoadMore => "さらに読み込む",
-        L10nKey::GitHubNoRemote => "GitHub リモートがありません",
-        L10nKey::GitHubNoRemoteHint => {
-            "このリポジトリのリモートはどれも github.com を指していません。"
-        }
-        L10nKey::GitHubNoIssues => "一致するイシューはありません。",
-        L10nKey::GitHubNoPulls => "一致するプルリクエストはありません。",
-        L10nKey::GitHubSignInHint => {
-            "ターミナルで `gh auth login` を実行してサインインし、再読み込みしてください。"
-        }
-        L10nKey::GitHubNotFoundSignedOut => {
-            "GitHub でこのリポジトリが見つかりません。非公開の場合は先にサインインしてください。"
-        }
-        L10nKey::GitHubNotFoundSignedIn => {
-            "GitHub でこのリポジトリが見つからないか、gh でサインイン中のどのアカウントでも閲覧できません。"
-        }
-        L10nKey::GitHubUnauthorized => "GitHub が保存済みのサインイン情報を拒否しました。",
-        L10nKey::GitHubRateLimited => "GitHub のレート制限に達しました。",
-        L10nKey::GitHubRateLimitResetIn => "{n} 分後にリセットされます。",
-        L10nKey::GitHubRateLimitSignedOut => {
-            "サインインしていない場合、GitHub へのリクエストは 1 時間に 60 回までです。`gh auth login` でサインインすると上限が上がります。"
-        }
-        L10nKey::GitHubForbidden => "GitHub がリクエストを拒否しました。",
-        L10nKey::GitHubNetworkError => "GitHub に接続できません。",
-        L10nKey::GitHubHttpError => "GitHub がエラーを返しました（{code}）。",
-        L10nKey::GitHubDecodeError => "GitHub から tty7 が読み取れない応答が返されました。",
-        L10nKey::GitHubMoreOnGitHub => "続きは GitHub で",
-        L10nKey::GitHubNoDescription => "説明はありません。",
-        L10nKey::GitHubFilterByLabel => "このラベルのみ表示",
-        L10nKey::GitHubClearLabel => "ラベルの絞り込みを解除",
-        L10nKey::GitHubImage => "画像",
-        L10nKey::GitHubComments => "{count} 件のコメント",
-        L10nKey::GitHubCommits => "{count} 件のコミット",
-        L10nKey::GitHubOpenedAt => "作成 {when}",
-        L10nKey::GitHubUpdatedAt => "更新 {when}",
-        L10nKey::GitHubChecks => "チェック",
-        L10nKey::GitHubChecksPassed => "{total} 件中 {passed} 件成功",
-        L10nKey::GitHubChecksNoneCounted => "結果のあるチェックはありません",
-        L10nKey::GitHubCheckPassed => "成功",
-        L10nKey::GitHubCheckFailed => "失敗",
-        L10nKey::GitHubCheckPending => "実行中",
-        L10nKey::GitHubCheckSkipped => "スキップ",
-        L10nKey::GitHubReviews => "レビュー",
-        L10nKey::GitHubReviewApproved => "承認済み",
-        L10nKey::GitHubReviewChangesRequested => "変更をリクエスト",
-        L10nKey::GitHubReviewCommented => "コメント済み",
-        L10nKey::GitHubReviewRequested => "リクエスト中",
-        L10nKey::GitHubReadyToMerge => "マージ可能",
-        L10nKey::GitHubMergeConflicts => "マージコンフリクトあり",
-        L10nKey::GitHubReviewRequired => "レビューが必要",
-        L10nKey::GitHubBehindBase => "ベースブランチより遅れています",
-        L10nKey::GitHubMergeBlocked => "ブランチ保護によりブロック",
-        L10nKey::GitHubThisBranch => "このブランチ",
-        L10nKey::GitHubChecksFailing => "{count} 件のチェックが失敗",
-        L10nKey::GitHubWaitingOnChecks => "{count} 件のチェックを待機中",
-        L10nKey::GitHubShowLess => "折りたたむ",
-        L10nKey::GitHubShowAllFiles => "{count} 件のファイルをすべて表示",
-        L10nKey::GitHubPassedCount => "{count} 件成功",
-        L10nKey::GitHubSkippedCount => "{count} 件スキップ",
-        L10nKey::GitHubShowFullText => "全文を表示",
-        L10nKey::GitHubShowHiddenComments => "ほか {count} 件のコメントを表示",
-        L10nKey::GitHubShowAllReviewers => "{count} 人のレビュアーをすべて表示",
         L10nKey::CmdCopyRaw => "そのままコピー",
         L10nKey::SettingsSearchCopyJoinWrappedKeywords => {
             "クリップボード コピー 折り返し 行 結合 clipboard copy wrap unwrap join lines claude raw"
@@ -2696,34 +2588,6 @@ pub fn translate_variant_ja(key: L10nKey, branch: &'static str) -> Option<&'stat
         (L10nKey::WindowDeleteShells, "other") => {
             "{count} 個の実行中シェルが終了し、レイアウトが消去されます"
         }
-        // ---- The right panel's GitHub tab ----
-        (L10nKey::GitHubComments, "zero") => "コメントはありません",
-        (L10nKey::GitHubComments, "one") => "1 件のコメント",
-        (L10nKey::GitHubComments, "other") => "{count} 件のコメント",
-        (L10nKey::GitHubCommits, "zero") => "コミットはありません",
-        (L10nKey::GitHubCommits, "one") => "1 件のコミット",
-        (L10nKey::GitHubCommits, "other") => "{count} 件のコミット",
-        (L10nKey::GitHubChecksFailing, "zero") => "失敗しているチェックはありません",
-        (L10nKey::GitHubChecksFailing, "one") => "1 件のチェックが失敗",
-        (L10nKey::GitHubChecksFailing, "other") => "{count} 件のチェックが失敗",
-        (L10nKey::GitHubWaitingOnChecks, "zero") => "待機中のチェックはありません",
-        (L10nKey::GitHubWaitingOnChecks, "one") => "1 件のチェックを待機中",
-        (L10nKey::GitHubWaitingOnChecks, "other") => "{count} 件のチェックを待機中",
-        (L10nKey::GitHubShowAllFiles, "zero") => "ファイルなし",
-        (L10nKey::GitHubShowAllFiles, "one") => "1 件のファイルを表示",
-        (L10nKey::GitHubShowAllFiles, "other") => "{count} 件のファイルをすべて表示",
-        (L10nKey::GitHubPassedCount, "zero") => "成功なし",
-        (L10nKey::GitHubPassedCount, "one") => "1 件成功",
-        (L10nKey::GitHubPassedCount, "other") => "{count} 件成功",
-        (L10nKey::GitHubSkippedCount, "zero") => "スキップなし",
-        (L10nKey::GitHubSkippedCount, "one") => "1 件スキップ",
-        (L10nKey::GitHubSkippedCount, "other") => "{count} 件スキップ",
-        (L10nKey::GitHubShowHiddenComments, "zero") => "ほかのコメントはありません",
-        (L10nKey::GitHubShowHiddenComments, "one") => "ほか 1 件のコメントを表示",
-        (L10nKey::GitHubShowHiddenComments, "other") => "ほか {count} 件のコメントを表示",
-        (L10nKey::GitHubShowAllReviewers, "zero") => "レビュアーなし",
-        (L10nKey::GitHubShowAllReviewers, "one") => "1 人のレビュアーを表示",
-        (L10nKey::GitHubShowAllReviewers, "other") => "{count} 人のレビュアーをすべて表示",
         _ => return None,
     };
     Some(res)

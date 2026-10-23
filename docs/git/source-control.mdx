@@ -34,7 +34,7 @@ Write the message in the box at the top and pick a commit action:
 | | |
 |---|---|
 | **Commit** | Commit what is staged |
-| **Commit All** | Stage everything, then commit |
+| **Commit All** | With no staged selection, stage all non-ignored changes, including new files, then commit |
 | **Commit (Amend)** | Replace the last commit — confirms first, because anyone who already has it has to reconcile |
 | **Commit & Push** | Commit, then push |
 | **Commit & Sync** | Commit, then pull and push |
@@ -46,20 +46,30 @@ there too.
 
 Choose **DeepSeek API** or **Codex CLI** in **Settings → Git**, then use
 **AI generate** below the commit box. The default provider is **Off**.
-Configure the endpoint, model and reasoning effort in **Settings → AI**;
-DeepSeek's API key is saved separately in the operating system's keychain.
-Codex uses the installed CLI and its existing login, without changing its
-global configuration.
+**Settings → AI** separates local runtime tools from additional AI providers.
+Enable **DeepSeek** in its provider card, configure its endpoint and model, and
+save its key in the operating system's keychain. **Test connection** sends a
+tiny completion with the saved key and no repository content; it has a
+20-second deadline and does not enable the provider. Turning DeepSeek off
+preserves its fields and key. Codex uses the installed CLI and its existing
+login, without changing its global configuration.
 
-Generation sends only the selected commit patch: staged changes when present,
-otherwise tracked unstaged changes. Untracked files are excluded. Amend uses
-the current HEAD patch plus staged increments, not unstaged edits. Conflicts
-must be resolved first. The context is capped at 24 KiB; a notification says
-when the result used truncated changes. Remote repositories are read through
-their host, but the selected provider is called on this computer.
+Generation sends only the selected commit patch: staged changes when present;
+otherwise tracked edits and non-ignored new files. The same selection applies
+when you click **Commit**: no manual staging is needed, including for a
+repository's first commit. An explicit staged selection is respected.
+Amend uses the current HEAD patch plus staged increments, not unstaged or new
+files. Resolve conflicts first. The context is capped at 24 KiB; a notification
+says when it was truncated. Remote changes are read through their host, but
+the selected provider is called on this computer. Use `.gitignore` to exclude
+private or generated files before requesting generation or committing all.
 
-Language can follow the application or be selected explicitly. Custom rules
-are optional and support multiple lines; there is no fixed tone menu.
+The default result is one concise subject, with a 72-character target and no
+body. Language can follow the application or be selected explicitly. Custom
+rules support multiple lines and can explicitly request a body; returned text
+is not cut to its first line. There is no fixed tone menu. With no explicit
+effort override, Git generation uses low reasoning for Codex and disables
+thinking for DeepSeek; ordinary interactive Codex launches are unchanged.
 Replacing a nonempty draft asks first. You can edit a generated message and
 must click the existing commit action yourself: generation never stages,
 commits or pushes. Results are discarded if the draft, HEAD or amend mode

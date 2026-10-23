@@ -3,7 +3,7 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 
-use super::status::{StatusProbe, probe_status};
+use super::status::{HeadState, StatusProbe, probe_status};
 use crate::host::Host;
 
 pub const MAX_COMMIT_CONTEXT_BYTES: usize = 24 * 1024;
@@ -14,6 +14,7 @@ const TRUNCATION_NOTE: &str =
 pub struct CommitContext {
     pub diff: String,
     pub truncated: bool,
+    pub head: HeadState,
 }
 
 /// Kept typed inside io::Error so desktop callers can localize the failure.
@@ -45,8 +46,8 @@ fn failure(kind: CommitContextError) -> io::Error {
     io::Error::new(io::ErrorKind::Other, kind)
 }
 
-/// Match the existing commit policy without staging, committing or reading
-/// untracked files. Call this on HostOps, never on the GUI thread.
+/// Match the commit policy without changing the index. With no explicit staged
+/// selection, include tracked edits and non-ignored new files, like Commit All.
 pub fn read_commit_context(host: &dyn Host, root: &Path, amend: bool) -> io::Result<CommitContext> {
     let status = match probe_status(host, root) {
         StatusProbe::Status(status) => status,
@@ -62,6 +63,7 @@ pub fn read_commit_context(host: &dyn Host, root: &Path, amend: bool) -> io::Res
         return Err(failure(CommitContextError::StatusUnavailable));
     }
     let staged = status.staged().next().is_some();
+    let mut omitted = false;
     let mut diff = if amend {
         if !status.head.has_commits() {
             return Err(failure(CommitContextError::MissingHead));
@@ -96,24 +98,47 @@ pub fn read_commit_context(host: &dyn Host, root: &Path, amend: bool) -> io::Res
         combined
     } else if staged {
         patch_diff(host, root, true)?
-    } else if status.unstaged().next().is_some() {
-        patch_diff(host, root, false)?
     } else {
-        return Err(failure(CommitContextError::NoChanges));
+        let mut combined = if status.unstaged().next().is_some() {
+            patch_diff(host, root, false)?
+        } else {
+            String::new()
+        };
+        for entry in status.untracked() {
+            if combined.len() >= MAX_COMMIT_CONTEXT_BYTES {
+                omitted = true;
+                break;
+            }
+            if entry.path.lossy {
+                return Err(failure(CommitContextError::StatusUnavailable));
+            }
+            let patch = untracked_patch(host, root, entry.path.as_str())?;
+            if !combined.is_empty() && !patch.is_empty() {
+                combined.push('\n');
+            }
+            combined.push_str(&patch);
+        }
+        combined
     };
     if diff.trim().is_empty() {
         return Err(failure(CommitContextError::NoChanges));
     }
-    let truncated = diff.len() > MAX_COMMIT_CONTEXT_BYTES;
+    let truncated = omitted || diff.len() > MAX_COMMIT_CONTEXT_BYTES;
     if truncated {
-        let mut end = MAX_COMMIT_CONTEXT_BYTES - TRUNCATION_NOTE.len();
+        let mut end = diff
+            .len()
+            .min(MAX_COMMIT_CONTEXT_BYTES - TRUNCATION_NOTE.len());
         while !diff.is_char_boundary(end) {
             end -= 1;
         }
         diff.truncate(end);
         diff.push_str(TRUNCATION_NOTE);
     }
-    Ok(CommitContext { diff, truncated })
+    Ok(CommitContext {
+        diff,
+        truncated,
+        head: status.head,
+    })
 }
 
 fn patch_diff(host: &dyn Host, root: &Path, cached: bool) -> io::Result<String> {
@@ -123,6 +148,29 @@ fn patch_diff(host: &dyn Host, root: &Path, cached: bool) -> io::Result<String> 
     }
     args.push("--");
     patch(host, root, &args)
+}
+
+fn untracked_patch(host: &dyn Host, root: &Path, path: &str) -> io::Result<String> {
+    let out = host.git(
+        root,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            "/dev/null",
+            path,
+        ],
+    )?;
+    // --no-index uses 1 to report a difference, not a failed command.
+    if !matches!(out.status, Some(0 | 1)) {
+        return Err(failure(CommitContextError::GitFailed));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn patch(host: &dyn Host, root: &Path, args: &[&str]) -> io::Result<String> {
@@ -194,23 +242,153 @@ mod tests {
         repo.write("a.txt", "staged A\n");
         repo.git(&["add", "a.txt"]);
         repo.write("b.txt", "unstaged B\n");
+        repo.write("new.txt", "unselected new file\n");
         let before = repo.git(&["write-tree"]);
         let context = repo.read(false).unwrap();
         assert!(context.diff.contains("+staged A"));
         assert!(!context.diff.contains("b.txt"));
+        assert!(!context.diff.contains("unselected new file"));
         assert_eq!(repo.git(&["write-tree"]), before);
     }
 
     #[test]
-    fn without_staged_changes_only_tracked_worktree_changes_are_sent() {
+    fn commit_all_context_and_commit_cover_new_modified_deleted_but_not_ignored_files() {
+        use super::super::ops::{GitOp, run_op};
         let repo = Repo::new();
         repo.base();
-        repo.write("b.txt", "tracked B\n");
-        repo.write("secret.txt", "untracked secret\n");
+        repo.write(".git/info/exclude", "*.ignored\n");
+        repo.write("a.txt", "updated A\n");
+        std::fs::remove_file(repo.dir.path().join("b.txt")).unwrap();
+        repo.write("-new file 中文.txt", "new contents\n");
+        repo.write("secret.ignored", "must not be sent or committed\n");
+        let before = repo.git(&["write-tree"]);
         let context = repo.read(false).unwrap();
-        assert!(context.diff.contains("+tracked B"));
-        assert!(!context.diff.contains("secret"));
-        assert!(repo.git(&["diff", "--cached"]).is_empty());
+        assert!(context.diff.contains("+updated A"));
+        assert!(context.diff.contains("-base B"));
+        assert!(context.diff.contains("+new contents"));
+        assert!(!context.diff.contains("must not be sent"));
+        assert_eq!(
+            repo.git(&["write-tree"]),
+            before,
+            "generation must not stage"
+        );
+        run_op(
+            &*repo.host,
+            repo.dir.path(),
+            &GitOp::Commit {
+                message: "Include all changes".into(),
+                amend: false,
+                signoff: false,
+                no_verify: false,
+                all: true,
+            },
+            &context.head,
+        )
+        .unwrap();
+        assert_eq!(repo.git(&["show", "HEAD:a.txt"]), "updated A");
+        assert_eq!(
+            repo.git(&["show", "HEAD:-new file 中文.txt"]),
+            "new contents"
+        );
+        let files = repo.git(&["ls-tree", "-r", "--name-only", "HEAD"]);
+        assert!(
+            !files
+                .lines()
+                .any(|path| path == "b.txt" || path == "secret.ignored")
+        );
+        assert!(repo.git(&["status", "--porcelain"]).is_empty());
+    }
+
+    #[test]
+    fn new_files_can_generate_and_create_the_first_commit_without_staging() {
+        use super::super::ops::{GitOp, run_op};
+        let repo = Repo::new();
+        repo.write("first.txt", "first commit\n");
+        let index = repo.dir.path().join(".git/index");
+        let before = std::fs::read(&index).ok();
+        let context = repo.read(false).unwrap();
+        assert!(context.diff.contains("+first commit"));
+        assert!(!context.head.has_commits());
+        assert_eq!(std::fs::read(&index).ok(), before);
+        run_op(
+            &*repo.host,
+            repo.dir.path(),
+            &GitOp::Commit {
+                message: "Create first file".into(),
+                amend: false,
+                signoff: false,
+                no_verify: false,
+                all: true,
+            },
+            &context.head,
+        )
+        .unwrap();
+        assert_eq!(repo.git(&["show", "HEAD:first.txt"]), "first commit");
+        assert_eq!(repo.git(&["rev-list", "--count", "HEAD"]), "1");
+    }
+
+    #[test]
+    fn explicit_staged_selection_does_not_sweep_new_or_unstaged_files() {
+        use super::super::ops::{GitOp, run_op};
+        // A stale/capped GUI snapshot may ask for Commit All after the user
+        // selected files. The executor must honor the current index either way.
+        for all in [false, true] {
+            let repo = Repo::new();
+            repo.base();
+            repo.write("a.txt", "selected change\n");
+            repo.git(&["add", "a.txt"]);
+            repo.write("b.txt", "unselected edit\n");
+            repo.write("new.txt", "unselected new\n");
+            let context = repo.read(false).unwrap();
+            run_op(
+                &*repo.host,
+                repo.dir.path(),
+                &GitOp::Commit {
+                    message: "Commit selected file".into(),
+                    amend: false,
+                    signoff: false,
+                    no_verify: false,
+                    all,
+                },
+                &context.head,
+            )
+            .unwrap();
+            assert_eq!(repo.git(&["show", "HEAD:a.txt"]), "selected change");
+            assert_eq!(repo.git(&["show", "HEAD:b.txt"]), "base B");
+            assert!(
+                !repo
+                    .git(&["ls-tree", "-r", "--name-only", "HEAD"])
+                    .lines()
+                    .any(|p| p == "new.txt")
+            );
+            assert!(repo.git(&["diff", "--cached"]).is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_automatic_staging_does_not_run_commit() {
+        use super::super::ops::{GitOp, GitOpErrorKind, run_op};
+        let repo = Repo::new();
+        repo.base();
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        repo.write("new.txt", "not committed\n");
+        let context = repo.read(false).unwrap();
+        repo.write(".git/index.lock", "");
+        let error = run_op(
+            &*repo.host,
+            repo.dir.path(),
+            &GitOp::Commit {
+                message: "Must not land".into(),
+                amend: false,
+                signoff: false,
+                no_verify: false,
+                all: true,
+            },
+            &context.head,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, GitOpErrorKind::LockHeld);
+        assert_eq!(repo.git(&["rev-parse", "HEAD"]), head);
     }
 
     #[test]
@@ -224,6 +402,7 @@ mod tests {
         repo.write("a.txt", "staged increment\n");
         repo.git(&["add", "a.txt"]);
         repo.write("b.txt", "do not send unstaged\n");
+        repo.write("new.txt", "do not send untracked\n");
         let context = repo.read(true).unwrap();
         assert!(
             context
@@ -232,6 +411,7 @@ mod tests {
         );
         assert!(context.diff.contains("+staged increment"));
         assert!(!context.diff.contains("do not send unstaged"));
+        assert!(!context.diff.contains("do not send untracked"));
         assert_eq!(repo.git(&["rev-parse", "HEAD"]), head);
     }
 
@@ -248,18 +428,13 @@ mod tests {
     }
 
     #[test]
-    fn clean_untracked_only_and_unborn_amend_are_rejected() {
+    fn clean_changes_and_unborn_amend_are_rejected() {
         let repo = Repo::new();
         assert_eq!(
             error_kind(&repo.read(true).unwrap_err()),
             CommitContextError::MissingHead
         );
         repo.base();
-        assert_eq!(
-            error_kind(&repo.read(false).unwrap_err()),
-            CommitContextError::NoChanges
-        );
-        repo.write("untracked", "not sent");
         assert_eq!(
             error_kind(&repo.read(false).unwrap_err()),
             CommitContextError::NoChanges

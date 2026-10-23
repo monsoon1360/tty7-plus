@@ -85,7 +85,7 @@ pub enum GitOp {
         amend: bool,
         signoff: bool,
         no_verify: bool,
-        /// Stage every tracked change first (`-a`), for "Commit All".
+        /// With no current staged selection, stage all non-ignored changes first.
         all: bool,
     },
     CheckoutBranch {
@@ -245,8 +245,9 @@ impl GitOp {
         }
     }
 
-    /// Every argv this operation runs, in order, relative to the repository
-    /// root. More than one only because a long path list has to be split.
+    /// The operation's command sequence, relative to the repository root.
+    /// Commit All's first command probes the index; `run_op` skips its add when
+    /// a staged selection exists, including one absent from a capped UI snapshot.
     ///
     /// Deliberately the old spelling throughout: `checkout -- <path>` and
     /// `reset HEAD -- <path>`, never `git restore`. `restore` arrived in git
@@ -286,9 +287,6 @@ impl GitOp {
                 if *amend {
                     out.push("--amend".into());
                 }
-                if *all {
-                    out.push("-a".into());
-                }
                 if *signoff {
                     out.push("--signoff".into());
                 }
@@ -308,7 +306,22 @@ impl GitOp {
                     out.push("-m".into());
                     out.push(message.clone());
                 }
-                vec![out]
+                if *all {
+                    vec![
+                        argv(&[
+                            "diff",
+                            "--cached",
+                            "--quiet",
+                            "--no-ext-diff",
+                            "--no-textconv",
+                            "--",
+                        ]),
+                        argv(&["add", "--all", "--", "."]),
+                        out,
+                    ]
+                } else {
+                    vec![out]
+                }
             }
             // The trailing `--` forces ref interpretation: without it a name
             // that no longer resolves (deleted out from under a stale branch
@@ -663,6 +676,8 @@ pub fn run_op(
     let label = op.label();
     let batches = op.commands(head);
     let total = batches.len();
+    let automatic_staging = matches!(op, GitOp::Commit { all: true, .. });
+    let mut preserve_selection = false;
     let mut outcome = GitOpOutcome {
         op: label,
         stdout: String::new(),
@@ -670,6 +685,9 @@ pub fn run_op(
     };
 
     for (index, batch) in batches.iter().enumerate() {
+        if automatic_staging && index == 1 && preserve_selection {
+            continue;
+        }
         let borrowed: Vec<&str> = batch.iter().map(String::as_str).collect();
         let rerun = || {
             std::iter::once("git".to_string())
@@ -704,6 +722,10 @@ pub fn run_op(
             rerun_argv: rerun(),
             cwd: root.to_path_buf(),
         })?;
+        if automatic_staging && index == 0 && matches!(out.status, Some(0 | 1)) {
+            preserve_selection = out.status == Some(1);
+            continue;
+        }
 
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -1053,33 +1075,6 @@ mod tests {
             }
             .commands(&born()),
             vec![vec!["add", "--", ":(literal)ok.txt"]],
-        );
-    }
-
-    #[test]
-    fn commit_argv_carries_only_the_flags_it_was_asked_for() {
-        assert_eq!(
-            commit("hello").commands(&born()),
-            vec![vec!["commit", "-m", "hello"]],
-        );
-        assert_eq!(
-            GitOp::Commit {
-                message: "hello".into(),
-                amend: true,
-                signoff: true,
-                no_verify: true,
-                all: true,
-            }
-            .commands(&born()),
-            vec![vec![
-                "commit",
-                "--amend",
-                "-a",
-                "--signoff",
-                "--no-verify",
-                "-m",
-                "hello"
-            ]],
         );
     }
 

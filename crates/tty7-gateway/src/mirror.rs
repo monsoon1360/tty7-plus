@@ -63,7 +63,11 @@ impl Mirror {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
-        self.term.resize(size(cols, rows));
+        let size = size(cols, rows);
+        if self.term.columns() != size.cols || self.term.screen_lines() != size.rows {
+            self.parser.stop_sync(&mut self.term);
+            self.term.resize(size);
+        }
     }
 
     /// Reads output. True when it brought a full-screen program's exit: the

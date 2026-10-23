@@ -2429,7 +2429,7 @@ mod gpui_tests {
     fn toggle_sftp_switches_tabs_before_it_closes(cx: &mut TestAppContext) {
         let (app, mut vcx) = harness(cx);
         app.update_in(&mut vcx, |app, window, cx| {
-            app.set_right_panel_tab(RightPanelTab::Info, cx);
+            app.set_right_panel_tab(RightPanelTab::Scm, cx);
             app.toggle_sftp(window, cx);
         });
         assert_eq!(panel(&app, &mut vcx), (true, RightPanelTab::Files));

@@ -4,6 +4,28 @@ pub fn translate_en(key: L10nKey) -> &'static str {
     match key {
         L10nKey::SettingsNavAi => "AI",
         L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsAiLocalTools => "Local tools",
+        L10nKey::SettingsAiProviders => "Additional AI providers",
+        L10nKey::SettingsCodexCardDesc => "Uses your local Codex sign-in.",
+        L10nKey::SettingsDeepSeekEnabled => "Enable DeepSeek",
+        L10nKey::SettingsDeepSeekEnabledDesc => "Turning off keeps the key and settings.",
+        L10nKey::SettingsAiDisabled => "Disabled",
+        L10nKey::SettingsAiKeyWorking => "Updating Key status…",
+        L10nKey::SettingsAiTestConnection => "Test connection",
+        L10nKey::SettingsAiTestDesc => "Test connectivity without sending repository content.",
+        L10nKey::SettingsAiTesting => "Testing…",
+        L10nKey::SettingsAiTestSuccess => "Connected · {ms} ms",
+        L10nKey::SettingsAiSaveReplacementFirst => {
+            "Save the replacement Key before testing; only the saved Key is used."
+        }
+        L10nKey::SettingsAiSaveSettingsFirst => {
+            "Save a valid API URL and model before testing. Retry any failed settings save."
+        }
+        L10nKey::SettingsGitEnableDeepSeek => "Open DeepSeek settings",
+        L10nKey::SettingsGitAiSummary => "Edit the result before committing.",
+        L10nKey::AiDeepseekDisabled => {
+            "DeepSeek is disabled. Enable it in AI settings to generate; no other provider will be used automatically."
+        }
         L10nKey::SettingsCodexModel => "Codex default model",
         L10nKey::SettingsCodexEffort => "Codex reasoning effort",
         L10nKey::SettingsDeepSeekUrl => "API base URL",
@@ -15,30 +37,16 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::SettingsGitRules => "Custom rules",
         L10nKey::SettingsAiKeywords => "AI LLM DeepSeek Codex model reasoning API Key 模型 推理",
         L10nKey::SettingsGitAiKeywords => "AI Git commit language rules 提交 语言 规则",
-        L10nKey::SettingsCodexModelDesc => {
-            "Leave empty to use Codex's own model configuration. Uses your local CLI sign-in."
-        }
-        L10nKey::SettingsCodexScope => {
-            "Local launches only, starting with the next Codex launch; SSH and WSL are not affected. Reopen old terminals once to load shell integration. Custom shell arguments disable manual-command injection, but menu launches still apply defaults. Existing aliases and functions are preserved. Global Codex configuration is never changed."
-        }
-        L10nKey::SettingsAiEffortDesc => {
-            "Default leaves the provider configuration unchanged. Unsupported levels return the provider's error."
-        }
-        L10nKey::SettingsDeepSeekDesc => "Configure the API independently of CLI agents.",
-        L10nKey::SettingsDeepSeekUrlDesc => {
-            "HTTPS without credentials, query or fragment. Loopback HTTP is allowed for local gateways."
-        }
-        L10nKey::SettingsDeepSeekKeyDesc => {
-            "Stored only in the system keychain. Moving the configuration directory requires setting the Key again. Resetting settings does not remove it."
-        }
+        L10nKey::SettingsCodexModelDesc => "Leave empty for Codex's default model.",
+        L10nKey::SettingsCodexScope => "Local only; global Codex configuration is unchanged.",
+        L10nKey::SettingsAiEffortDesc => "Commit generation uses lightweight defaults.",
+        L10nKey::SettingsDeepSeekDesc => "An independent API service.",
+        L10nKey::SettingsDeepSeekUrlDesc => "Supports compatible API endpoints.",
+        L10nKey::SettingsDeepSeekKeyDesc => "Stored only in the system keychain.",
         L10nKey::SettingsGitAiTitle => "Git commit messages",
-        L10nKey::SettingsGitAiDesc => {
-            "Generate an editable draft only; commit manually. Generating sends the pending diff to the selected service. Remote repositories also use the service from this computer."
-        }
+        L10nKey::SettingsGitAiDesc => "Only pending changes are sent; commits remain manual.",
         L10nKey::SettingsGitLanguageDesc => "Language for generated commit messages.",
-        L10nKey::SettingsGitRulesDesc => {
-            "Optional instructions; Enter inserts a new line. Saved when leaving the field."
-        }
+        L10nKey::SettingsGitRulesDesc => "Enter for a new line; saved on blur.",
         L10nKey::SettingsGitRulesPlaceholder => {
             "For example: use Conventional Commits and keep titles under 72 characters."
         }
@@ -61,13 +69,13 @@ pub fn translate_en(key: L10nKey) -> &'static str {
             "Use HTTPS (or loopback HTTP), without credentials, query or fragment."
         }
         L10nKey::AiNetworkError => "Could not connect to the AI service.",
-        L10nKey::AiRequestTimeout => "AI generation timed out.",
+        L10nKey::AiRequestTimeout => "The AI request timed out.",
         L10nKey::AiResponseTooLarge => "The AI response exceeded the size limit.",
         L10nKey::AiUnauthorized => "AI service authentication failed. Check your API Key.",
         L10nKey::AiRateLimited => "AI service quota or rate limit reached. Try again later.",
         L10nKey::AiHttpError => "AI service returned HTTP {status}.",
         L10nKey::AiInvalidResponse => "The AI service returned an invalid response.",
-        L10nKey::AiEmptyResponse => "The AI service returned no commit message.",
+        L10nKey::AiEmptyResponse => "The AI service returned no response content.",
         L10nKey::AiCodexMissing => "Install Codex CLI, sign in, and configure AI settings.",
         L10nKey::AiCodexFailed => {
             "Codex exited with status {detail}. Check local CLI login and model/effort; upgrade Codex if options are unsupported."
@@ -82,11 +90,11 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::ScmAiFailed => "Could not generate commit message.",
         L10nKey::ScmAiBusy => "A message is being generated for this repository.",
         L10nKey::ScmAiCommitting => "A commit is in progress.",
-        L10nKey::ScmAiNoChanges => "No tracked changes available for generation.",
+        L10nKey::ScmAiNoChanges => "No commit changes available, including non-ignored new files.",
         L10nKey::ScmAiConfigure => "Choose an AI provider in Git settings.",
         L10nKey::ScmAiMissingCodex => "Install Codex CLI and sign in, then configure AI settings.",
         L10nKey::ScmAiOpenSettings => "Open AI settings",
-        L10nKey::ScmAiConflicts => "Resolve conflicts before generating a commit message.",
+        L10nKey::ScmAiConflicts => "Resolve merge conflicts first.",
         L10nKey::ScmAiReadFailed => "Could not read commit state.",
         L10nKey::AiCodexLoginRequired => {
             "Codex exited with status {status}. Sign in using the local Codex CLI, then try again."
@@ -1266,25 +1274,7 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::ForwardDisconnected => "Disconnected",
         L10nKey::ForwardDisconnectedFrom => "Disconnected from {host}",
         L10nKey::SshEditProfile => "Edit connection…",
-        L10nKey::ForwardTooltipAdd => "Add forward",
-        L10nKey::ForwardTooltipRemove => "Remove",
-        L10nKey::ForwardTooltipTurnOn => "Turn on",
-        L10nKey::ForwardTooltipTurnOff => "Turn off — the rule is kept",
-        L10nKey::ForwardSwitchFailed => "Couldn't switch the forward — {error}",
         L10nKey::SettingsFwdEnabled => "Open this rule with the connection",
-        L10nKey::ForwardLocal => "Local",
-        L10nKey::ForwardRemote => "Remote",
-        L10nKey::ForwardDynamic => "Dynamic",
-        L10nKey::ForwardBindLabel => "bind",
-        L10nKey::ForwardToLabel => "to",
-        L10nKey::ForwardSocksLabel => "SOCKS",
-        L10nKey::ForwardAdd => "Add",
-        L10nKey::ForwardPortLabel => "Remote port",
-        L10nKey::ForwardPortHere => "opens at localhost:{port}",
-        L10nKey::ForwardNeedsPort => "A port is a number from 1 to 65535.",
-        L10nKey::ForwardAdvancedToggle => "Advanced",
-        L10nKey::ForwardSimpleToggle => "Simple",
-        L10nKey::ForwardRequestFailed => "Could not reach the session — nothing changed.",
         L10nKey::FileTreePlaceholderFileName => "file name",
         L10nKey::FileTreePlaceholderFolderName => "folder name",
         L10nKey::FileTreePlaceholderNewName => "new name",
@@ -1483,16 +1473,10 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::SearchPlaceholderLocations => "Filter the places found…",
         L10nKey::SearchLocationsNone => "Nothing found",
         L10nKey::LspFindReferences => "Find All References",
-        L10nKey::PanelInfoTitle => "Info",
         L10nKey::PanelChangesTitle => "Changes",
         L10nKey::PanelScmTitle => "Changes",
         L10nKey::PanelFilesTitle => "Files",
         L10nKey::PanelSearchTitle => "Search",
-        L10nKey::PanelGitHubTitle => "GitHub",
-        L10nKey::PanelNoSession => "No active session.",
-        L10nKey::PanelNoSessionHint => {
-            "Open a tab to see its shell, directory, and processes here."
-        }
         L10nKey::PanelNoWorkingDirectory => "No working directory.",
         L10nKey::PanelNoWorkingDirectoryHint => "This pane has not reported one yet.",
         L10nKey::PanelLoading => "Loading…",
@@ -1500,23 +1484,7 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::PanelNotAGitRepoHint => "cd into one and this tab lists its uncommitted changes.",
         L10nKey::PanelNoChanges => "No uncommitted changes.",
         L10nKey::PanelNoChangesHint => "The working tree is clean.",
-        L10nKey::PanelSessionSubtitle => "Session",
-        L10nKey::PanelProcessesSubtitle => "Processes",
-        L10nKey::PanelProcessesTotal => "Total",
-        L10nKey::PanelPortsSubtitle => "Ports",
-        L10nKey::PanelPortsUnsupported => "That machine's tty7-server is too old to list ports.",
-        L10nKey::PanelPortsProbeFailed => "Couldn't check what this pane is listening on.",
-        L10nKey::PanelPortsRestricted => {
-            "Something here runs as another user, whose ports aren't visible."
-        }
-        L10nKey::PanelPortsEmpty => "No forwarded ports",
-        L10nKey::PanelLatency => "latency",
         L10nKey::PortAutoForwarded => "Remote :{port} is now http://localhost:{local}",
-        L10nKey::PanelCwd => "cwd",
-        L10nKey::PanelShell => "shell",
-        L10nKey::PanelSsh => "ssh",
-        L10nKey::PanelBranch => "branch",
-        L10nKey::PanelChangesRow => "changes",
         L10nKey::PanelAgentWorking => "working",
         L10nKey::PanelAgentWaiting => "waiting",
         L10nKey::PanelAgentDone => "done",
@@ -1939,11 +1907,9 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::CmdShowCodePanel => "Show Code Panel",
         L10nKey::CmdTabBarMoveToTop => "Tab Bar: Move to Top",
         L10nKey::CmdTabBarMoveToLeftSidebar => "Tab Bar: Move to Left Sidebar",
-        L10nKey::CmdRightPanelInfo => "Right Panel: Info",
         L10nKey::CmdRightPanelChanges => "Right Panel: Changes",
         L10nKey::CmdRightPanelFiles => "Right Panel: Files",
         L10nKey::CmdRightPanelSearch => "Right Panel: Search",
-        L10nKey::CmdRightPanelGitHub => "Right Panel: GitHub",
         L10nKey::CmdChangeTheme => "Change Theme…",
         L10nKey::CmdResetFontSize => "Reset Font Size",
         L10nKey::CmdEnterFullScreen => "Enter Full Screen",
@@ -2013,7 +1979,6 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::CmdSshManageProfiles => "SSH: Manage Profiles…",
         L10nKey::CmdSshReconnect => "SSH: Reconnect",
         L10nKey::CmdSshRemoteFiles => "SSH: Remote Files",
-        L10nKey::CmdSshPortForwarding => "SSH: Port Forwarding",
         L10nKey::CmdSshSaveConnection => "SSH: Save Connection as Host…",
         L10nKey::CmdSshSaveConnectionSubtitle => "Keep this connection as a saved host.",
         L10nKey::CmdSshConnectWithInput => "SSH: Connect {input}",
@@ -2389,75 +2354,6 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::TabTooltipPhoneActive => "In use on phone",
         L10nKey::TabTooltipAsleep => "Hibernated — select to wake",
         L10nKey::TabWakeFailed => "Could not wake the tab: none of its panes could be started",
-        // ---- The right panel's GitHub tab ----
-        L10nKey::GitHubIssues => "Issues",
-        L10nKey::GitHubPulls => "Pull Requests",
-        L10nKey::GitHubOpen => "Open",
-        L10nKey::GitHubClosed => "Closed",
-        L10nKey::GitHubMerged => "Merged",
-        L10nKey::GitHubDraft => "Draft",
-        L10nKey::GitHubNotPlanned => "Not planned",
-        L10nKey::GitHubRefresh => "Refresh",
-        L10nKey::GitHubOpenOnGitHub => "Open on GitHub",
-        L10nKey::GitHubShowRemote => "Show issues from",
-        L10nKey::GitHubLoadMore => "Load more",
-        L10nKey::GitHubNoRemote => "No GitHub remote",
-        L10nKey::GitHubNoRemoteHint => "None of this repository's remotes point at github.com.",
-        L10nKey::GitHubNoIssues => "No issues match.",
-        L10nKey::GitHubNoPulls => "No pull requests match.",
-        L10nKey::GitHubSignInHint => "Sign in with `gh auth login` in a terminal, then refresh.",
-        L10nKey::GitHubNotFoundSignedOut => {
-            "GitHub did not find this repository. If it is private, sign in first."
-        }
-        L10nKey::GitHubNotFoundSignedIn => {
-            "GitHub did not find this repository, or none of your gh accounts can see it."
-        }
-        L10nKey::GitHubUnauthorized => "GitHub rejected the saved sign-in.",
-        L10nKey::GitHubRateLimited => "GitHub's rate limit is used up.",
-        L10nKey::GitHubRateLimitResetIn => "It resets in {n} min.",
-        L10nKey::GitHubRateLimitSignedOut => {
-            "Signed out, GitHub allows 60 requests an hour. Sign in with `gh auth login` for more."
-        }
-        L10nKey::GitHubForbidden => "GitHub refused the request.",
-        L10nKey::GitHubNetworkError => "Could not reach GitHub.",
-        L10nKey::GitHubHttpError => "GitHub answered with an error ({code}).",
-        L10nKey::GitHubDecodeError => "GitHub sent a response tty7 could not read.",
-        L10nKey::GitHubMoreOnGitHub => "More on GitHub",
-        L10nKey::GitHubNoDescription => "No description provided.",
-        L10nKey::GitHubFilterByLabel => "Show only this label",
-        L10nKey::GitHubClearLabel => "Clear label filter",
-        L10nKey::GitHubImage => "image",
-        L10nKey::GitHubComments => "{count} comments",
-        L10nKey::GitHubCommits => "{count} commits",
-        L10nKey::GitHubOpenedAt => "opened {when}",
-        L10nKey::GitHubUpdatedAt => "updated {when}",
-        L10nKey::GitHubChecks => "Checks",
-        L10nKey::GitHubChecksPassed => "{passed} of {total} passed",
-        L10nKey::GitHubChecksNoneCounted => "No checks with a result",
-        L10nKey::GitHubCheckPassed => "Passed",
-        L10nKey::GitHubCheckFailed => "Failed",
-        L10nKey::GitHubCheckPending => "In progress",
-        L10nKey::GitHubCheckSkipped => "Skipped",
-        L10nKey::GitHubReviews => "Reviews",
-        L10nKey::GitHubReviewApproved => "Approved",
-        L10nKey::GitHubReviewChangesRequested => "Changes requested",
-        L10nKey::GitHubReviewCommented => "Commented",
-        L10nKey::GitHubReviewRequested => "Requested",
-        L10nKey::GitHubReadyToMerge => "Ready to merge",
-        L10nKey::GitHubMergeConflicts => "Merge conflicts",
-        L10nKey::GitHubReviewRequired => "Review required",
-        L10nKey::GitHubBehindBase => "Behind the base branch",
-        L10nKey::GitHubMergeBlocked => "Blocked by branch protection",
-        L10nKey::GitHubThisBranch => "This branch",
-        L10nKey::GitHubChecksFailing => "{count} checks failing",
-        L10nKey::GitHubWaitingOnChecks => "Waiting on {count} checks",
-        L10nKey::GitHubShowLess => "Show less",
-        L10nKey::GitHubShowAllFiles => "Show all {count} files",
-        L10nKey::GitHubPassedCount => "{count} passed",
-        L10nKey::GitHubSkippedCount => "{count} skipped",
-        L10nKey::GitHubShowFullText => "Show full text",
-        L10nKey::GitHubShowHiddenComments => "Show {count} more comments",
-        L10nKey::GitHubShowAllReviewers => "Show all {count} reviewers",
         L10nKey::CmdCopyRaw => "Copy Raw",
         L10nKey::SettingsSearchCopyJoinWrappedKeywords => {
             "clipboard copy wrap unwrap join lines claude raw"
@@ -2628,34 +2524,6 @@ pub fn translate_variant_en(key: L10nKey, branch: &'static str) -> Option<&'stat
         (L10nKey::WindowDeleteShells, "other") => {
             "{count} running shells will be ended and the layout forgotten."
         }
-        // ---- The right panel's GitHub tab ----
-        (L10nKey::GitHubComments, "zero") => "No comments",
-        (L10nKey::GitHubComments, "one") => "1 comment",
-        (L10nKey::GitHubComments, "other") => "{count} comments",
-        (L10nKey::GitHubCommits, "zero") => "No commits",
-        (L10nKey::GitHubCommits, "one") => "1 commit",
-        (L10nKey::GitHubCommits, "other") => "{count} commits",
-        (L10nKey::GitHubChecksFailing, "zero") => "No checks failing",
-        (L10nKey::GitHubChecksFailing, "one") => "1 check failing",
-        (L10nKey::GitHubChecksFailing, "other") => "{count} checks failing",
-        (L10nKey::GitHubWaitingOnChecks, "zero") => "Not waiting on checks",
-        (L10nKey::GitHubWaitingOnChecks, "one") => "Waiting on 1 check",
-        (L10nKey::GitHubWaitingOnChecks, "other") => "Waiting on {count} checks",
-        (L10nKey::GitHubShowAllFiles, "zero") => "No files",
-        (L10nKey::GitHubShowAllFiles, "one") => "Show 1 file",
-        (L10nKey::GitHubShowAllFiles, "other") => "Show all {count} files",
-        (L10nKey::GitHubPassedCount, "zero") => "None passed",
-        (L10nKey::GitHubPassedCount, "one") => "1 passed",
-        (L10nKey::GitHubPassedCount, "other") => "{count} passed",
-        (L10nKey::GitHubSkippedCount, "zero") => "None skipped",
-        (L10nKey::GitHubSkippedCount, "one") => "1 skipped",
-        (L10nKey::GitHubSkippedCount, "other") => "{count} skipped",
-        (L10nKey::GitHubShowHiddenComments, "zero") => "No more comments",
-        (L10nKey::GitHubShowHiddenComments, "one") => "Show 1 more comment",
-        (L10nKey::GitHubShowHiddenComments, "other") => "Show {count} more comments",
-        (L10nKey::GitHubShowAllReviewers, "zero") => "No reviewers",
-        (L10nKey::GitHubShowAllReviewers, "one") => "Show 1 reviewer",
-        (L10nKey::GitHubShowAllReviewers, "other") => "Show all {count} reviewers",
         _ => return None,
     };
     Some(res)

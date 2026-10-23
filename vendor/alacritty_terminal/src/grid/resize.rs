@@ -16,7 +16,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
-        self.resize_impl(reflow, false, lines, columns);
+        self.resize_impl(reflow, false, true, lines, columns);
     }
 
     /// Resize the grid with ConPTY's row semantics.
@@ -37,26 +37,58 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
-        self.resize_impl(reflow, true, lines, columns);
+        self.resize_impl(reflow, true, true, lines, columns);
     }
 
-    fn resize_impl<D>(&mut self, reflow: bool, conpty: bool, lines: usize, columns: usize)
+    /// A screen-addressed application repaints the viewport after a resize.
+    /// Reflow only its scrollback; visible rows retain their physical positions.
+    pub(crate) fn resize_for_repaint<D>(&mut self, lines: usize, columns: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        self.break_history_wrap();
+        self.cursor.input_needs_wrap = false;
+        self.resize_impl(true, false, false, lines, columns);
+        self.break_history_wrap();
+    }
+
+    fn break_history_wrap(&mut self) {
+        if self.history_size() > 0 {
+            if let Some(cell) = self.raw[Line(-1)].last_mut() {
+                cell.flags_mut().remove(Flags::WRAPLINE);
+            }
+        }
+    }
+
+    fn resize_impl<D>(
+        &mut self,
+        reflow: bool,
+        conpty: bool,
+        reflow_viewport: bool,
+        lines: usize,
+        columns: usize,
+    )
     where
         T: ResetDiscriminant<D>,
         D: PartialEq,
     {
         // Use empty template cell for resetting cells due to resize.
         let template = mem::take(&mut self.cursor.template);
+        let display_offset = self.display_offset;
 
         match self.lines.cmp(&lines) {
-            Ordering::Less => self.grow_lines(conpty, lines),
-            Ordering::Greater => self.shrink_lines(conpty, lines),
+            Ordering::Less => self.grow_lines(conpty || !reflow_viewport, lines),
+            Ordering::Greater => self.shrink_lines(conpty, reflow_viewport, lines),
             Ordering::Equal => (),
+        }
+        if !reflow_viewport {
+            self.display_offset = min(display_offset, self.history_size());
         }
 
         match self.columns.cmp(&columns) {
-            Ordering::Less => self.grow_columns(reflow, columns),
-            Ordering::Greater => self.shrink_columns(reflow, columns),
+            Ordering::Less => self.grow_columns(reflow, reflow_viewport, columns),
+            Ordering::Greater => self.shrink_columns(reflow, reflow_viewport, columns),
             Ordering::Equal => (),
         }
 
@@ -114,7 +146,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     /// PSReadLine continuation hint, a status line) visible when the window
     /// shrinks, so their paints keep landing where conhost aims them. The
     /// cursor is still never scrolled out of the viewport.
-    fn shrink_lines<D>(&mut self, conpty: bool, target: usize)
+    fn shrink_lines<D>(&mut self, conpty: bool, reflow_viewport: bool, target: usize)
     where
         T: ResetDiscriminant<D>,
         D: PartialEq,
@@ -122,7 +154,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let cursor_line = self.cursor.point.line.0 as usize;
 
         // Scroll up to keep content inside the window.
-        let mut required_scrolling = (cursor_line + 1).saturating_sub(target);
+        let mut required_scrolling =
+            if reflow_viewport { (cursor_line + 1).saturating_sub(target) } else { 0 };
         if conpty {
             let last_written = max(cursor_line, self.bottommost_occupied_line());
             let by_content = (last_written + 1).saturating_sub(target);
@@ -141,6 +174,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Clamp saved cursor, since only primary cursor is scrolled into viewport.
         self.saved_cursor.point.line = min(self.saved_cursor.point.line, Line(target as i32 - 1));
+        self.cursor.point.line = min(self.cursor.point.line, Line(target as i32 - 1));
 
         self.raw.rotate((self.lines - target) as isize);
         self.raw.shrink_visible_lines(target);
@@ -157,7 +191,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     }
 
     /// Grow number of columns in each row, reflowing if necessary.
-    fn grow_columns(&mut self, reflow: bool, columns: usize) {
+    fn grow_columns(&mut self, reflow: bool, reflow_viewport: bool, columns: usize) {
         // Check if a row needs to be wrapped.
         let should_reflow = |row: &Row<T>| -> bool {
             let len = Column(row.len());
@@ -170,7 +204,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let mut cursor_line_delta = 0;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
-        if self.cursor.input_needs_wrap && reflow {
+        if self.cursor.input_needs_wrap && reflow && reflow_viewport {
             self.cursor.input_needs_wrap = false;
             self.cursor.point.column += 1;
         }
@@ -180,7 +214,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         for (i, mut row) in rows.drain(..).enumerate().rev() {
             // Check if reflowing should be performed.
             let last_row = match reversed.last_mut() {
-                Some(last_row) if should_reflow(last_row) => last_row,
+                Some(last_row) if (reflow_viewport || i >= self.lines) && should_reflow(last_row) => {
+                    last_row
+                },
                 _ => {
                     reversed.push(row);
                     continue;
@@ -301,11 +337,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     }
 
     /// Shrink number of columns in each row, reflowing if necessary.
-    fn shrink_columns(&mut self, reflow: bool, columns: usize) {
+    fn shrink_columns(&mut self, reflow: bool, reflow_viewport: bool, columns: usize) {
         self.columns = columns;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
-        if self.cursor.input_needs_wrap && reflow {
+        if self.cursor.input_needs_wrap && reflow && reflow_viewport {
             self.cursor.input_needs_wrap = false;
             self.cursor.point.column += 1;
         }
@@ -315,6 +351,15 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         let mut rows = self.raw.take_all();
         for (i, mut row) in rows.drain(..).enumerate().rev() {
+            let reflow = reflow && (reflow_viewport || i >= self.lines);
+            if !reflow {
+                row.truncate(columns);
+                if row[Column(columns - 1)].flags().contains(Flags::WIDE_CHAR) {
+                    row[Column(columns - 1)] = T::default();
+                }
+                new_raw.push(row);
+                continue;
+            }
             // Append lines left over from the previous row.
             if let Some(buffered) = buffered.take() {
                 // Add a column for every cell added before the cursor, if it goes beyond the new
@@ -381,6 +426,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     .last()
                     .map(|c| c.flags().contains(Flags::WRAPLINE) && i >= 1)
                     .unwrap_or(false)
+                    && (reflow_viewport || i > self.lines)
                     && wrapped.len() < columns
                 {
                     // Make sure previous wrap flag doesn't linger around.
@@ -431,7 +477,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.display_offset = min(self.display_offset, self.history_size());
 
         // Reflow the primary cursor, or clamp it if reflow is disabled.
-        if !reflow {
+        if !reflow || !reflow_viewport {
             self.cursor.point.column = min(self.cursor.point.column, Column(columns - 1));
         } else if self.cursor.point.column == columns
             && !self[self.cursor.point.line][Column(columns - 1)].flags().contains(Flags::WRAPLINE)

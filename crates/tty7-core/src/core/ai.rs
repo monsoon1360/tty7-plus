@@ -25,6 +25,7 @@ pub struct CodexSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeepSeekSettings {
+    pub enabled: bool,
     pub base_url: String,
     pub model: String,
     #[serde(deserialize_with = "crate::core::config::de_lenient")]
@@ -34,6 +35,7 @@ pub struct DeepSeekSettings {
 impl Default for DeepSeekSettings {
     fn default() -> Self {
         Self {
+            enabled: false,
             base_url: "https://api.deepseek.com".into(),
             model: "deepseek-flash".into(),
             reasoning_effort: None,

@@ -7,8 +7,8 @@
 //! had, and a change repaints both windows.
 
 use gpui::{
-    App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    App, Context, DisplayId, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Styled as _, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds,
     WindowDecorations, WindowOptions, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{ActiveTheme as _, TitleBar};
@@ -21,13 +21,14 @@ use crate::ui::app::Tty7App;
 const DEFAULT_SIZE: (f32, f32) = (960., 700.);
 const MIN_SIZE: (f32, f32) = (720., 480.);
 
-pub(crate) fn window_options(cx: &mut App) -> WindowOptions {
+pub(crate) fn window_options(display_id: Option<DisplayId>, cx: &mut App) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(gpui::Bounds::centered(
-            None,
+            display_id,
             size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)),
             cx,
         ))),
+        display_id,
         app_id: Some("tty7".to_owned()),
         titlebar: Some(TitlebarOptions {
             // Not drawn (the title bar is the window's own), but it is the

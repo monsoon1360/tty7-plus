@@ -300,6 +300,14 @@ pub struct Term<T> {
     /// Mode flags.
     mode: TermMode,
 
+    /// A synchronized, cursor-addressed primary screen owns its viewport.
+    /// Reflowing that image before its next repaint would archive stale copies.
+    #[cfg_attr(feature = "serde", serde(default))]
+    viewport_repaint: bool,
+
+    #[cfg_attr(feature = "serde", serde(default))]
+    sync_update: bool,
+
     /// Scroll region.
     ///
     /// Range going from top to bottom of the terminal, indexed from the top of the viewport.
@@ -460,6 +468,8 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             mode: Default::default(),
+            viewport_repaint: false,
+            sync_update: false,
         }
     }
 
@@ -690,6 +700,26 @@ impl<T> Term<T> {
         &mut self.grid
     }
 
+    fn move_to(&mut self, line: i32, col: usize) {
+        let line = Line(line);
+        let col = Column(col);
+        let (y_offset, max_y) = if self.mode.contains(TermMode::ORIGIN) {
+            (self.scroll_region.start, self.scroll_region.end - 1)
+        } else {
+            (Line(0), self.bottommost_line())
+        };
+        self.damage_cursor();
+        self.grid.cursor.point.line = cmp::max(cmp::min(line + y_offset, max_y), Line(0));
+        self.grid.cursor.point.column = cmp::min(col, self.last_column());
+        self.damage_cursor();
+        self.grid.cursor.input_needs_wrap = false;
+    }
+
+    /// Hand the primary viewport back to a shell whose prompt will redraw it.
+    pub fn resume_line_reflow(&mut self) {
+        self.viewport_repaint = false;
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();
@@ -705,14 +735,19 @@ impl<T> Term<T> {
 
         debug!("New num_cols is {num_cols} and num_lines is {num_lines}");
 
+        let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
+        let repaint = self.viewport_repaint && !self.config.conpty_resize;
+
         // Move vi mode cursor with the content.
         let history_size = self.history_size();
         let mut delta = num_lines as i32 - old_lines as i32;
         let min_delta = cmp::min(0, num_lines as i32 - self.grid.cursor.point.line.0 - 1);
         delta = cmp::min(cmp::max(delta, min_delta), history_size as i32);
+        if repaint && !is_alt {
+            delta = 0;
+        }
         self.vi_mode_cursor.point.line += delta;
 
-        let is_alt = self.mode.contains(TermMode::ALT_SCREEN);
         // ConPTY row semantics apply to the primary screen, whichever grid
         // currently holds it; the alternate screen has no scrollback and its
         // application repaints itself after a resize.
@@ -723,6 +758,14 @@ impl<T> Term<T> {
             } else {
                 self.grid.resize_conpty(!is_alt, num_lines, num_cols);
                 self.inactive_grid.resize(is_alt, num_lines, num_cols);
+            }
+        } else if repaint {
+            if is_alt {
+                self.grid.resize(false, num_lines, num_cols);
+                self.inactive_grid.resize_for_repaint(num_lines, num_cols);
+            } else {
+                self.grid.resize_for_repaint(num_lines, num_cols);
+                self.inactive_grid.resize(false, num_lines, num_cols);
             }
         } else {
             self.grid.resize(!is_alt, num_lines, num_cols);
@@ -735,6 +778,8 @@ impl<T> Term<T> {
 
             // Recreate tabs list.
             self.tabs.resize(num_cols);
+        } else if repaint && !is_alt && num_lines < old_lines {
+            self.selection = None;
         } else if let Some(selection) = self.selection.take() {
             let max_lines = cmp::max(num_lines, old_lines) as i32;
             let range = Line(0)..Line(max_lines);
@@ -1261,33 +1306,25 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn goto(&mut self, line: i32, col: usize) {
-        let line = Line(line);
-        let col = Column(col);
-
-        trace!("Going to: line={line}, col={col}");
-        let (y_offset, max_y) = if self.mode.contains(TermMode::ORIGIN) {
-            (self.scroll_region.start, self.scroll_region.end - 1)
-        } else {
-            (Line(0), self.bottommost_line())
-        };
-
-        self.damage_cursor();
-        self.grid.cursor.point.line = cmp::max(cmp::min(line + y_offset, max_y), Line(0));
-        self.grid.cursor.point.column = cmp::min(col, self.last_column());
-        self.damage_cursor();
-        self.grid.cursor.input_needs_wrap = false;
+        if self.sync_update
+            && !self.config.conpty_resize
+            && !self.mode.contains(TermMode::ALT_SCREEN)
+        {
+            self.viewport_repaint = true;
+        }
+        self.move_to(line, col);
     }
 
     #[inline]
     fn goto_line(&mut self, line: i32) {
         trace!("Going to line: {line}");
-        self.goto(line, self.grid.cursor.point.column.0)
+        self.move_to(line, self.grid.cursor.point.column.0)
     }
 
     #[inline]
     fn goto_col(&mut self, col: usize) {
         trace!("Going to column: {col}");
-        self.goto(self.grid.cursor.point.line.0, col)
+        self.move_to(self.grid.cursor.point.line.0, col)
     }
 
     #[inline]
@@ -1324,7 +1361,7 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line - lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to(line.0, column.0)
     }
 
     #[inline]
@@ -1333,7 +1370,7 @@ impl<T: EventListener> Handler for Term<T> {
 
         let line = self.grid.cursor.point.line + lines;
         let column = self.grid.cursor.point.column;
-        self.goto(line.0, column.0)
+        self.move_to(line.0, column.0)
     }
 
     #[inline]
@@ -1457,7 +1494,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving down and cr: {lines}");
 
         let line = self.grid.cursor.point.line + lines;
-        self.goto(line.0, 0)
+        self.move_to(line.0, 0)
     }
 
     #[inline]
@@ -1465,7 +1502,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Moving up and cr: {lines}");
 
         let line = self.grid.cursor.point.line - lines;
-        self.goto(line.0, 0)
+        self.move_to(line.0, 0)
     }
 
     /// Insert tab at cursor position.
@@ -1518,6 +1555,9 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn carriage_return(&mut self) {
         trace!("Carriage return");
+        if !self.sync_update && !self.mode.contains(TermMode::ALT_SCREEN) {
+            self.resume_line_reflow();
+        }
         let new_col = 0;
         let line = self.grid.cursor.point.line.0 as usize;
         self.damage.damage_line(line, new_col, self.grid.cursor.point.column.0);
@@ -1529,6 +1569,9 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
+        if !self.mode.contains(TermMode::ALT_SCREEN) {
+            self.resume_line_reflow();
+        }
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
             self.scroll_up(1);
@@ -1955,6 +1998,8 @@ impl<T: EventListener> Handler for Term<T> {
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
         self.inactive_keyboard_mode_stack = Default::default();
+        self.viewport_repaint = false;
+        self.sync_update = false;
 
         // Preserve vi mode across resets.
         self.mode &= TermMode::VI;
@@ -2088,7 +2133,7 @@ impl<T: EventListener> Handler for Term<T> {
             NamedPrivateMode::LineWrap => self.mode.insert(TermMode::LINE_WRAP),
             NamedPrivateMode::Origin => {
                 self.mode.insert(TermMode::ORIGIN);
-                self.goto(0, 0);
+                self.move_to(0, 0);
             },
             NamedPrivateMode::ColumnMode => self.deccolm(),
             NamedPrivateMode::BlinkingCursor => {
@@ -2096,7 +2141,7 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = true;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            NamedPrivateMode::SyncUpdate => self.sync_update = true,
         }
     }
 
@@ -2145,7 +2190,7 @@ impl<T: EventListener> Handler for Term<T> {
                 style.blinking = false;
                 self.event_proxy.send_event(Event::CursorBlinkingChange);
             },
-            NamedPrivateMode::SyncUpdate => (),
+            NamedPrivateMode::SyncUpdate => self.sync_update = false,
         }
     }
 
@@ -2280,7 +2325,7 @@ impl<T: EventListener> Handler for Term<T> {
         let screen_lines = Line(self.screen_lines() as i32);
         self.scroll_region.start = cmp::min(start, screen_lines);
         self.scroll_region.end = cmp::min(end, screen_lines);
-        self.goto(0, 0);
+        self.move_to(0, 0);
     }
 
     #[inline]
@@ -3470,6 +3515,165 @@ mod tests {
         term.title = Some("Test".into());
         term.set_title(None);
         assert_eq!(term.title, None);
+    }
+
+    fn repaint_frame(cols: usize, rows: usize) -> Vec<u8> {
+        let mut frame = String::from("\x1b[?2026h\x1b[H\x1b[J");
+        for row in 0..rows {
+            let label = match row {
+                0 => "USER_MESSAGE",
+                1 => "COMMAND_RESULT",
+                _ => "screen content",
+            };
+            frame.push_str(&format!("\x1b[{};1H{label:.<width$}", row + 1, width = cols - 1));
+        }
+        frame.push_str("\x1b[?2026l");
+        frame.into_bytes()
+    }
+
+    fn repaint_text(term: &Term<VoidListener>) -> String {
+        term.bounds_to_string(
+            Point::new(term.topmost_line(), Column(0)),
+            Point::new(term.bottommost_line(), term.last_column()),
+        )
+    }
+
+    #[test]
+    fn synchronized_repaint_resizes_do_not_archive_the_viewport() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        let saved = format!("SAVED {}", "界".repeat(50));
+        parser.advance(&mut term, format!("{saved}\r\n{}", "\r\n".repeat(10)).as_bytes());
+        parser.advance(&mut term, &repaint_frame(80, 8));
+
+        for (cols, rows) in [(60, 8), (45, 8), (40, 6), (80, 10), (50, 8), (80, 8)] {
+            term.resize(TermSize::new(cols, rows));
+            parser.advance(&mut term, &repaint_frame(cols, rows));
+            let text = repaint_text(&term);
+            assert_eq!(text.matches("USER_MESSAGE").count(), 1, "{cols}x{rows}: {text}");
+            assert_eq!(text.matches("COMMAND_RESULT").count(), 1, "{cols}x{rows}: {text}");
+            let history = term.bounds_to_string(
+                Point::new(term.topmost_line(), Column(0)),
+                Point::new(Line(-1), term.last_column()),
+            );
+            assert_eq!(history.trim(), saved, "{cols}x{rows}");
+        }
+    }
+
+    #[test]
+    fn synchronized_output_at_an_offscreen_row_keeps_scrollable_text() {
+        let mut term = Term::new(Config::default(), &TermSize::new(40, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, &repaint_frame(40, 8));
+        let output = "0123456789".repeat(9);
+        parser.advance(&mut term, format!("\x1b[?2026h\x1b[9;1H{output}\x1b[?2026l").as_bytes());
+        assert!(repaint_text(&term).contains(&output));
+        assert_eq!(term.history_size(), 2);
+
+        term.scroll_display(Scroll::Delta(1));
+        assert_eq!(term.grid().display_offset(), 1);
+        let row = term.bounds_to_string(
+            Point::new(Line(-1), Column(0)),
+            Point::new(Line(-1), term.last_column()),
+        );
+        assert!(row.starts_with("COMMAND_RESULT"));
+
+        term.scroll_display(Scroll::Top);
+        let row = term.bounds_to_string(
+            Point::new(Line(-2), Column(0)),
+            Point::new(Line(-2), term.last_column()),
+        );
+        assert!(row.starts_with("USER_MESSAGE"));
+        term.scroll_display(Scroll::Bottom);
+        assert_eq!(term.grid().display_offset(), 0);
+    }
+
+    #[test]
+    fn synchronized_line_output_still_reflows() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        let line = "logical output ".repeat(9);
+        parser.advance(&mut term, format!("\x1b[?2026h\x1b[3d\x1b[1G{line}\x1b[?2026l").as_bytes());
+        term.resize(TermSize::new(30, 8));
+        term.resize(TermSize::new(80, 8));
+        assert_eq!(repaint_text(&term).trim(), line.trim_end());
+    }
+
+    #[test]
+    fn line_output_after_a_repaint_restores_reflow() {
+        for synchronized in [false, true] {
+            let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+            let mut parser: ansi::Processor = ansi::Processor::new();
+            parser.advance(&mut term, &repaint_frame(80, 8));
+            let line = "ordinary command output ".repeat(7);
+            let (start, end) = if synchronized { ("\x1b[?2026h", "\x1b[?2026l") } else { ("", "") };
+            parser.advance(&mut term, format!("{start}\r\n{line}{end}").as_bytes());
+            term.resize(TermSize::new(30, 8));
+            term.resize(TermSize::new(80, 8));
+            assert!(repaint_text(&term).contains(line.trim_end()));
+        }
+    }
+
+    #[test]
+    fn alternate_repaints_do_not_change_primary_reflow() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        let line = "primary output ".repeat(10);
+        parser.advance(&mut term, line.as_bytes());
+        parser.advance(&mut term, b"\x1b[?1049h");
+        parser.advance(&mut term, &repaint_frame(80, 8));
+        term.resize(TermSize::new(40, 6));
+        parser.advance(&mut term, b"\x1b[?1049l");
+        term.resize(TermSize::new(80, 8));
+        assert_eq!(repaint_text(&term).trim_end(), line.trim_end());
+    }
+
+    #[test]
+    fn hidden_primary_repaints_do_not_spill_when_an_editor_is_resized() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, &repaint_frame(80, 8));
+        parser.advance(&mut term, b"\x1b[?1049hEDITOR");
+        term.resize(TermSize::new(40, 6));
+        assert_eq!(term.normal_grid().history_size(), 0);
+        parser.advance(&mut term, b"\x1b[?1049l");
+        parser.advance(&mut term, &repaint_frame(40, 6));
+        term.resize(TermSize::new(80, 8));
+        parser.advance(&mut term, &repaint_frame(80, 8));
+        assert_eq!(repaint_text(&term).matches("USER_MESSAGE").count(), 1);
+        assert_eq!(term.history_size(), 0);
+    }
+
+    #[test]
+    fn repaint_resize_discards_pending_wrap_and_incomplete_wide_cells() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, &repaint_frame(80, 8));
+        parser.advance(&mut term, "\x1b[?2026h\x1b[8;40H界\x1b[8;80HX\x1b[?2026l".as_bytes());
+        assert!(term.grid().cursor.input_needs_wrap);
+        term.resize(TermSize::new(40, 8));
+        let edge = &term.grid()[Line(7)][Column(39)];
+        assert_eq!(edge.c, ' ');
+        assert!(!edge.flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+        parser.advance(&mut term, b"\x1b[?2026hZ\x1b[?2026l");
+        assert_eq!(term.history_size(), 0);
+    }
+
+    #[test]
+    fn repaint_height_resize_keeps_the_vi_cursor_on_its_physical_row() {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 8), VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        parser.advance(&mut term, &repaint_frame(80, 8));
+        term.vi_mode_cursor.point = Point::new(Line(2), Column(3));
+        term.selection = Some(Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(7), Column(0)),
+            Side::Left,
+        ));
+        term.resize(TermSize::new(80, 6));
+        assert_eq!(term.vi_mode_cursor.point, Point::new(Line(2), Column(3)));
+        assert!(term.selection.is_none());
+        assert_eq!(term.history_size(), 0);
     }
 
     #[test]

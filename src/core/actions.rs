@@ -81,14 +81,12 @@ actions!(
         ToggleLeftPanel,
         ToggleTerminalArea,
         ToggleRightPanel,
-        ShowRightPanelInfo,
         // Keeps its old name even though the panel is now "Source Control":
         // `Config::keybindings` is keyed by action name, so renaming it would
         // orphan every custom binding already on disk.
         ShowRightPanelChanges,
         ShowRightPanelFiles,
         ShowRightPanelSearch,
-        ShowRightPanelGitHub,
         ScmCommit,
         ScmCommitAmend,
         ScmStageAll,
@@ -117,7 +115,6 @@ actions!(
         ReportIssue,
         RestartDaemon,
         ToggleSftp,
-        ShowSshForwards,
         ToggleCodePanel,
         ToggleDocumentFill,
         DocumentWidthThird,

@@ -220,7 +220,9 @@ pub struct UpdateStatus {
 impl Global for UpdateStatus {}
 
 pub fn spawn_check(cx: &mut App) {
-    if !UPDATES_ENABLED { return; }
+    if !UPDATES_ENABLED {
+        return;
+    }
     // Before hydration and before the config gate: an interrupted portable
     // replacement has to surface whether or not checking is on, and it is
     // recorded as a failure so `hydrate_from_disk` below carries it into the
@@ -298,7 +300,9 @@ fn spawn_recheck_loop(cx: &mut App) {
 }
 
 fn spawn_check_inner(report_failure: bool, cx: &mut App) {
-    if !UPDATES_ENABLED { return; }
+    if !UPDATES_ENABLED {
+        return;
+    }
     if is_busy(cx) {
         return;
     }
@@ -607,7 +611,9 @@ pub fn cancel_download(cx: &mut App) {
 /// Install as soon as there is something to install: now if the package is
 /// already staged, otherwise when the download in flight finishes.
 pub fn install_available(cx: &mut App) {
-    if !UPDATES_ENABLED { return; }
+    if !UPDATES_ENABLED {
+        return;
+    }
     let status = cx.try_global::<UpdateStatus>().cloned().unwrap_or_default();
     if let Some(pending) = status.ready.clone()
         && pending.is_usable()
@@ -641,7 +647,9 @@ pub fn install_available(cx: &mut App) {
 /// is the option that costs the user nothing: no interrupted work now, and no
 /// decision to make later either.
 pub fn stage_for_next_launch(update: AvailableUpdate, cx: &mut App) {
-    if !UPDATES_ENABLED { return; }
+    if !UPDATES_ENABLED {
+        return;
+    }
     #[cfg(target_os = "windows")]
     if update.needs_elevation {
         // "Next launch" promises an unattended install, which an
@@ -1001,7 +1009,9 @@ pub fn open_url(url: &str) {
 /// Every failure path clears the plan and returns `false`. An update that
 /// cannot be applied must never become an app that will not start.
 pub fn apply_pending_at_launch() -> bool {
-    if !UPDATES_ENABLED { return false; }
+    if !UPDATES_ENABLED {
+        return false;
+    }
     let mut state = UpdateState::load();
     let Some(pending) = state.pending.clone() else {
         return false;
@@ -1838,12 +1848,9 @@ fn version_from_assets(assets: &[GitHubAsset]) -> Option<String> {
         .map(|(_, version)| version)
 }
 
-/// Give gpui an HTTP client, so an `img` with a web URL can load.
-///
-/// Until this runs gpui holds a null client and every remote image quietly
-/// fails. The only remote images tty7 draws are the GitHub-hosted ones in an
-/// issue's text (see `core::github::markdown`). Built with the update check's
-/// user agent and proxy; a proxy changed later applies from the next launch.
+/// Install the application's shared HTTP client for AI requests and remote
+/// assets. Built with the update check's user agent and proxy; a proxy changed
+/// later applies from the next launch.
 pub(crate) fn install_image_client(cx: &mut App) {
     let manual_proxy = cx.global::<Config>().http_proxy.clone();
     match build_http_client(manual_proxy.as_deref()) {

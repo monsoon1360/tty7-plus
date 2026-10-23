@@ -7,7 +7,7 @@ use gpui::{Context, PromptButton, PromptLevel, Window};
 use gpui_component::WindowExt as _;
 use gpui_component::notification::Notification;
 use tty7_core::core::git::commit_context::{CommitContextError, read_commit_context};
-use tty7_core::core::git::status::{HeadState, StatusProbe, WorkingTreeStatus, probe_status};
+use tty7_core::core::git::status::{HeadState, WorkingTreeStatus, parse_porcelain_v2};
 use tty7_core::host::Host;
 
 use crate::core::ai::GitAiProvider;
@@ -44,15 +44,28 @@ pub(super) fn unavailable(
     if amend {
         return (!status.head.has_commits()).then_some(L10nKey::ScmAiMissingHead);
     }
-    (status.staged().next().is_none() && status.unstaged().next().is_none())
-        .then_some(L10nKey::ScmAiNoChanges)
+    (status.staged().next().is_none()
+        && status.unstaged().next().is_none()
+        && status.untracked().next().is_none())
+    .then_some(L10nKey::ScmAiNoChanges)
 }
 
 fn read_head(host: &dyn Host, root: &Path) -> io::Result<HeadState> {
-    match probe_status(host, root) {
-        StatusProbe::Status(status) => Ok(status.head),
-        _ => Err(io::Error::other(t(L10nKey::ScmAiReadFailed))),
+    let out = host.git(
+        root,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=no",
+            "--ignore-submodules=all",
+            "-z",
+        ],
+    )?;
+    if !out.success() {
+        return Err(io::Error::other(t(L10nKey::ScmAiReadFailed)));
     }
+    Ok(parse_porcelain_v2(&out.stdout).head)
 }
 
 fn generation_error_text(error: &anyhow::Error) -> String {
@@ -82,6 +95,15 @@ impl Tty7App {
     ) {
         if cx.global::<Config>().git_ai.provider == GitAiProvider::Off {
             self.open_settings_section(SettingsSection::Git, window, cx);
+            return;
+        }
+        let config = cx.global::<Config>();
+        if config.git_ai.provider == GitAiProvider::Deepseek && !config.ai.deepseek.enabled {
+            window.push_notification(
+                Notification::error(AiCompletionError::DeepseekDisabled.to_string()),
+                cx,
+            );
+            self.open_settings_section(SettingsSection::Ai, window, cx);
             return;
         }
         let Some(status) = status_of(cx, repo.host, &repo.root) else {
@@ -184,7 +206,7 @@ impl Tty7App {
         let head = status.head.clone();
         let Some(token) = self
             .scm
-            .begin_generation(repo.clone(), head.clone(), original, amend)
+            .begin_generation(repo.clone(), head, original, amend)
         else {
             return;
         };
@@ -196,12 +218,7 @@ impl Tty7App {
             host,
             window,
             cx,
-            move |host| {
-                if read_head(host, &root)? != head {
-                    return Err(io::Error::other(t(L10nKey::ScmAiChanged)));
-                }
-                read_commit_context(host, &root, amend)
-            },
+            move |host| read_commit_context(host, &root, amend),
             move |app, context, window, cx| {
                 if !app
                     .scm
@@ -218,6 +235,21 @@ impl Tty7App {
                         return;
                     }
                 };
+                if app
+                    .scm
+                    .generating
+                    .get(&repo)
+                    .is_some_and(|state| state.head != context.head)
+                {
+                    app.scm_generation_failed(
+                        &repo,
+                        token,
+                        io::Error::other(t(L10nKey::ScmAiChanged)).into(),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 let truncated = context.truncated;
                 let request = CommitMessageRequest {
                     ai,
@@ -298,6 +330,7 @@ impl Tty7App {
             error.downcast_ref::<AiCompletionError>(),
             Some(
                 AiCompletionError::MissingKey
+                    | AiCompletionError::DeepseekDisabled
                     | AiCompletionError::CodexMissing
                     | AiCompletionError::CodexLoginRequired(_)
             )

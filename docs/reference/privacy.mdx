@@ -46,18 +46,14 @@ manual grant in **System Settings → Privacy & Security → Full Disk Access**.
 |---|---|
 | **Update checks** | A request to the GitHub releases API every six hours, plus the download when you accept one. Turn it off with `check_for_updates: false`. |
 | **Remote server installs** | Downloading a `tty7-server` binary for a machine you connected to — or, for WSL, copying the one already bundled with your install. |
-| **The GitHub tab** | Only while you use it: requests to `api.github.com` for the issues, pull requests, comments and changed files of the repository the focused pane is in. They go out from this machine, even for a repository in a remote workspace, and carry the GitHub CLI's token when you are signed in with `gh`. |
+| **AI commit drafts** | Only on request: up to 24 KiB of the selected patch, including non-ignored new files when nothing is staged, goes to your chosen provider. Remote patches are read through their host; provider requests originate from this computer. DeepSeek connection tests send a tiny prompt with no diff. |
 | **Everything else** | Nothing. There is no telemetry, no analytics, and no account. |
 
-All of the above honour `http_proxy`. [Updates →](/reference/updates#proxies)
+Application HTTP requests honour `http_proxy`; Codex uses its own networking
+configuration. [Updates →](/reference/updates#proxies)
 
-The GitHub tab stores no credential of its own. It asks `GH_TOKEN`,
-`GITHUB_TOKEN` or `gh auth token` each time it connects, keeps the answer in
-memory only, and never writes it to disk or to the log. Images in issue and pull
-request text are fetched only when GitHub hosts them (screenshots pasted into
-an issue, `*.githubusercontent.com`); any other image is shown as a link, so
-opening an issue does not tell a third-party image host that you read it.
-[The GitHub tab →](/window/side-panel#github)
+DeepSeek is opt-in and stores its key in the OS keychain, not in JSON or logs.
+Codex reuses its CLI login. [AI-generated drafts →](/git/source-control#ai-generated-drafts)
 
 ## What is stored, and where
 

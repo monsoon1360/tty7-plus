@@ -62,6 +62,7 @@ pub enum CommandKind {
     ToggleTerminalArea,
     ToggleRightPanel,
     ShowRightPanel(RightPanelTab),
+    FindInFiles,
     ClearTerminal,
     FindInTerminal,
     ToggleComposer,
@@ -85,7 +86,6 @@ pub enum CommandKind {
     UpdateLocalServer,
     UpdateRemoteServer,
     ToggleSftp,
-    ShowSshForwards,
     ToggleCodePanel,
     ToggleDocumentFill,
     DocumentWidthThird,
@@ -238,13 +238,11 @@ impl CommandKind {
             ToggleLeftPanel => "left-sidebar",
             ToggleTerminalArea => "terminal-area",
             ToggleRightPanel => "right-panel",
-            ShowRightPanel(RightPanelTab::Info) => "right-panel-info",
             // Frecency is keyed by this string, so it stays `right-panel-changes`
             // even though the panel is now called Source Control.
             ShowRightPanel(RightPanelTab::Scm) => "right-panel-changes",
             ShowRightPanel(RightPanelTab::Files) => "right-panel-files",
-            ShowRightPanel(RightPanelTab::Search) => "right-panel-search",
-            ShowRightPanel(RightPanelTab::GitHub) => "right-panel-github",
+            FindInFiles => "right-panel-search",
             ClearTerminal => "clear-scrollback",
             FindInTerminal => "find",
             ToggleComposer => "composer",
@@ -268,7 +266,6 @@ impl CommandKind {
             UpdateLocalServer => "update-local-server",
             UpdateRemoteServer => "update-remote-server",
             ToggleSftp => "ssh-remote-files",
-            ShowSshForwards => "ssh-port-forwarding",
             ToggleCodePanel => "code-panel",
             ToggleDocumentFill => "document-fill",
             DocumentWidthThird => "document-width-third",
@@ -391,12 +388,10 @@ impl CommandKind {
             ToggleTerminalArea => "ToggleTerminalArea",
             ToggleRightPanel => "ToggleRightPanel",
             ShowRightPanel(tab) => match tab {
-                RightPanelTab::Info => "ShowRightPanelInfo",
                 RightPanelTab::Scm => "ShowRightPanelChanges",
                 RightPanelTab::Files => "ShowRightPanelFiles",
-                RightPanelTab::Search => "ShowRightPanelSearch",
-                RightPanelTab::GitHub => "ShowRightPanelGitHub",
             },
+            FindInFiles => "ShowRightPanelSearch",
             ClearTerminal => "ClearScrollback",
             FindInTerminal => "FindInTerminal",
             ToggleComposer => "ToggleComposer",
@@ -413,7 +408,6 @@ impl CommandKind {
             Quit => "Quit",
             RestartDaemon => "RestartDaemon",
             ToggleSftp => "ToggleSftp",
-            ShowSshForwards => "ShowSshForwards",
             ToggleCodePanel => "ToggleCodePanel",
             ToggleDocumentFill => "ToggleDocumentFill",
             DocumentWidthThird => "DocumentWidthThird",
@@ -732,24 +726,13 @@ impl Item {
                 ToggleTabSidebar,
             ),
             Item::localized(
-                L10nKey::CmdRightPanelInfo,
-                ShowRightPanel(RightPanelTab::Info),
-            ),
-            Item::localized(
                 L10nKey::CmdRightPanelFiles,
                 ShowRightPanel(RightPanelTab::Files),
             ),
-            Item::localized(
-                L10nKey::CmdRightPanelSearch,
-                ShowRightPanel(RightPanelTab::Search),
-            ),
+            Item::localized(L10nKey::CmdRightPanelSearch, FindInFiles),
             Item::localized(
                 L10nKey::CmdRightPanelChanges,
                 ShowRightPanel(RightPanelTab::Scm),
-            ),
-            Item::localized(
-                L10nKey::CmdRightPanelGitHub,
-                ShowRightPanel(RightPanelTab::GitHub),
             ),
             Item::localized(L10nKey::CmdChangeTheme, OpenThemePicker),
             Item::localized(L10nKey::CmdResetFontSize, ResetFontSize),
@@ -793,7 +776,6 @@ impl Item {
             Item::localized(L10nKey::CmdSshReconnect, RestartSshSession),
             // The panel is an SFTP browser, and that is the word people search.
             Item::localized(L10nKey::CmdSshRemoteFiles, ToggleSftp).with_alias("SFTP"),
-            Item::localized(L10nKey::CmdSshPortForwarding, ShowSshForwards),
         ];
 
         let agents = [
@@ -957,10 +939,9 @@ mod tests {
             CommandKind::ShowKeyboardShortcuts,
             CommandKind::About,
             CommandKind::Quit,
-            CommandKind::ShowRightPanel(RightPanelTab::Info),
+            CommandKind::ShowRightPanel(RightPanelTab::Scm),
             CommandKind::ShowRightPanel(RightPanelTab::Files),
-            CommandKind::ShowRightPanel(RightPanelTab::Search),
-            CommandKind::ShowRightPanel(RightPanelTab::GitHub),
+            CommandKind::FindInFiles,
         ] {
             let id = kind.id().expect("static command has an id");
             assert!(seen.insert(id), "duplicate command id {id:?}");

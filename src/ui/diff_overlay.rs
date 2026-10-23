@@ -196,35 +196,6 @@ impl Tty7App {
         cx.notify();
     }
 
-    /// Open (or refocus, or close — the same toggle as any other source) the
-    /// overlay on a patch that did not come from git, with its snapshot.
-    ///
-    /// The snapshot names its own directory and source, which must be a
-    /// [`DiffSource::Patch`]; the probe skips those, so the snapshot installed
-    /// here is the only one the overlay will ever have.
-    pub(crate) fn open_supplied_diff(
-        &mut self,
-        host: crate::ui::host_ops::HostId,
-        snapshot: Arc<DiffSnapshot>,
-        focus: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (cwd, source) = (snapshot.root.clone(), snapshot.source.clone());
-        debug_assert!(source.is_supplied());
-        self.open_diff_overlay(host, cwd.clone(), source.clone(), focus, window, cx);
-        if let Some(overlay) = self
-            .tabs
-            .get_mut(self.active)
-            .and_then(|t| t.diff_overlay.as_mut())
-            .filter(|o| o.cwd == cwd && o.host_id == host && o.source == source)
-            && !matches!(overlay.load, DiffLoad::Ready(_))
-        {
-            overlay.load = DiffLoad::Ready(snapshot);
-            cx.notify();
-        }
-    }
-
     /// Which file the open overlay is focused on — for the row that asked,
     /// which means the *source* has to match too: a file staged and edited
     /// again sits in two panel groups, and only the row whose patch is

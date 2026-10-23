@@ -39,6 +39,9 @@ use super::size::TermSize;
 /// prompt that will repaint itself for the new width — the caller's shell
 /// integration state; everything else resizes exactly as `Term::resize` does.
 pub fn resize<T: EventListener>(term: &mut Term<T>, size: TermSize, shell_redraws: bool) {
+    if shell_redraws {
+        term.resume_line_reflow();
+    }
     // Rows alone reflow nothing, and the alternate screen is a full-screen
     // program's, which repaints the whole of it.
     let reflows = size.cols.max(MIN_COLUMNS) != term.columns();

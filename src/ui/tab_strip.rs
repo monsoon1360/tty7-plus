@@ -654,16 +654,11 @@ pub(crate) fn chrome_tile(button: Button, selected: bool, cx: &gpui::App) -> But
     chrome_tile_sized(button, TILE_SIZE, TILE_GLYPH, selected, cx)
 }
 
-/// The right panel's tabs, left to right, by name. Info leads as the default
-/// and the pane's overview; then the project's files, and its version
-/// control, local to remote (Changes, GitHub). GitHub is last so that hiding
-/// it for a repository without a GitHub remote moves nothing. Search is not
-/// among them: the Files tab searches names and contents in one field.
-const RIGHT_PANEL_TABS: [(RightPanelTab, L10nKey); 4] = [
-    (RightPanelTab::Info, L10nKey::PanelInfoTitle),
-    (RightPanelTab::Files, L10nKey::PanelFilesTitle),
+/// The right panel's tabs, left to right. Git is the default; Files also
+/// provides file-name and content search.
+const RIGHT_PANEL_TABS: [(RightPanelTab, L10nKey); 2] = [
     (RightPanelTab::Scm, L10nKey::PanelChangesTitle),
-    (RightPanelTab::GitHub, L10nKey::PanelGitHubTitle),
+    (RightPanelTab::Files, L10nKey::PanelFilesTitle),
 ];
 
 fn right_panel_tab_size(window: &Window) -> f32 {
@@ -1513,11 +1508,17 @@ impl Tty7App {
 
     /// The right panel's tabs: words, the current one in body ink and medium
     /// weight on a pill (ink and weight alone read as no selection at all).
-    /// Four names fit the panel's resting width once Search folded into Files.
+    /// Git and Files remain visible regardless of repository remotes.
     pub(crate) fn right_panel_tabs(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let active_tab = self.right_panel_tab;
         let body_ink = cx.theme().foreground;
         let muted = cx.theme().muted_foreground;
+        let change_count = self
+            .scm
+            .active_repo()
+            .and_then(|repo| crate::terminal::git_data::status_of(cx, repo.host, &repo.root))
+            .filter(|status| status.total_entries > 0)
+            .map(|status| status.total_entries);
         RIGHT_PANEL_TABS
             .into_iter()
             .map(|(tab, label_key)| {
@@ -1542,6 +1543,9 @@ impl Tty7App {
                     .cursor_pointer()
                     .child(
                         div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(6.))
                             .flex_shrink_0()
                             .px(px(TAB_INNER_PAD))
                             .py_0p5()
@@ -1554,7 +1558,23 @@ impl Tty7App {
                             })
                             .text_color(ink)
                             .hover(move |s| s.text_color(body_ink))
-                            .child(t(label_key)),
+                            .child(t(label_key))
+                            .when_some(
+                                if tab == RightPanelTab::Scm {
+                                    change_count
+                                } else {
+                                    None
+                                },
+                                |label, count| {
+                                    label.child(
+                                        div()
+                                            .font_weight(FontWeight::NORMAL)
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_color(muted)
+                                            .child(count.to_string()),
+                                    )
+                                },
+                            ),
                     )
                     // The current one does nothing: only ⌘J and the title-bar
                     // panel tile put the panel away.

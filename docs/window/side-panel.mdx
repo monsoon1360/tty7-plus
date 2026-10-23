@@ -1,38 +1,15 @@
 ---
 title: "The side panel"
-description: "Info, Files, Search, Source Control and GitHub — plus the built-in editor."
+description: "Source Control and Files, with project search and the built-in editor."
 ---
 
 <kbd>Ctrl 4</kbd> opens a panel on the right of the window. It is hidden by
 default; whichever tab you leave it on is where it opens next time.
 
-The tabs at the top switch what the panel shows; the current one sits on a
-pill. <kbd>Ctrl 4</kbd> or the panel tile in the title bar puts it away — the
-panel slides its width away over 140 ms either way.
-
-<Frame caption="The Info tab beside a terminal: session, processes, listening ports">
-  <img src="/images/side-panel.webp" alt="The tty7 side panel" />
-</Frame>
-
-## Info
-
-Everything tty7 knows about the focused pane, in one column:
-
-| Section | What it shows |
-|---|---|
-| **Session** | working directory, shell, SSH connection, git branch, `+N −M` changes, and the coding agent with its status (idle / working / waiting / done) |
-| **Processes** | the process tree inside the pane, with the foreground process marked |
-| **Ports** | every port those processes are listening on |
-
-Hovering a row shows what it can do at the right-hand end of it: **Copy** on the
-working directory, the SSH host and the branch, and **Reveal in Finder** / **Open
-Folder** alongside it on a working directory this machine can see. The `+N −M`
-counts open the [diff overlay](/git/diffs), the same click the sidebar's counts
-answer to.
-
-The ports section is the quickest answer to "what is this pane serving, and
-where" — the same data `tty7 procs` prints. A port row copies `localhost:PORT`,
-and on a local pane opens it in your browser.
+The two tabs at the top select **Source Control** or **Files**. Source Control
+is the default. <kbd>Ctrl 4</kbd> or the panel tile puts the panel away; its
+width animates over 140 ms. Saved Info or GitHub choices open Source Control
+without resetting other settings; the former Search choice opens Files.
 
 ## Files
 
@@ -54,12 +31,12 @@ Both directions work over a [remote workspace](/remote/workspaces) too, reading
 on one machine and writing on the other, up to the size one control frame can
 carry — past that the panel tells you to use [SFTP](/remote/sftp).
 
-## Search
+### Find in files
 
-Find in files across the project the Files tab shows: the repository root of
-each pane in the tab, or its working directory outside a repository. Opening the
-tab — from its icon, **Right Panel: Search** in Search Everywhere, or the
-`ShowRightPanelSearch` action — puts the cursor in the search field.
+The Files field filters file names and searches content across the project:
+the repository root of each pane in the tab, or its directory outside a repo.
+**Right Panel: Search** in Search Everywhere, or the `ShowRightPanelSearch`
+action, opens Files and focuses this field. Search is not a separate panel tab.
 
 Results arrive as you type, grouped by file with a count per file; click a
 file's row to fold it away. Each hit is its line with the matches highlighted,
@@ -95,51 +72,6 @@ Changes**, **Staged Changes**, **Changes**, **Untracked**. Write a message,
 commit, and push without leaving the window.
 
 [Source control →](/git/source-control)
-
-## GitHub
-
-Issues and pull requests for the repository the focused pane is in, read-only.
-The tab reads the repository's remotes and binds to the one on `github.com`; in a
-fork, where `origin` is yours and `upstream` is the project, it picks
-`upstream`, and the name at the top is a menu of every GitHub remote when there
-is more than one. GitHub Enterprise hosts are not supported.
-
-- **Issues | Pull Requests** and **Open | Closed** switch the list, newest
-  activity first, 50 at a time with **Load more** underneath.
-- Each row carries a state glyph whose *shape* says open, closed, not planned,
-  merged or draft; the number, author and last update; and the labels.
-  **Click a label** to show only that label, and the × beside it to clear it.
-- **Click a row** for the detail: title, state, author, labels, the description
-  and the conversation as Markdown. A pull request adds its branches, size and
-  changed files — click a file to open its patch in the
-  [diff overlay](/git/diffs).
-- The ↗ button opens the repository, or the issue, on github.com; ↻ refreshes.
-
-Lists are kept per repository, so switching tabs or panes does not fetch them
-again; anything older than two minutes is refreshed in the background while
-it stays on screen.
-
-### Signing in
-
-There is nothing to sign in to in tty7. It reuses the GitHub CLI's login: the
-token comes from `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. `gh` is
-looked for on your `PATH` and in the usual Homebrew and `/usr/local/bin`
-locations, so it is found even when tty7 was opened from Finder.
-
-Without a token, public repositories still work, at GitHub's unauthenticated
-limit of 60 requests an hour. A private repository, or a spent limit, says so
-in the panel and suggests running `gh auth login`; press ↻ afterwards and the
-new login is picked up without a restart.
-
-The Info tab gains a **GitHub** row for a repository with a GitHub remote. It
-opens the branch you are on, on the remote it tracks — or the repository's page
-for a branch you have not pushed.
-
-Markdown from GitHub is written by strangers, so it is rendered with two
-changes: only images GitHub hosts itself — the screenshots pasted into an issue
-— are loaded, and any other image becomes a link you can open in the browser;
-and links that would open anything other than a web page or an e-mail are
-disabled. See [what leaves your machine](/reference/privacy#what-leaves-your-machine).
 
 ## The editor
 

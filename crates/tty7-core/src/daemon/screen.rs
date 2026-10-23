@@ -213,6 +213,7 @@ impl ScreenMirror {
     pub(crate) fn resize(&mut self, size: WinSize) {
         let size = Size::new(size);
         if self.state.term.columns() == size.cols && self.state.term.screen_lines() == size.rows { return; }
+        self.state.parser.stop_sync(&mut self.state.term);
         prompt_reflow::resize(&mut self.state.term, TermSize::new(size.cols, size.rows), self.state.at_prompt);
         self.state.history_truncated |= self.state.term.limit_normal_history_bytes(HISTORY_BYTES);
         self.state.epoch = self.state.epoch.saturating_add(1);
@@ -554,5 +555,67 @@ mod tests {
         assert_eq!(source.snapshot().cursor.shape, "bar");
         assert_eq!(source.snapshot().cursor, restored.snapshot().cursor);
         assert_eq!(source.snapshot().lines, restored.snapshot().lines);
+    }
+
+    #[test]
+    fn checkpointed_primary_repaints_do_not_add_history_on_resize() {
+        let frame = |cols: usize| {
+            let mut bytes = String::from("\x1b[?2026h\x1b[H\x1b[J");
+            for row in 1..=8 {
+                let label = if row == 1 { "user message" } else { "command output" };
+                bytes.push_str(&format!("\x1b[{row};1H{label:.<width$}", width = cols - 1));
+            }
+            bytes.push_str("\x1b[?2026l");
+            bytes
+        };
+        for pending in [false, true] {
+            let mut source = ScreenMirror::with_config(size(80, 8), false, &crate::core::config::Config::default());
+            let first = frame(80);
+            let end = if pending { first.len() - b"\x1b[?2026l".len() } else { first.len() };
+            source.feed(&first.as_bytes()[..end]);
+            let mut restored = ScreenMirror::restore(&source.checkpoint().unwrap()).unwrap();
+            for cols in [60, 45, 40, 80] {
+                restored.resize(size(cols, 8));
+                restored.feed(frame(usize::from(cols)).as_bytes());
+                assert_eq!(restored.state.term.normal_grid().history_size(), 0);
+                assert_eq!(text(&restored, 0), format!("{:.<width$}", "user message", width = usize::from(cols) - 1));
+            }
+        }
+    }
+
+    #[test]
+    fn synchronized_primary_output_wraps_into_history_after_resize_and_checkpoint() {
+        let mut source = ScreenMirror::with_config(size(40, 8), false, &crate::core::config::Config::default());
+        let mut frame = String::from("\x1b[?2026h\x1b[H\x1b[J");
+        for row in 1..=8 {
+            frame.push_str(&format!("\x1b[{row};1H{:.<39}", format!("row-{row:02}")));
+        }
+        frame.push_str("\x1b[?2026l");
+        source.feed(frame.as_bytes());
+        source.resize(size(30, 8));
+        assert_eq!(source.state.term.normal_grid().history_size(), 0, "resize alone must not archive viewport rows");
+
+        let logical = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345678";
+        let output = format!("\x1b[?2026h\x1b[8;1H{logical}\x1b[?2026l");
+        let mut expected: Vec<String> = (1..=7).map(|row| format!("{:.<30}", format!("row-{row:02}"))).collect();
+        expected.extend(logical.as_bytes().chunks(30).map(|chunk| std::str::from_utf8(chunk).unwrap().to_owned()));
+        let assert_history = |mirror: &ScreenMirror| {
+            assert_eq!(mirror.state.term.normal_grid().history_size(), 2, "real output must push two viewport rows into scrollback");
+            let history = mirror.history();
+            let rows: Vec<_> = history.lines.iter().map(|line| line.text.as_str()).collect();
+            assert_eq!(rows, expected.iter().map(String::as_str).collect::<Vec<_>>());
+            assert_eq!(&rows[..2], ["row-01........................", "row-02........................"]);
+            assert_eq!(rows[7..].concat(), logical, "every emitted character must survive autowrap");
+            assert!(history.lines.iter().all(|line| line.cols == 30));
+            assert!(!history.truncated);
+        };
+
+        let mut restored = ScreenMirror::restore(&source.checkpoint().unwrap()).unwrap();
+        for mirror in [&mut source, &mut restored] {
+            mirror.feed(output.as_bytes());
+            assert_history(mirror);
+            let checkpointed = ScreenMirror::restore(&mirror.checkpoint().unwrap()).unwrap();
+            assert_history(&checkpointed);
+        }
     }
 }

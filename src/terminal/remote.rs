@@ -1503,9 +1503,14 @@ impl RemoteTerminal {
                                     if quit.load(Ordering::SeqCst) {
                                         return;
                                     }
+                                    let size = TermSize::new(ws.cols as usize, ws.rows as usize);
+                                    if !grid_holds(&term, size) {
+                                        // Buffered bytes still address the old geometry.
+                                        processor.stop_sync(&mut *term);
+                                    }
                                     prompt_reflow::resize(
                                         &mut term,
-                                        TermSize::new(ws.cols as usize, ws.rows as usize),
+                                        size,
                                         shell_redraws,
                                     );
                                 }
@@ -7159,6 +7164,7 @@ mod tests {
 
     #[test]
     fn segmented_ring_replay_reproduces_live_rendering() {
+        crate::core::config::pin_test_config_dir();
         const MARK: &str = "DUPMARK";
         let frame_lines = |f: usize| -> Vec<String> {
             (0..10)

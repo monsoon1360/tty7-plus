@@ -7,6 +7,9 @@ description: "What lives in each section, and how the settings file works."
 setting names *and* keywords, which is usually faster than remembering which
 section something is in.
 
+Settings opens in its own window on the same display as the workspace that
+invoked it, including when that workspace is on a secondary monitor.
+
 <Frame caption="Settings opens in its own window, sections down the left">
   <img src="/images/settings.webp" alt="tty7 Settings" />
 </Frame>
@@ -38,8 +41,8 @@ section something is in.
     AI agent hooks per machine and the tty7 command on PATH.
   </Card>
   <Card title="AI" icon="robot" href="/agents/overview#local-codex-defaults">
-    Local Codex model and reasoning defaults; DeepSeek endpoint, API key,
-    model and reasoning effort.
+    Local Codex defaults, plus a separate additional-provider card for DeepSeek
+    with an enable switch, endpoint, model, key and connection test.
   </Card>
   <Card title="Git" icon="code-branch" href="/git/source-control#ai-generated-drafts">
     Commit-message AI provider, output language and multiline custom rules.
@@ -93,6 +96,11 @@ identity. They are never written to `config.json` or filled back into the key
 input. **Save key** replaces the key; **Remove key** explicitly deletes it.
 Resetting ordinary settings does not delete it. Moving the configuration
 directory requires setting the key again.
+
+DeepSeek is disabled until explicitly enabled. Its connection test uses the
+saved key and a tiny completion without a diff, even while disabled. A result
+belongs to the tested configuration: editing its fields or leaving the page
+invalidates it. Local Codex defaults and additional providers use separate cards.
 
 Set `TTY7_CONFIG_DIR` to point the whole directory — config, themes, state —
 somewhere else.

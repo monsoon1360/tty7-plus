@@ -304,6 +304,11 @@ fn settings_search_entries() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Ai,
+            title: SettingsDeepSeekEnabled,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
             title: SettingsDeepSeekUrl,
             keywords: SettingsAiKeywords,
         },
@@ -320,6 +325,11 @@ fn settings_search_entries() -> &'static [SearchEntry] {
         SearchEntry {
             section: Ai,
             title: SettingsDeepSeekEffort,
+            keywords: SettingsAiKeywords,
+        },
+        SearchEntry {
+            section: Ai,
+            title: SettingsAiTestConnection,
             keywords: SettingsAiKeywords,
         },
         SearchEntry {
@@ -901,6 +911,7 @@ impl SearchEntry {
         match self.title {
             L10nKey::SettingsCodexModel => "ai.codex.model",
             L10nKey::SettingsCodexEffort => "ai.codex.reasoning_effort",
+            L10nKey::SettingsDeepSeekEnabled => "ai.deepseek.enabled",
             L10nKey::SettingsDeepSeekUrl => "ai.deepseek.base_url",
             L10nKey::SettingsDeepSeekModel => "ai.deepseek.model",
             L10nKey::SettingsDeepSeekEffort => "ai.deepseek.reasoning_effort",
@@ -987,6 +998,8 @@ impl SearchEntry {
             L10nKey::SettingsCodexEffort | L10nKey::SettingsDeepSeekEffort => {
                 t(L10nKey::SettingsAiEffortDesc)
             }
+            L10nKey::SettingsDeepSeekEnabled => t(L10nKey::SettingsDeepSeekEnabledDesc),
+            L10nKey::SettingsAiTestConnection => t(L10nKey::SettingsAiTestDesc),
             L10nKey::SettingsDeepSeekUrl => t(L10nKey::SettingsDeepSeekUrlDesc),
             L10nKey::SettingsDeepSeekKey => t(L10nKey::SettingsDeepSeekKeyDesc),
             L10nKey::SettingsDeepSeekModel => t(L10nKey::SettingsDeepSeekDesc),
@@ -1092,6 +1105,9 @@ impl SearchEntry {
             L10nKey::SettingsCodexModel => cfg.ai.codex.model != defaults.ai.codex.model,
             L10nKey::SettingsCodexEffort => {
                 cfg.ai.codex.reasoning_effort != defaults.ai.codex.reasoning_effort
+            }
+            L10nKey::SettingsDeepSeekEnabled => {
+                cfg.ai.deepseek.enabled != defaults.ai.deepseek.enabled
             }
             L10nKey::SettingsDeepSeekUrl => {
                 cfg.ai.deepseek.base_url != defaults.ai.deepseek.base_url

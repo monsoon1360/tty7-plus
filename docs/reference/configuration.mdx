@@ -99,7 +99,7 @@ their id from the file name. [More about themes →](/customization/themes)
 | `sidebar_collapsed` | bool | `false` | |
 | `right_panel_visible` | bool | `false` | |
 | `right_panel_width` | number | `260` | Pixels (100–2000). |
-| `right_panel_tab` | enum | `"info"` | `info`, `changes`, `files`. |
+| `right_panel_tab` | enum | `"changes"` | `changes` (Source Control), `files`. Old `info`/`github` choices fall back to Source Control; old `search` opens Files. Other settings are preserved. |
 | `diff_view` | enum | `"split"` | Or `unified`. Global, not per file. |
 | `document_layout` | enum | `"dock"` | Global layout for the editor (built-in, Helix, or Vim) and diff view: `"dock"` or `"fill"`. Settings → General → Editor → Document layout; shared by all tabs and windows. |
 | `document_ratio` | number | `0.5` | The docked column’s share of the terminal column (0.2–0.8). Named widths are `0.333`, `0.5`, `0.667`. |
@@ -193,10 +193,11 @@ angle brackets, and a tab:
 | Key | Type | Default | |
 |---|---|---|---|
 | `ai.codex.model` | string | `""` | Local Codex launch default; empty retains Codex's own model. |
-| `ai.codex.reasoning_effort` | enum or null | `null` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Null sends no override. |
+| `ai.codex.reasoning_effort` | enum or null | `null` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. Null inherits Codex for ordinary launches; Git drafts use `low` when unset. |
+| `ai.deepseek.enabled` | bool | `false` | Explicitly enable DeepSeek for generation. Disabling preserves its fields and key; an explicit connection test remains available. |
 | `ai.deepseek.base_url` | string | `"https://api.deepseek.com"` | HTTPS without userinfo, query or fragment; loopback HTTP is allowed for local gateways. Requests append `/chat/completions`, including when the base ends in `/v1`. |
 | `ai.deepseek.model` | string | `"deepseek-flash"` | Free-form model name; empty input restores the default. |
-| `ai.deepseek.reasoning_effort` | enum or null | `null` | `off`, `low`, `high`, `max`. Null sends no thinking override; off disables thinking, the other values enable it. |
+| `ai.deepseek.reasoning_effort` | enum or null | `null` | `off`, `low`, `high`, `max`. Git drafts disable thinking when null or off; explicit other values enable it. Connection tests always disable thinking. |
 | `git_ai.provider` | enum | `"off"` | `off`, `deepseek`, `codex_cli`. No automatic fallback. |
 | `git_ai.language` | enum | `"application"` | `application`, `en`, `zh`, `ja`, `ru`. Application language is resolved when generation starts. |
 | `git_ai.style_rules` | string | `""` | Optional multiline commit-message rules; no required style. |

@@ -4,6 +4,28 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
     Some(match key {
         L10nKey::SettingsNavAi => "AI",
         L10nKey::SettingsNavGit => "Git",
+        L10nKey::SettingsAiLocalTools => "Локальные инструменты",
+        L10nKey::SettingsAiProviders => "Дополнительные провайдеры AI",
+        L10nKey::SettingsCodexCardDesc => "Текущий вход в локальный Codex.",
+        L10nKey::SettingsDeepSeekEnabled => "Включить DeepSeek",
+        L10nKey::SettingsDeepSeekEnabledDesc => "Выключение сохраняет ключ и настройки.",
+        L10nKey::SettingsAiDisabled => "Выключен",
+        L10nKey::SettingsAiKeyWorking => "Обновление состояния ключа…",
+        L10nKey::SettingsAiTestConnection => "Проверить подключение",
+        L10nKey::SettingsAiTestDesc => "Проверка связи без отправки содержимого репозитория.",
+        L10nKey::SettingsAiTesting => "Проверка…",
+        L10nKey::SettingsAiTestSuccess => "Подключено · {ms} мс",
+        L10nKey::SettingsAiSaveReplacementFirst => {
+            "Перед проверкой сохраните новый ключ: используется только сохранённый ключ."
+        }
+        L10nKey::SettingsAiSaveSettingsFirst => {
+            "Сначала сохраните корректный URL API и модель. При ошибке сохранения настроек повторите сохранение."
+        }
+        L10nKey::SettingsGitEnableDeepSeek => "Открыть настройки DeepSeek",
+        L10nKey::SettingsGitAiSummary => "Результат можно отредактировать.",
+        L10nKey::AiDeepseekDisabled => {
+            "DeepSeek выключен. Включите его в настройках AI для генерации. Другой провайдер не будет выбран автоматически."
+        }
         L10nKey::SettingsCodexModel => "Модель Codex по умолчанию",
         L10nKey::SettingsCodexEffort => "Уровень рассуждений Codex",
         L10nKey::SettingsDeepSeekUrl => "Базовый URL API",
@@ -17,30 +39,18 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
             "AI LLM DeepSeek Codex model reasoning API Key модель рассуждения 模型 推理"
         }
         L10nKey::SettingsGitAiKeywords => "AI Git commit language rules коммит язык правила",
-        L10nKey::SettingsCodexModelDesc => {
-            "Оставьте пустым, чтобы использовать модель из настроек Codex. Используется вход в локальный CLI."
-        }
-        L10nKey::SettingsCodexScope => {
-            "Только локально, со следующего запуска Codex; SSH и WSL не затрагиваются. Старые терминалы нужно один раз открыть заново для загрузки интеграции shell. Свои аргументы shell отключают подстановку в ручные команды, но запуск из меню использует настройки. Существующие псевдонимы и функции сохраняются. Глобальные настройки Codex не меняются."
-        }
-        L10nKey::SettingsAiEffortDesc => {
-            "По умолчанию настройки провайдера не переопределяются. Неподдерживаемый уровень вернёт ошибку провайдера."
-        }
-        L10nKey::SettingsDeepSeekDesc => "Настройки API независимы от CLI-агентов.",
-        L10nKey::SettingsDeepSeekUrlDesc => {
-            "HTTPS без учётных данных, запроса и фрагмента. Для локальных шлюзов разрешён HTTP на loopback."
-        }
-        L10nKey::SettingsDeepSeekKeyDesc => {
-            "Хранится только в системном хранилище ключей. После перемещения каталога настроек ключ нужно задать заново. Сброс настроек не удаляет ключ."
-        }
+        L10nKey::SettingsCodexModelDesc => "Пусто — модель Codex по умолчанию.",
+        L10nKey::SettingsCodexScope => "Только локально; глобальные настройки Codex не меняются.",
+        L10nKey::SettingsAiEffortDesc => "Для коммитов используются облегчённые настройки.",
+        L10nKey::SettingsDeepSeekDesc => "Независимый API-сервис.",
+        L10nKey::SettingsDeepSeekUrlDesc => "Поддерживаются совместимые API.",
+        L10nKey::SettingsDeepSeekKeyDesc => "Только в системном хранилище ключей.",
         L10nKey::SettingsGitAiTitle => "Сообщения коммитов Git",
         L10nKey::SettingsGitAiDesc => {
-            "Создаётся только редактируемый черновик; коммит выполняется вручную. При генерации diff отправляется выбранному сервису. Для удалённых репозиториев сервис также вызывается с этого компьютера."
+            "Отправляются только изменения для коммита; коммит выполняется вручную."
         }
         L10nKey::SettingsGitLanguageDesc => "Язык создаваемых сообщений коммитов.",
-        L10nKey::SettingsGitRulesDesc => {
-            "Необязательные инструкции. Enter добавляет строку; сохранение при потере фокуса."
-        }
+        L10nKey::SettingsGitRulesDesc => "Enter — новая строка; сохранение при потере фокуса.",
         L10nKey::SettingsGitRulesPlaceholder => {
             "Например: используйте Conventional Commits и заголовок не длиннее 72 символов."
         }
@@ -63,13 +73,13 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
             "Используйте HTTPS или loopback HTTP без учётных данных, запроса и фрагмента."
         }
         L10nKey::AiNetworkError => "Не удалось подключиться к сервису AI.",
-        L10nKey::AiRequestTimeout => "Истекло время генерации AI.",
+        L10nKey::AiRequestTimeout => "Истекло время запроса к AI.",
         L10nKey::AiResponseTooLarge => "Ответ AI превысил ограничение размера.",
         L10nKey::AiUnauthorized => "Ошибка авторизации сервиса AI. Проверьте API Key.",
         L10nKey::AiRateLimited => "Достигнут лимит запросов или квоты AI. Повторите позже.",
         L10nKey::AiHttpError => "Сервис AI вернул HTTP {status}.",
         L10nKey::AiInvalidResponse => "Сервис AI вернул некорректный ответ.",
-        L10nKey::AiEmptyResponse => "Сервис AI не вернул сообщение коммита.",
+        L10nKey::AiEmptyResponse => "Сервис AI не вернул содержимое ответа.",
         L10nKey::AiCodexMissing => "Установите Codex CLI, войдите в аккаунт и настройте AI.",
         L10nKey::AiCodexFailed => {
             "Codex завершился с кодом {detail}. Проверьте вход в локальный CLI, модель и уровень рассуждений; обновите Codex, если параметры не поддерживаются."
@@ -84,11 +94,13 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::ScmAiFailed => "Не удалось создать сообщение коммита.",
         L10nKey::ScmAiBusy => "Для этого репозитория уже создаётся сообщение.",
         L10nKey::ScmAiCommitting => "Выполняется коммит.",
-        L10nKey::ScmAiNoChanges => "Нет отслеживаемых изменений для генерации.",
+        L10nKey::ScmAiNoChanges => {
+            "Нет изменений для коммита, включая новые файлы, не исключённые из Git."
+        }
         L10nKey::ScmAiConfigure => "Выберите провайдера AI в настройках Git.",
         L10nKey::ScmAiMissingCodex => "Установите Codex CLI, войдите в аккаунт и настройте AI.",
         L10nKey::ScmAiOpenSettings => "Открыть настройки AI",
-        L10nKey::ScmAiConflicts => "Разрешите конфликты перед генерацией сообщения коммита.",
+        L10nKey::ScmAiConflicts => "Сначала разрешите конфликты слияния.",
         L10nKey::ScmAiReadFailed => "Не удалось прочитать состояние коммита.",
         L10nKey::AiCodexLoginRequired => {
             "Codex завершился с кодом {status}. Войдите в аккаунт через локальный Codex CLI и повторите попытку."
@@ -1378,25 +1390,7 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::ForwardDisconnected => "Отключено",
         L10nKey::ForwardDisconnectedFrom => "Отключено от {host}",
         L10nKey::SshEditProfile => "Изменить соединение…",
-        L10nKey::ForwardTooltipAdd => "Добавить проброс",
-        L10nKey::ForwardTooltipRemove => "Удалить",
-        L10nKey::ForwardTooltipTurnOn => "Включить",
-        L10nKey::ForwardTooltipTurnOff => "Выключить, сохранив правило",
-        L10nKey::ForwardSwitchFailed => "Не удалось переключить проброс: {error}",
         L10nKey::SettingsFwdEnabled => "Запускать правило при подключении",
-        L10nKey::ForwardLocal => "Локальный",
-        L10nKey::ForwardRemote => "Удалённый",
-        L10nKey::ForwardDynamic => "Динамический",
-        L10nKey::ForwardBindLabel => "адрес",
-        L10nKey::ForwardToLabel => "в",
-        L10nKey::ForwardSocksLabel => "SOCKS",
-        L10nKey::ForwardAdd => "Добавить",
-        L10nKey::ForwardPortLabel => "Удалённый порт",
-        L10nKey::ForwardPortHere => "доступен на localhost:{port}",
-        L10nKey::ForwardNeedsPort => "Порт: число от 1 до 65535.",
-        L10nKey::ForwardAdvancedToggle => "Дополнительно",
-        L10nKey::ForwardSimpleToggle => "Простой",
-        L10nKey::ForwardRequestFailed => "Сеанс недоступен. Ничего не изменено.",
         L10nKey::FileTreePlaceholderFileName => "имя файла",
         L10nKey::FileTreePlaceholderFolderName => "имя папки",
         L10nKey::FileTreePlaceholderNewName => "новое имя",
@@ -1602,16 +1596,10 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::SearchPlaceholderLocations => "Фильтр найденных мест…",
         L10nKey::SearchLocationsNone => "Ничего не найдено",
         L10nKey::LspFindReferences => "Найти все ссылки",
-        L10nKey::PanelInfoTitle => "Сведения",
         L10nKey::PanelChangesTitle => "Изменения",
         L10nKey::PanelScmTitle => "Изменения",
         L10nKey::PanelFilesTitle => "Файлы",
         L10nKey::PanelSearchTitle => "Поиск",
-        L10nKey::PanelGitHubTitle => "GitHub",
-        L10nKey::PanelNoSession => "Нет активного сеанса.",
-        L10nKey::PanelNoSessionHint => {
-            "Откройте вкладку, чтобы увидеть здесь её оболочку, папку и процессы."
-        }
         L10nKey::PanelNoWorkingDirectory => "Нет рабочей папки.",
         L10nKey::PanelNoWorkingDirectoryHint => "Панель ещё не сообщила свою папку.",
         L10nKey::PanelLoading => "Загрузка…",
@@ -1624,25 +1612,7 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::PanelMoreChangedFiles => {
             "…и ещё изменённые файлы ({count}). Посмотрите их командой git diff."
         }
-        L10nKey::PanelSessionSubtitle => "Сеанс",
-        L10nKey::PanelProcessesSubtitle => "Процессы",
-        L10nKey::PanelProcessesTotal => "Всего",
-        L10nKey::PanelPortsSubtitle => "Порты",
-        L10nKey::PanelPortsUnsupported => {
-            "Версия tty7-server на этом компьютере слишком старая для списка портов."
-        }
-        L10nKey::PanelPortsProbeFailed => "Не удалось проверить порты этой панели.",
-        L10nKey::PanelPortsRestricted => {
-            "Здесь есть процессы другого пользователя. Их порты не видны."
-        }
-        L10nKey::PanelPortsEmpty => "Нет проброшенных портов",
-        L10nKey::PanelLatency => "задержка",
         L10nKey::PortAutoForwarded => "Удалённый :{port} доступен на http://localhost:{local}",
-        L10nKey::PanelCwd => "папка",
-        L10nKey::PanelShell => "оболочка",
-        L10nKey::PanelSsh => "ssh",
-        L10nKey::PanelBranch => "ветка",
-        L10nKey::PanelChangesRow => "изменения",
         L10nKey::PanelAgentWorking => "работает",
         L10nKey::PanelAgentWaiting => "ждёт",
         L10nKey::PanelAgentDone => "готово",
@@ -2167,11 +2137,9 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdShowCodePanel => "Показать панель кода",
         L10nKey::CmdTabBarMoveToTop => "Вкладки: переместить наверх",
         L10nKey::CmdTabBarMoveToLeftSidebar => "Вкладки: переместить влево",
-        L10nKey::CmdRightPanelInfo => "Правая панель: сведения",
         L10nKey::CmdRightPanelChanges => "Правая панель: изменения",
         L10nKey::CmdRightPanelFiles => "Правая панель: файлы",
         L10nKey::CmdRightPanelSearch => "Правая панель: поиск",
-        L10nKey::CmdRightPanelGitHub => "Правая панель: GitHub",
         L10nKey::CmdChangeTheme => "Сменить тему…",
         L10nKey::CmdResetFontSize => "Сбросить размер шрифта",
         L10nKey::CmdEnterFullScreen => "Перейти в полноэкранный режим",
@@ -2241,7 +2209,6 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::CmdSshManageProfiles => "SSH: управлять профилями…",
         L10nKey::CmdSshReconnect => "SSH: переподключить",
         L10nKey::CmdSshRemoteFiles => "SSH: удалённые файлы",
-        L10nKey::CmdSshPortForwarding => "SSH: проброс портов",
         L10nKey::CmdSshSaveConnection => "SSH: сохранить как хост…",
         L10nKey::CmdSshSaveConnectionSubtitle => "Сохранить это подключение как хост.",
         L10nKey::CmdSshConnectWithInput => "SSH: подключиться к {input}",
@@ -2485,76 +2452,6 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::RemoteUpdateNeedsLocalServer => {
             "Локальный сервер tty7 слишком старый, чтобы обновить сервер на {machine}. Сначала обновите сервер на этом компьютере и повторите попытку."
         }
-        L10nKey::GitHubIssues => "Задачи",
-        L10nKey::GitHubPulls => "Запросы на слияние",
-        L10nKey::GitHubOpen => "Открыто",
-        L10nKey::GitHubClosed => "Закрыто",
-        L10nKey::GitHubMerged => "Слито",
-        L10nKey::GitHubDraft => "Черновик",
-        L10nKey::GitHubNotPlanned => "Не запланировано",
-        L10nKey::GitHubRefresh => "Обновить",
-        L10nKey::GitHubOpenOnGitHub => "Открыть на GitHub",
-        L10nKey::GitHubShowRemote => "Задачи из",
-        L10nKey::GitHubLoadMore => "Загрузить ещё",
-        L10nKey::GitHubNoRemote => "Нет удалённого репозитория GitHub",
-        L10nKey::GitHubNoRemoteHint => {
-            "Ни один удалённый репозиторий (remote) не указывает на github.com."
-        }
-        L10nKey::GitHubNoIssues => "Задачи не найдены.",
-        L10nKey::GitHubNoPulls => "Запросы на слияние не найдены.",
-        L10nKey::GitHubSignInHint => "Войдите командой `gh auth login` в терминале и обновите.",
-        L10nKey::GitHubNotFoundSignedOut => {
-            "GitHub не нашёл репозиторий. Если он закрытый, сначала войдите."
-        }
-        L10nKey::GitHubNotFoundSignedIn => {
-            "GitHub не нашёл репозиторий или ни у одного аккаунта gh нет доступа к нему."
-        }
-        L10nKey::GitHubUnauthorized => "GitHub отклонил сохранённые данные входа.",
-        L10nKey::GitHubRateLimited => "Лимит запросов GitHub исчерпан.",
-        L10nKey::GitHubRateLimitResetIn => "Сброс через {n} мин.",
-        L10nKey::GitHubRateLimitSignedOut => {
-            "Без входа GitHub разрешает 60 запросов в час. Войдите через `gh auth login`, чтобы лимит стал больше."
-        }
-        L10nKey::GitHubForbidden => "GitHub отклонил запрос.",
-        L10nKey::GitHubNetworkError => "Не удалось подключиться к GitHub.",
-        L10nKey::GitHubHttpError => "GitHub ответил ошибкой ({code}).",
-        L10nKey::GitHubDecodeError => "tty7 не смог прочитать ответ GitHub.",
-        L10nKey::GitHubMoreOnGitHub => "Ещё на GitHub",
-        L10nKey::GitHubNoDescription => "Описание отсутствует.",
-        L10nKey::GitHubFilterByLabel => "Только эта метка",
-        L10nKey::GitHubClearLabel => "Сбросить фильтр меток",
-        L10nKey::GitHubImage => "изображение",
-        L10nKey::GitHubComments => "Комментариев: {count}",
-        L10nKey::GitHubCommits => "Коммитов: {count}",
-        L10nKey::GitHubOpenedAt => "открыто {when}",
-        L10nKey::GitHubUpdatedAt => "обновлено {when}",
-        L10nKey::GitHubChecks => "Проверки",
-        L10nKey::GitHubChecksPassed => "Пройдено {passed} из {total}",
-        L10nKey::GitHubChecksNoneCounted => "Нет проверок с результатом",
-        L10nKey::GitHubCheckPassed => "Пройдена",
-        L10nKey::GitHubCheckFailed => "Ошибка",
-        L10nKey::GitHubCheckPending => "Выполняется",
-        L10nKey::GitHubCheckSkipped => "Пропущена",
-        L10nKey::GitHubReviews => "Рецензии",
-        L10nKey::GitHubReviewApproved => "Одобрено",
-        L10nKey::GitHubReviewChangesRequested => "Запрошены изменения",
-        L10nKey::GitHubReviewCommented => "Оставлен комментарий",
-        L10nKey::GitHubReviewRequested => "Запрошена",
-        L10nKey::GitHubReadyToMerge => "Готово к слиянию",
-        L10nKey::GitHubMergeConflicts => "Конфликты слияния",
-        L10nKey::GitHubReviewRequired => "Нужна рецензия",
-        L10nKey::GitHubBehindBase => "Отстаёт от базовой ветки",
-        L10nKey::GitHubMergeBlocked => "Заблокировано защитой ветки",
-        L10nKey::GitHubThisBranch => "Эта ветка",
-        L10nKey::GitHubChecksFailing => "Проверок с ошибкой: {count}",
-        L10nKey::GitHubWaitingOnChecks => "Ожидание проверок: {count}",
-        L10nKey::GitHubShowLess => "Показать меньше",
-        L10nKey::GitHubShowAllFiles => "Показать все файлы ({count})",
-        L10nKey::GitHubPassedCount => "Пройдено: {count}",
-        L10nKey::GitHubSkippedCount => "Пропущено: {count}",
-        L10nKey::GitHubShowFullText => "Показать полный текст",
-        L10nKey::GitHubShowHiddenComments => "Показать ещё комментарии ({count})",
-        L10nKey::GitHubShowAllReviewers => "Показать всех рецензентов ({count})",
         L10nKey::CmdCopyRaw => "Копировать как есть",
         L10nKey::SettingsSearchCopyJoinWrappedKeywords => {
             "буфер обмена копирование перенос склеить строки claude clipboard copy wrap unwrap join lines raw"
@@ -2851,51 +2748,6 @@ pub fn translate_variant_ru(key: L10nKey, branch: &'static str) -> Option<&'stat
         (L10nKey::WindowDeleteShells, "other") => {
             "{count} работающих оболочек будет завершено, расположение удалится."
         }
-        (L10nKey::GitHubComments, "zero") => "Нет комментариев",
-        (L10nKey::GitHubComments, "one") => "{count} комментарий",
-        (L10nKey::GitHubComments, "few") => "{count} комментария",
-        (L10nKey::GitHubComments, "many") => "{count} комментариев",
-        (L10nKey::GitHubComments, "other") => "{count} комментариев",
-        (L10nKey::GitHubCommits, "zero") => "Нет коммитов",
-        (L10nKey::GitHubCommits, "one") => "{count} коммит",
-        (L10nKey::GitHubCommits, "few") => "{count} коммита",
-        (L10nKey::GitHubCommits, "many") => "{count} коммитов",
-        (L10nKey::GitHubCommits, "other") => "{count} коммитов",
-        (L10nKey::GitHubChecksFailing, "zero") => "Нет проверок с ошибками",
-        (L10nKey::GitHubChecksFailing, "one") => "{count} проверка с ошибкой",
-        (L10nKey::GitHubChecksFailing, "few") => "{count} проверки с ошибкой",
-        (L10nKey::GitHubChecksFailing, "many") => "{count} проверок с ошибкой",
-        (L10nKey::GitHubChecksFailing, "other") => "{count} проверок с ошибкой",
-        (L10nKey::GitHubWaitingOnChecks, "zero") => "Нет ожидаемых проверок",
-        (L10nKey::GitHubWaitingOnChecks, "one") => "Ожидание {count} проверки",
-        (L10nKey::GitHubWaitingOnChecks, "few") => "Ожидание {count} проверок",
-        (L10nKey::GitHubWaitingOnChecks, "many") => "Ожидание {count} проверок",
-        (L10nKey::GitHubWaitingOnChecks, "other") => "Ожидание {count} проверок",
-        (L10nKey::GitHubShowAllFiles, "zero") => "Нет файлов",
-        (L10nKey::GitHubShowAllFiles, "one") => "Показать {count} файл",
-        (L10nKey::GitHubShowAllFiles, "few") => "Показать все {count} файла",
-        (L10nKey::GitHubShowAllFiles, "many") => "Показать все {count} файлов",
-        (L10nKey::GitHubShowAllFiles, "other") => "Показать все {count} файлов",
-        (L10nKey::GitHubPassedCount, "zero") => "Ни одна не пройдена",
-        (L10nKey::GitHubPassedCount, "one") => "Пройдена {count} проверка",
-        (L10nKey::GitHubPassedCount, "few") => "Пройдено {count} проверки",
-        (L10nKey::GitHubPassedCount, "many") => "Пройдено {count} проверок",
-        (L10nKey::GitHubPassedCount, "other") => "Пройдено {count} проверок",
-        (L10nKey::GitHubSkippedCount, "zero") => "Ни одна не пропущена",
-        (L10nKey::GitHubSkippedCount, "one") => "Пропущена {count} проверка",
-        (L10nKey::GitHubSkippedCount, "few") => "Пропущено {count} проверки",
-        (L10nKey::GitHubSkippedCount, "many") => "Пропущено {count} проверок",
-        (L10nKey::GitHubSkippedCount, "other") => "Пропущено {count} проверок",
-        (L10nKey::GitHubShowHiddenComments, "zero") => "Других комментариев нет",
-        (L10nKey::GitHubShowHiddenComments, "one") => "Показать ещё {count} комментарий",
-        (L10nKey::GitHubShowHiddenComments, "few") => "Показать ещё {count} комментария",
-        (L10nKey::GitHubShowHiddenComments, "many") => "Показать ещё {count} комментариев",
-        (L10nKey::GitHubShowHiddenComments, "other") => "Показать ещё {count} комментариев",
-        (L10nKey::GitHubShowAllReviewers, "zero") => "Нет рецензентов",
-        (L10nKey::GitHubShowAllReviewers, "one") => "Показать {count} рецензента",
-        (L10nKey::GitHubShowAllReviewers, "few") => "Показать всех {count} рецензентов",
-        (L10nKey::GitHubShowAllReviewers, "many") => "Показать всех {count} рецензентов",
-        (L10nKey::GitHubShowAllReviewers, "other") => "Показать всех {count} рецензентов",
         _ => return None,
     };
     Some(value)

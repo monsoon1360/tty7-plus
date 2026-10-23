@@ -255,8 +255,7 @@ impl Tty7App {
             return self.scm_shell(title, body);
         };
 
-        let count = (status.total_entries > 0).then(|| status.total_entries.to_string());
-        let title = self.panel_title(t(L10nKey::PanelScmTitle), count, None, window, cx);
+        let title = self.panel_title(t(L10nKey::PanelScmTitle), None, None, window, cx);
 
         let branch = self.scm_branch_row(&repo, &status, cx);
         let naming = self.scm_new_branch_row(&repo, cx);
@@ -2370,13 +2369,13 @@ pub(crate) struct CommitPlan {
 
 /// Decide both from the state of the index.
 ///
-/// "Commit All" rather than a silent `-a`: with nothing staged, `git commit`
-/// would commit nothing, and the honest thing is to say on the button that
-/// every tracked change is about to go in. An armed amend needs no message —
+/// With nothing explicitly staged, Commit All includes every non-ignored change,
+/// including new files. Amend keeps its existing index-only semantics.
 /// `--no-edit` keeps the one that is already on HEAD.
 pub(crate) fn commit_plan(status: &WorkingTreeStatus, amend: bool, message: &str) -> CommitPlan {
     let staged = status.staged().next().is_some();
-    let tracked_edits = status.unstaged().next().is_some();
+    let worktree_edits = status.unstaged().next().is_some() || status.untracked().next().is_some();
+    let conflicts = status.conflicts().next().is_some();
     let label = if amend {
         L10nKey::ScmCommitAmendButton
     } else if staged {
@@ -2389,11 +2388,13 @@ pub(crate) fn commit_plan(status: &WorkingTreeStatus, amend: bool, message: &str
     // `--allow-empty-message` for exactly this, because refusing would strand
     // the merge behind a message the user deliberately cleared.
     let merging = matches!(status.operation, Some(RepoOperation::Merge));
-    let something = staged || tracked_edits || amend;
+    let something = staged || worktree_edits || amend;
     CommitPlan {
         label,
-        enabled: something && (has_message || amend || merging),
-        reason: if something {
+        enabled: !conflicts && something && (has_message || amend || merging),
+        reason: if conflicts {
+            L10nKey::ScmAiConflicts
+        } else if something {
             L10nKey::ScmCommitNeedsMessage
         } else {
             L10nKey::ScmNothingToCommit
@@ -2401,7 +2402,7 @@ pub(crate) fn commit_plan(status: &WorkingTreeStatus, amend: bool, message: &str
     }
 }
 
-/// Whether a commit has to stage everything tracked first (`-a`).
+/// Whether a commit has to stage all non-ignored changes first.
 pub(crate) fn commit_stages_everything(status: &WorkingTreeStatus, amend: bool) -> bool {
     // Amending with nothing staged means "fix the message", not "sweep the
     // working tree into the commit I already made".
@@ -2855,13 +2856,31 @@ mod tests {
                 EntryKind::Tracked,
             )],
         );
+        let untracked = status_of_repo(
+            "/a",
+            vec![entry(
+                "new.rs",
+                ChangeCode::None,
+                ChangeCode::None,
+                EntryKind::Untracked,
+            )],
+        );
+        let conflicted = status_of_repo(
+            "/a",
+            vec![entry(
+                "conflicted.rs",
+                ChangeCode::Unmerged,
+                ChangeCode::Unmerged,
+                EntryKind::Unmerged,
+            )],
+        );
         let clean = status_of_repo("/a", Vec::new());
 
         assert_eq!(
             commit_plan(&staged, false, "msg").label,
             L10nKey::ScmCommitButton
         );
-        // Nothing staged: the button says so rather than quietly running -a.
+        // With no explicit staged selection, Commit All includes new files too.
         assert_eq!(
             commit_plan(&unstaged, false, "msg").label,
             L10nKey::ScmCommitAllButton
@@ -2872,6 +2891,9 @@ mod tests {
         );
 
         assert!(commit_plan(&staged, false, "msg").enabled);
+        assert!(commit_plan(&untracked, false, "msg").enabled);
+        assert!(commit_stages_everything(&untracked, false));
+        assert!(!commit_plan(&conflicted, false, "msg").enabled);
         assert!(
             !commit_plan(&staged, false, "   ").enabled,
             "an all-whitespace message is no message"
@@ -3223,7 +3245,7 @@ mod tests {
         // failing the whole file.
         assert_eq!(
             tab_from(r#"{"right_panel_tab":"nonsense"}"#),
-            RightPanelTab::Info
+            RightPanelTab::Scm
         );
     }
 
@@ -3533,6 +3555,10 @@ mod render_idle_gpui_tests {
             cx.global_mut::<crate::core::config::Config>()
                 .git_ai
                 .provider = crate::core::ai::GitAiProvider::Deepseek;
+            cx.global_mut::<crate::core::config::Config>()
+                .ai
+                .deepseek
+                .enabled = true;
             let input = app.scm.commit_input.clone().unwrap();
             input.update(cx, |input, cx| {
                 input.set_value("Merge branch 'topic'", window, cx)
@@ -3555,6 +3581,18 @@ mod render_idle_gpui_tests {
             );
             assert!(app.scm.committing.is_none());
             cx.global_mut::<crate::core::config::Config>()
+                .ai
+                .deepseek
+                .enabled = false;
+            app.run_scm_action(ScmIntent::GenerateCommitMessage, window, cx);
+            assert!(app.active_settings().is_some_and(
+                |settings| settings.section == crate::ui::settings::SettingsSection::Ai
+            ));
+            assert_eq!(
+                app.scm.generation_token, 0,
+                "disabled DeepSeek must not dispatch"
+            );
+            cx.global_mut::<crate::core::config::Config>()
                 .git_ai
                 .provider = crate::core::ai::GitAiProvider::Off;
             app.run_scm_action(ScmIntent::GenerateCommitMessage, window, cx);
@@ -3573,6 +3611,72 @@ mod render_idle_gpui_tests {
             !head.status.success(),
             "generation must not create a commit"
         );
+    }
+    #[gpui::test]
+    fn a_failed_commit_invalidates_late_generation_and_preserves_its_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let _serial = serial();
+        let fixture = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(fixture.path()).unwrap();
+        git(&root, &["init", "--quiet"]);
+        std::fs::write(root.join("new.txt"), "new file\n").unwrap();
+        let want = root.clone();
+        let (app, mut vcx, _pane) = scm_panel_on(cx, &root, move |app, cx| {
+            app.scm.repo.as_ref().is_some_and(|repo| repo.root == want)
+                && crate::terminal::git_data::status_of(cx, HostId::LOCAL, &want).is_some()
+        });
+        std::fs::write(root.join(".git/index.lock"), "").unwrap();
+        let (repo, token, head) = app.update_in(&mut vcx, |app, window, cx| {
+            let repo = app.scm.active_repo().unwrap().clone();
+            let head = crate::terminal::git_data::status_of(cx, repo.host, &repo.root)
+                .unwrap()
+                .head
+                .clone();
+            app.scm
+                .commit_input
+                .as_ref()
+                .unwrap()
+                .update(cx, |input, cx| {
+                    input.set_value("Keep this message", window, cx)
+                });
+            let token = app
+                .scm
+                .begin_generation(
+                    repo.clone(),
+                    head.clone(),
+                    "Keep this message".into(),
+                    false,
+                )
+                .unwrap();
+            app.run_scm_action(ScmIntent::Commit, window, cx);
+            assert!(app.scm.generating.is_empty());
+            (repo, token, head)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            vcx.background_executor.run_until_parked();
+            if app.update_in(&mut vcx, |app, _, _| app.scm.committing.is_none()) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.scm_land_generation(
+                repo,
+                token,
+                head,
+                "Late replacement".into(),
+                false,
+                window,
+                cx,
+            );
+            assert_eq!(
+                app.scm.commit_input.as_ref().unwrap().read(cx).value(),
+                "Keep this message"
+            );
+        });
     }
 }
 

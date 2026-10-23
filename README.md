@@ -396,8 +396,8 @@ native Android path is
   secrets, jump hosts, SFTP, port forwarding, and an unprivileged one-time
   `tty7-server` install on the remote machine.
 - **The workbench** — tabs and splits, Search Everywhere, scrollback search,
-  hibernation, a process tree with listening ports, source control, in-file
-  search, and a read-only GitHub panel.
+  hibernation, source control, and Files with file-name and content search.
+  Process trees and listening ports remain available through `tty7 procs`.
 
 See [docs/](docs/) for the full documentation, including the
 [keyboard shortcuts](docs/reference/keyboard-shortcuts.mdx),

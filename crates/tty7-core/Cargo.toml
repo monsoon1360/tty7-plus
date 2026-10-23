@@ -262,10 +262,6 @@ remote-install = [
     "dep:system-configuration",
     "dep:system-configuration-sys",
 ]
-# The GitHub tab's REST client (`core::github::http`). It rides the same HTTPS
-# stack and system-proxy resolution as the installer, so it is that feature
-# plus a name of its own: the server, which never reads GitHub, builds neither.
-github = ["remote-install"]
 
 [lints]
 workspace = true
