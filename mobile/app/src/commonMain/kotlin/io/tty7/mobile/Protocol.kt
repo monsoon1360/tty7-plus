@@ -104,6 +104,7 @@ class TerminalFeed(
     private val onSynced: (TerminalFeed) -> Unit,
     private val onResync: (TerminalFeed) -> Unit = {},
     private val onHistory: suspend (TerminalFeed, String?) -> HistoryPage = { _, _ -> error("History unavailable") },
+    private val onScroll: suspend (TerminalFeed, String) -> Unit = { _, _ -> error("Scroll input unavailable") },
     private val onParsed: suspend (TerminalFeed, TerminalFrame) -> Unit,
 ) {
     var pane: Pane = pane
@@ -212,6 +213,12 @@ class TerminalFeed(
         val page = onHistory(this, cursor)
         check(active) { "Terminal subscription changed" }
         return page
+    }
+    suspend fun scroll(text: String) {
+        check(synced) { "Terminal is not ready" }
+        // Complete only on this input request's reply, never on output ACKs.
+        onScroll(this, text)
+        check(synced) { "Terminal subscription changed" }
     }
     fun cancel() { active = false; clearStaged(); frames.cancel() }
     internal fun close() { active = false; clearStaged(); frames.close() }

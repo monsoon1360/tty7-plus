@@ -211,10 +211,30 @@ tracking. Terminal-query responses remain the desktop's responsibility.
 
 Local history follows finger travel at 1:1 for precise positioning inside tables
 and long output, retains drag distance while its first page loads, and stops
-coasting at either boundary. Remote application scrolling coalesces input over
-32 ms and sends at most 20 wheel lines per batch without discarding remaining whole
-lines. Its shorter coast ends within 240 ms; reversing direction replaces unsent
-old-direction movement. A new touch or key cancels pending scrolling and inertia.
+coasting at either boundary. Remote application scrolling sends at most 20 wheel
+lines per batch, coalesces small moves over 32 ms (16 ms while draining full
+batches), and permits up to 80 rows of unacknowledged input. This bounded window
+lets movement continue during a network round trip instead of serializing every
+small batch behind its reply. Only a
+matching input RPC reply returns that batch's row credit: empty patches,
+streaming output and resync snapshots cannot release credit or train delivery
+latency. At most 16 input requests may be outstanding, including small batches.
+An adaptive timeout leaves at least 500 ms for a reply, including when a
+previously fast link slows down. A missing reply then holds further sends until
+a matching late reply or a reversal releases the hold, including when no unsent
+debt remains.
+
+A reversal or new touch cancels unsent old movement and makes one additional
+20-row reserve available. Old requests still consume credit until their actual
+replies arrive: the absolute bound remains 100 rows even across repeated
+cancellation or direction changes, and the 16-request limit still applies.
+An obsolete reply can only reclaim its own transport charge; duplicate and
+stale-generation replies are ignored. Queued unsent movement is capped at 200
+rows. While delivery is pending, the rendered screen leads by at most three
+rows, then eases back without extending the viewport's scroll range. The RPC
+confirms input delivery, not completion of application paint. The shorter coast
+ends within 240 ms. A new touch or key cancels pending movement, inertia, the
+active timeout and the lead without erasing outstanding transport charges.
 Horizontal panning remains 1:1. Pointer capture on the stable viewport keeps
 gestures intact when xterm replaces rendered rows. Drags, cancelled gestures and
 multi-touch never focus terminal input; only an intentional tap requests the IME.

@@ -231,6 +231,62 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
+    @Test fun scrollDeliveryWaitsForItsInputReplyRatherThanScreenUpdates() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        val delivery = async { feed.scroll("\u001b[<64;1;1M") }
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "input" }
+        assertEquals("workspace", request.text("workspace_id"))
+        assertEquals(pane.id, request.getValue("pane_id").jsonPrimitive.long)
+        assertEquals(platform.encodeInput("\u001b[<64;1;1M"), request.text("data"))
+        assertFalse(delivery.isCompleted)
+        platform.socket.output("Unrelated status update")
+        runCurrent()
+        feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive())))
+        assertFalse(delivery.isCompleted, "Rendering output cannot complete an input request")
+        platform.socket.response(request.getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        delivery.await()
+        controller.setForeground(false)
+    }
+
+    @Test fun concurrentScrollDeliveriesKeepTheirOwnReplyIdentity() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        val first = async { feed.scroll("\u001b[<64;1;1M") }
+        val second = async { feed.scroll("\u001b[<65;1;1M") }
+        runCurrent()
+        val requests = platform.socket.encryptedMessages.filter { it.optionalText("op") == "input" }
+        assertEquals(2, requests.size)
+        assertEquals(platform.encodeInput("\u001b[<64;1;1M"), requests[0].text("data"))
+        assertEquals(platform.encodeInput("\u001b[<65;1;1M"), requests[1].text("data"))
+        platform.socket.response(requests[1].getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        second.await()
+        assertFalse(first.isCompleted, "An out-of-order reply cannot release another batch")
+        platform.socket.response(requests[0].getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        first.await()
+        controller.setForeground(false)
+    }
+
+    @Test fun scrollDeliveryCannotAcknowledgeACanceledTerminal() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        val delivery = async { runCatching { feed.scroll("\u001b[A") } }
+        runCurrent()
+        val request = platform.socket.encryptedMessages.single { it.optionalText("op") == "input" }
+        feed.cancel()
+        platform.socket.response(request.getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        assertTrue(delivery.await().isFailure, "A late input reply cannot acknowledge an inactive feed")
+        controller.setForeground(false)
+    }
+
     @Test fun lateResponseDoesNotCloseTerminalButUnknownResponseClosesSession() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)

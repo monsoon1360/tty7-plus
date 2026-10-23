@@ -35,6 +35,7 @@ private sealed interface TerminalRenderEvent {
 }
 private class TerminalBridge(
     private val onInput: (Long, String) -> Unit,
+    private val onScroll: (Long, Long, String) -> Unit,
     private val onResize: (Int, Int) -> Unit,
     private val onFocusInput: (Long) -> Unit,
     private val onReady: () -> Unit,
@@ -45,6 +46,9 @@ private class TerminalBridge(
     @Volatile private var disposed = false
     private fun post(block: () -> Unit) { if (!disposed) main.post { if (!disposed) block() } }
     @JavascriptInterface fun input(generation: Long, text: String) { if (text.length <= 65_536) post { onInput(generation, text) } }
+    @JavascriptInterface fun scroll(generation: Long, batch: Long, text: String) {
+        if (batch > 0 && text.length <= 65_536) post { onScroll(generation, batch, text) }
+    }
     @JavascriptInterface fun resize(cols: Int, rows: Int) { if (cols in 20..1000 && rows in 5..1000) post { onResize(cols, rows) } }
     @JavascriptInterface fun focusInput(generation: Long) = post { onFocusInput(generation) }
     @JavascriptInterface fun ready() = post(onReady)
@@ -89,6 +93,22 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
     val bridge: TerminalBridge = remember {
         TerminalBridge(
             { gen, text -> if (gen == generation && currentFeed?.synced == true) currentInput(text) },
+            { gen, batch, text ->
+                val target = currentFeed
+                if (gen == generation && target?.synced == true) scope.launch {
+                    try {
+                        target.scroll(text)
+                        if (gen == generation && currentFeed === target && target.synced) {
+                            webRef?.evaluateJavascript("window.tty7ScrollAcknowledged($gen,$batch)", null)
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) {
+                        if (gen == generation && currentFeed === target && target.active) {
+                            currentFailure(e.message ?: "终端滚动输入失败")
+                        }
+                    }
+                }
+            },
             { cols, rows -> currentResize(cols, rows) },
             { gen -> if (gen == generation && currentFeed?.synced == true) focusRequest++ },
             { pageReady = true },
