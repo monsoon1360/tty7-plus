@@ -13,6 +13,20 @@ if [[ -o interactive ]] && [[ -z "$TTY7_SHELL_INTEGRATION" ]]; then
     fi
   fi
 
+  # Tell the app where this shell keeps its history. $HISTFILE is set by the
+  # rc file just run and is never exported, so the history menu, which reads
+  # the file directly, would otherwise only know the default ~/.zsh_history.
+  # One line per distinct path, written once.
+  if [[ -n "$HISTFILE" && "$HISTFILE" == /* && -n "$TTY7_CONFIG_DIR" ]]; then
+    __tty7_hf_list="$TTY7_CONFIG_DIR/shell-histfiles"
+    __tty7_hf_known=
+    [[ -r "$__tty7_hf_list" ]] && __tty7_hf_known="$(<"$__tty7_hf_list")"
+    if [[ $'\n'"$__tty7_hf_known"$'\n' != *$'\n'"$HISTFILE"$'\n'* ]]; then
+      builtin printf '%s\n' "$HISTFILE" >> "$__tty7_hf_list" 2>/dev/null
+    fi
+    unset __tty7_hf_list __tty7_hf_known
+  fi
+
   # Per-pane history, when the app asked for it. This runs after the user's
   # .zshrc, which is the only reason it can work at all: $HISTFILE is theirs to
   # set, wherever they like, and nothing outside this shell knew where it
@@ -229,6 +243,20 @@ if [[ $- == *i* ]] && [[ -z "$TTY7_SHELL_INTEGRATION" ]]; then
     else
       function codex { "$TTY7_AI_LAUNCHER" --ai-run-codex -- "$@"; }
     fi
+  fi
+
+  # Tell the app where this shell keeps its history. $HISTFILE is set by the
+  # rc file just run and is never exported, so the history menu, which reads
+  # the file directly, would otherwise only know the default ~/.bash_history.
+  # One line per distinct path, written once.
+  if [[ -n "$HISTFILE" && "$HISTFILE" == /* && -n "$TTY7_CONFIG_DIR" ]]; then
+    __tty7_hf_list="$TTY7_CONFIG_DIR/shell-histfiles"
+    __tty7_hf_known=
+    [[ -r "$__tty7_hf_list" ]] && __tty7_hf_known="$(<"$__tty7_hf_list")"
+    if [[ $'\n'"$__tty7_hf_known"$'\n' != *$'\n'"$HISTFILE"$'\n'* ]]; then
+      builtin printf '%s\n' "$HISTFILE" >> "$__tty7_hf_list" 2>/dev/null
+    fi
+    unset __tty7_hf_list __tty7_hf_known
   fi
 
   # Per-pane history — see the zsh block for why this can only be done here,
@@ -775,7 +803,7 @@ pub struct Injection {
 
 const ZDOTDIR_PREFIX: &str = "tty7-zdotdir-";
 
-fn is_our_zdotdir(path: &str) -> bool {
+pub(crate) fn is_our_zdotdir(path: &str) -> bool {
     Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())

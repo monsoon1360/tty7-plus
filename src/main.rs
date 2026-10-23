@@ -36,6 +36,10 @@ fn spawn_config_watcher(cx: &mut App) {
         return;
     };
     let _ = std::fs::create_dir_all(&dir);
+    // FSEvents reports the resolved path, and a watch registered through a
+    // symlink (`/tmp` is `/private/tmp` on macOS) never matches it: every
+    // edit to config.json went unseen.
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
 
     const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(200);
 

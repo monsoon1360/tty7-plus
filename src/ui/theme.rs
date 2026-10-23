@@ -84,6 +84,9 @@ pub(crate) fn set_menus(cx: &mut App) {
             MenuItem::action(t(L10nKey::AppMenuForkSession), ForkAgentSession),
             MenuItem::separator(),
             MenuItem::action(t(L10nKey::AppMenuClosePaneTab), CloseActiveTab),
+            // Where a Mac user looks for the way to put the window away; it
+            // is also the one path that works when another app has taken ⇧⌘W.
+            MenuItem::action(t(L10nKey::CmdCloseWindow), CloseWindow),
             MenuItem::action(t(L10nKey::AppMenuCloseOtherTabs), CloseOtherTabs),
             MenuItem::action(t(L10nKey::AppMenuCloseTabsRight), CloseTabsToTheRight),
             MenuItem::action(t(L10nKey::AppMenuReopenClosedTab), ReopenClosedTab),

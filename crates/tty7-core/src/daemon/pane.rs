@@ -562,6 +562,31 @@ fn pane_environment(
     env
 }
 
+/// zsh integration works by pointing `ZDOTDIR` at tty7's redirector dir, which
+/// then sources the user's own startup files from `TTY7_USER_ZDOTDIR`. A
+/// `ZDOTDIR` in the configured `env` block is applied after that and used to
+/// win outright: zsh read the user's files directly and the pane came up with
+/// no prompt marks, no editor, no suggestions. When the redirector is in
+/// place, the configured value is where the user's files live, so it goes
+/// where the redirector looks for them instead.
+fn reroute_configured_zdotdir(
+    env: Vec<(String, String)>,
+    zsh_integration: bool,
+) -> Vec<(String, String)> {
+    if !zsh_integration {
+        return env;
+    }
+    env.into_iter()
+        .map(|(k, v)| {
+            if k == "ZDOTDIR" {
+                ("TTY7_USER_ZDOTDIR".to_string(), v)
+            } else {
+                (k, v)
+            }
+        })
+        .collect()
+}
+
 fn apply_common_command_setup(
     cmd: &mut CommandBuilder,
     initial_cwd: &Option<PathBuf>,
@@ -619,7 +644,15 @@ fn apply_common_command_setup(
     cmd.env_remove(TTY7_AI_LAUNCHER_ENV);
 
     let dark = crate::core::machine::appearance().dark;
-    for (k, v) in pane_environment(&extra_env, dark, pane, workspace, shell) {
+    let injected_zdotdir = cmd
+        .get_env("ZDOTDIR")
+        .and_then(|z| z.to_str())
+        .filter(|z| shell_integration::is_our_zdotdir(z))
+        .map(str::to_owned);
+    for (k, v) in reroute_configured_zdotdir(
+        pane_environment(&extra_env, dark, pane, workspace, shell),
+        injected_zdotdir.is_some(),
+    ) {
         cmd.env(k, v);
     }
 
@@ -5250,6 +5283,28 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(argv, vec!["/bin/fish", "-C", "echo ready"]);
+    }
+
+    #[test]
+    fn a_configured_zdotdir_feeds_the_redirector_instead_of_replacing_it() {
+        let env = vec![
+            ("ZDOTDIR".to_string(), "/home/a/.config/zsh".to_string()),
+            ("EDITOR".to_string(), "vi".to_string()),
+        ];
+
+        let rerouted = reroute_configured_zdotdir(env.clone(), true);
+        assert_eq!(
+            rerouted,
+            vec![
+                (
+                    "TTY7_USER_ZDOTDIR".to_string(),
+                    "/home/a/.config/zsh".to_string()
+                ),
+                ("EDITOR".to_string(), "vi".to_string()),
+            ]
+        );
+        // Without the redirector there is nothing to protect.
+        assert_eq!(reroute_configured_zdotdir(env.clone(), false), env);
     }
 
     #[test]

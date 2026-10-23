@@ -311,6 +311,11 @@ fn load_shell_history() -> Vec<Raw> {
     if let Some(hf) = std::env::var_os("HISTFILE") {
         add(PathBuf::from(hf));
     }
+    // Where tty7's own shells said their history lives: `HISTFILE` is set in
+    // an rc file and never reaches this process's environment.
+    for hf in reported_history_files() {
+        add(hf);
+    }
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         add(home.join(".zsh_history"));
@@ -324,6 +329,35 @@ fn load_shell_history() -> Vec<Raw> {
         add(PathBuf::from(home).join(FISH_HISTORY_UNDER_HOME));
     }
     read_shell_history_files(files)
+}
+
+/// Written by the shell integration snippet, one absolute path per line.
+pub const REPORTED_HISTORY_FILES: &str = "shell-histfiles";
+
+fn reported_history_files() -> Vec<PathBuf> {
+    config_path(REPORTED_HISTORY_FILES)
+        .and_then(|list| std::fs::read_to_string(list).ok())
+        .map(|text| parse_reported_history_files(&text))
+        .unwrap_or_default()
+}
+
+fn parse_reported_history_files(text: &str) -> Vec<PathBuf> {
+    // The file is written from inside panes, so it is only a hint: a relative
+    // path would resolve against this process's directory, and a list that
+    // grew without bound is not one worth reading in full. It is only ever
+    // appended to, and panes starting together each append the same path, so
+    // the newest distinct paths are the ones kept.
+    let mut seen = HashSet::new();
+    let mut files: Vec<PathBuf> = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| looks_absolute(line) && seen.insert(*line))
+        .take(32)
+        .map(PathBuf::from)
+        .collect();
+    files.reverse();
+    files
 }
 
 fn read_shell_history_files(mut files: Vec<PathBuf>) -> Vec<Raw> {
@@ -696,6 +730,28 @@ mod tests {
             shell_history_names().contains(&FISH_HISTORY_UNDER_HOME),
             "a remote host must be asked for the same file the local side reads"
         );
+    }
+
+    #[test]
+    fn reported_history_files_keep_only_absolute_paths() {
+        let files = parse_reported_history_files("/a/.zsh_history\nrelative\n\n  /b/hist  \n");
+        assert_eq!(
+            files,
+            vec![PathBuf::from("/a/.zsh_history"), PathBuf::from("/b/hist")]
+        );
+    }
+
+    #[test]
+    fn reported_history_files_keep_the_newest_distinct_paths() {
+        let mut text = String::new();
+        for i in 0..40 {
+            text.push_str(&format!("/old/{i}\n/dup\n"));
+        }
+        text.push_str("/new\n");
+        let files = parse_reported_history_files(&text);
+        assert_eq!(files.len(), 32);
+        assert_eq!(files.last(), Some(&PathBuf::from("/new")));
+        assert_eq!(files.iter().filter(|p| *p == Path::new("/dup")).count(), 1);
     }
 
     #[test]
