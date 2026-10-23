@@ -117,6 +117,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Android typing no longer repeats earlier text.** Consume each IME edit
+  once instead of replaying overlapping delayed textarea snapshots. Autocorrection
+  replaces only the changed suffix, while Chinese candidate confirmation,
+  Unicode deletion and paste keep their existing input behavior.
 - **Codex can scroll through output after desktop resizing.** Removed repaint
   clipping that swallowed normal autowrap and prevented real output from entering
   scrollback. Cursor-addressed output, including writes below the viewport, keeps

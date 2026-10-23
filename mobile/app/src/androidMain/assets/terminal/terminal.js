@@ -97,6 +97,61 @@ function blurInput() {
 }
 
 let composingInput = false;
+let compositionPending = false;
+let imeValue = null;
+let imeTimer = 0;
+function flushImeInput() {
+    if (imeValue === null || composingInput || compositionPending) return;
+    const previous = Array.from(imeValue);
+    const current = Array.from(input.value);
+    imeValue = input.value;
+    if (input.readOnly || !inputReady) return;
+    let common = 0;
+    while (common < previous.length && common < current.length && previous[common] === current[common]) common++;
+    const data = '\x7f'.repeat(previous.length - common) + current.slice(common).join('').replace(/\r?\n/g, '\r');
+    if (data) terminal.input(data, true);
+}
+function resetImeInput() {
+    clearTimeout(imeTimer);
+    imeTimer = 0;
+    imeValue = null;
+}
+// xterm's 229 fallback queues one textarea snapshot per keydown. If several
+// edits arrive before those timers run, their overlapping diffs replay text;
+// an equal-length autocorrection also sends the entire old textarea again.
+// Own only this fallback, consuming each DOM edit once. xterm still owns
+// composition candidates, hardware keys and paste.
+terminal.attachCustomKeyEventHandler(event => {
+    if (event.type !== 'keydown') return true;
+    if (event.keyCode !== 229) {
+        flushImeInput();
+        resetImeInput();
+        return true;
+    }
+    if (!composingInput && !compositionPending) {
+        flushImeInput();
+        imeValue = input.value;
+        clearTimeout(imeTimer);
+        imeTimer = setTimeout(() => { imeTimer = 0; flushImeInput(); }, 0);
+    }
+    return false;
+});
+// Capture above xterm's input listener so its insertText fallback cannot send
+// the same edit a second time, including events without a composed flag.
+terminal.element.addEventListener('input', event => {
+    if (event.target !== input) return;
+    if (composingInput || compositionPending || event.isComposing) {
+        event.stopImmediatePropagation();
+        return;
+    }
+    if (imeValue === null) return;
+    event.stopImmediatePropagation();
+    flushImeInput();
+}, {capture:true});
+terminal.element.addEventListener('paste', () => {
+    flushImeInput();
+    resetImeInput(); // xterm sends the paste and clears its textarea itself.
+}, {capture:true});
 let backspaceKeyActive = false;
 let backspaceKeyHandled = false;
 // Observe on the ancestor before xterm's textarea keydown listener runs.
@@ -106,18 +161,31 @@ terminal.element.addEventListener('keydown', event => {
 }, {capture:true});
 input.addEventListener('keyup', () => {
     backspaceKeyActive = backspaceKeyHandled = false;
+    flushImeInput();
+    resetImeInput();
 });
 input.addEventListener('blur', () => {
     backspaceKeyActive = backspaceKeyHandled = false;
+    resetImeInput();
 });
-input.addEventListener('compositionstart', () => { composingInput = true; });
-input.addEventListener('compositionend', () => { composingInput = false; });
+input.addEventListener('compositionstart', () => {
+    flushImeInput();
+    resetImeInput();
+    composingInput = true;
+});
+input.addEventListener('compositionend', () => {
+    composingInput = false;
+    // xterm commits after this event and includes any following ordinary text
+    // in the same turn. Let that commit finish before owning new 229 edits.
+    compositionPending = true;
+    setTimeout(() => { compositionPending = false; }, 0);
+});
 input.addEventListener('beforeinput', event => {
     // Android may send only keyCode 229 plus deleteContentBackward. xterm
     // detects 229 deletion by a textarea length change, which cannot happen
     // when its local IME buffer is empty but the remote editor still has text.
-    // Leave nonempty buffers and composition (including candidate deletion)
-    // entirely to xterm. Cancel the empty edit so no second path can emit DEL.
+    // Nonempty buffers follow the text-edit path; candidate deletion stays
+    // with xterm. Cancel the empty edit so no second path can emit DEL.
     if (event.inputType !== 'deleteContentBackward' || !event.cancelable ||
         event.isComposing || composingInput || input.value !== '' ||
         input.readOnly || !inputReady) return;

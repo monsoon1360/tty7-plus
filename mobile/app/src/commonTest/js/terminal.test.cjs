@@ -166,6 +166,73 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.deepEqual(await evaluate('calls.input'), [], 'Deleting an empty composition never erases remote committed text');
   await evaluate(`input.dispatchEvent(new CompositionEvent('compositionend', {data:'',bubbles:true}))`);
   t.diagnostic('PASS: IME-only deletion, Backspace deduplication and Chinese candidate editing preserve remote input');
+  await evaluate(`(async () => {
+    calls.input = []; input.value = '之前';
+    for (const text of ['a', 'b']) {
+      input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+      input.value += text;
+      input.dispatchEvent(new InputEvent('input', {inputType:'insertText',data:text,composed:true,bubbles:true}));
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+    input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+  })()`);
+  assert.equal(await evaluate('calls.input.join("")'), 'ab', 'Batched Android 229 edits send each new character once without replaying earlier text');
+  for (const [before, after, expected] of [
+    ['之前abc', '之前abd', '\x7fd'],
+    ['之前😀', '之前好', '\x7f好'],
+    ['之前ab', '之前a', '\x7f'],
+    ['之前', '之前哈', '哈'],
+  ]) {
+    await evaluate(`(async () => {
+      calls.input = []; input.value = ${JSON.stringify(before)};
+      input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+      input.value = ${JSON.stringify(after)};
+      input.dispatchEvent(new InputEvent('input', {inputType:'insertText',data:${JSON.stringify(after)},bubbles:true}));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+    })()`);
+    assert.equal(await evaluate('calls.input.join("")'), expected, 'IME replacements/deletions send only the changed suffix, even without a composed flag');
+  }
+  await evaluate(`(async () => {
+    calls.input = []; input.value = '之前';
+    for (const text of ['哈', '哈']) {
+      input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+      input.value += text;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+    input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+  })()`);
+  assert.equal(await evaluate('calls.input.join("")'), '哈哈', 'The timer fallback preserves intentional repeated characters without input events');
+  await evaluate(`(async () => {
+    calls.input = []; input.value = '';
+    input.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true}));
+    input.value = '你';
+    input.dispatchEvent(new CompositionEvent('compositionupdate', {data:'你',bubbles:true}));
+    input.dispatchEvent(new CompositionEvent('compositionend', {data:'你',bubbles:true}));
+    input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+    input.value += '!';
+    input.dispatchEvent(new InputEvent('input', {inputType:'insertText',data:'!',bubbles:true}));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+  })()`);
+  assert.equal(await evaluate('calls.input.join("")'), '你!', 'Composition confirmation and following punctuation in one turn are committed once');
+  await evaluate(`(async () => {
+    calls.input = []; input.value = '之前';
+    const edit = text => {
+      input.dispatchEvent(new KeyboardEvent('keydown', {key:'Unidentified',keyCode:229,bubbles:true}));
+      input.value += text;
+      input.dispatchEvent(new InputEvent('input', {inputType:'insertText',data:text,composed:true,bubbles:true}));
+    };
+    edit('a');
+    const clipboard = new DataTransfer();
+    clipboard.setData('text/plain', '粘贴\\n两行');
+    input.dispatchEvent(new ClipboardEvent('paste', {clipboardData:clipboard,bubbles:true,cancelable:true}));
+    edit('b');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    input.dispatchEvent(new KeyboardEvent('keyup', {key:'Unidentified',keyCode:229,bubbles:true}));
+  })()`);
+  assert.equal(await evaluate('calls.input.join("")'), 'a粘贴\r两行b', 'Paste owns its textarea reset without replaying or deleting earlier IME input');
+  t.diagnostic('PASS: Android IME batches, autocorrection, Unicode deletion and composition handoff never replay committed text');
   await evaluate('calls.input = []');
   for (const [from,to] of [[200,400],[400,200]]) {
     await touch('touchStart',100,from);
