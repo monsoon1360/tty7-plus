@@ -408,19 +408,31 @@ See [docs/](docs/) for the full documentation, including the
 ## Upstream and maintenance
 
 The upstream project is [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7). This
-fork tracks it selectively:
+fork tracks it selectively, rather than merging its default branch wholesale.
+The latest reviewed upstream revision is
+[`9dd06c63`](https://github.com/l0ng-ai/tty7/commit/9dd06c639cddcefc82e59059139f39b527baf799):
+26 commits were selected, with fork-specific adaptations for daemon handoff,
+the vendored terminal engine, shortcuts and title-bar alignment.
+
+The upstream GitHub panel, updater/release changes, legacy iroh replay fix,
+warnings-as-errors CI change, and the reverted tab-button/video changes were
+intentionally excluded. The Android relay protocol, AI/Git settings and
+external-editor controls remain fork-specific.
 
 ```bash
-git remote add upstream https://github.com/l0ng-ai/tty7.git
+git remote add upstream https://github.com/l0ng-ai/tty7.git # once
 git fetch upstream
-git merge upstream/main
+git log --oneline 9dd06c63..upstream/main
+# Review each new commit before applying it:
+git cherry-pick -x <reviewed-commit>
 ```
 
-Expect conflicts in the files this fork deliberately changes: the update client,
-the config defaults, the Android app and relay crates, the settings pages, and
-the side panel. After a merge, run the workspace tests and re-check that
-`UPDATES_ENABLED` is still `false` and that no relay endpoint or pin was
-introduced:
+Selected commits retain their upstream source hashes in commit messages.
+GitHub's ahead/behind counts can therefore still include reviewed commits;
+they are not a checklist of missing fixes. After integrating changes, run the
+workspace tests and re-check that `UPDATES_ENABLED` is still `false`, vendored
+terminal state and log-token filtering are preserved, and no relay endpoint
+or pin was introduced:
 
 ```bash
 cargo +1.95.0 test --workspace

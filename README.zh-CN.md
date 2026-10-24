@@ -365,18 +365,28 @@ Android 路径的权威说明见
 
 ## 上游与维护
 
-上游项目是 [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7)。本分支有选择地
-跟随上游：
+上游项目是 [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7)。本分支选择性
+引入提交，不整批合并上游默认分支。最近评估的上游版本为
+[`9dd06c63`](https://github.com/l0ng-ai/tty7/commit/9dd06c639cddcefc82e59059139f39b527baf799)：
+选取了 26 个提交，并针对 daemon 交接、vendored 终端引擎、快捷键和标题栏
+对齐保留本分支的适配。
+
+上游 GitHub 面板、更新器与版本发布、旧 iroh 回放修复、将警告视为错误的 CI
+调整，以及已撤回的标签按钮与视频改动均不引入。Android relay 协议、AI/Git
+设置和外部编辑器控件继续使用本分支实现。
 
 ```bash
-git remote add upstream https://github.com/l0ng-ai/tty7.git
+git remote add upstream https://github.com/l0ng-ai/tty7.git # 只需一次
 git fetch upstream
-git merge upstream/main
+git log --oneline 9dd06c63..upstream/main
+# 逐项评估后再引入：
+git cherry-pick -x <reviewed-commit>
 ```
 
-预期在以下文件出现冲突：本分支刻意修改的更新客户端、配置默认值、Android 应用
-与 relay crate、设置页面和侧边面板。合并后运行工作区测试，并重新确认
-`UPDATES_ENABLED` 仍为 `false`，且没有引入 relay 地址或指纹：
+选取的提交在提交信息中保留上游来源哈希。GitHub 的 ahead/behind 数量仍可能包含
+已经评估的提交，不等于缺失修复清单。集成后运行工作区测试，并重新确认
+`UPDATES_ENABLED` 仍为 `false`、vendored 终端状态和日志令牌过滤仍在，且没有
+引入 relay 地址或指纹：
 
 ```bash
 cargo +1.95.0 test --workspace
