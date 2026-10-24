@@ -11,7 +11,6 @@ use crate::terminal::view::{
     ClearScrollback, CopyText, CutText, FindInTerminal, FindNext, FindPrevious, PasteText,
     RedoEdit, SelectAll, UndoEdit,
 };
-use crate::ui::app::TITLE_BAR_HEIGHT;
 use crate::ui::i18n::{L10nKey, t};
 use crate::ui::presets;
 use crate::ui::presets::Fill;
@@ -23,24 +22,25 @@ use std::sync::OnceLock;
 /// unified toolbar does (19 and 19 in a 52-point bar).
 ///
 /// `y` is the gap between the window's top edge and the *top* of the button
-/// frame, and macOS draws those buttons 14 points tall — so the lights' centre
-/// falls seven points below it. The tiles sit in the middle of the bar's
-/// content box instead, which is `TITLE_BAR_HEIGHT` less the hairline
-/// `TitleBar` draws along its bottom edge. Deriving the number from those two
-/// facts rather than writing it out is what keeps the lights on the tile line:
-/// the value the 40-point bar needed was rewritten by hand when the bar grew
-/// to 48, without the border in it, and left the lights half a point — one
-/// device pixel on a Retina panel — below everything beside them.
+/// frame, and macOS draws those buttons [`TRAFFIC_LIGHT_BUTTON_H`] tall — so the
+/// lights' centre falls half that below it. Deriving the number from
+/// [`crate::ui::app::title_strip_centre`], the line every title-bar row puts its
+/// contents on, is what keeps the lights on the tile line: the value the 40-point bar needed was
+/// rewritten by hand when the bar grew to 48, without the border in it, and left
+/// the lights half a point — one device pixel on a Retina panel — below
+/// everything beside them.
 pub(crate) fn traffic_light_position() -> Point<Pixels> {
     point(px(TRAFFIC_LIGHT_INSET), px(TRAFFIC_LIGHT_INSET))
 }
 
-// AppKit's own button frame, and the border `TitleBar` adds to the bar it
-// wraps. Neither moves with the bar's height.
-const TRAFFIC_LIGHT_H: f32 = 14.;
-const TITLE_BAR_BORDER: f32 = 1.;
+/// The height of AppKit's own standard-window-button frame, which is what the
+/// lights are drawn inside. It does not move with the bar's height.
+pub(crate) const TRAFFIC_LIGHT_BUTTON_H: f32 = 14.;
 
-const TRAFFIC_LIGHT_INSET: f32 = (TITLE_BAR_HEIGHT - TITLE_BAR_BORDER - TRAFFIC_LIGHT_H) / 2.;
+// The same content centre drives both the native buttons and the rows beside
+// them. Keep the inset const so the leading reserve can follow it at compile
+// time instead of maintaining a second copy of the bar's border arithmetic.
+const TRAFFIC_LIGHT_INSET: f32 = crate::ui::app::TITLE_STRIP_CENTRE - TRAFFIC_LIGHT_BUTTON_H / 2.;
 
 /// Close to zoom: three 14-point buttons on a 20-point pitch.
 const TRAFFIC_LIGHTS_W: f32 = 54.;
@@ -1100,14 +1100,18 @@ mod tests {
     use gpui::TestAppContext;
 
     /// The lights share a line with the chrome tiles they sit beside. gpui
-    /// hangs the top of the 14pt frame `y` below the window's top edge, so
-    /// their centre is seven points under that; the tiles are centred in the
-    /// bar's content box, its height less the hairline `TitleBar` draws along
-    /// the bottom. Sixteen and a half points today, out of the 48pt bar.
+    /// hangs the top of the button frame `y` below the window's top edge, so
+    /// their centre falls half a frame under that, and `title_strip_centre` is
+    /// where every title-bar row puts its contents. Sixteen and a half points
+    /// today, out of the 48pt bar.
     #[test]
     fn the_traffic_lights_sit_on_the_chrome_rows_centre() {
         let position = traffic_light_position();
-        assert_eq!(position.y + px(7.), px((TITLE_BAR_HEIGHT - 1.) / 2.));
+        assert_eq!(position.x, position.y);
+        assert_eq!(
+            position.y + px(TRAFFIC_LIGHT_BUTTON_H / 2.),
+            crate::ui::app::title_strip_centre()
+        );
     }
 
     /// The strip, editor header and search band start at the lead, so the

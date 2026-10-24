@@ -9,7 +9,10 @@ use std::path::PathBuf;
 
 use crate::core::config::{Config, RightPanelTab};
 use crate::daemon::protocol::PaneProcs;
-use crate::ui::app::{CONTENT_INSET, TILE_GLYPH_SM, TILE_SIZE_SM, Tty7App, tile_trailing_inset};
+use crate::ui::app::{
+    CONTENT_INSET, TILE_GLYPH_SM, TILE_SIZE_SM, TITLE_BAR_BORDER, TitleStripRow as _, Tty7App,
+    tile_trailing_inset,
+};
 use crate::ui::i18n::{L10nKey, t, t_fmt};
 
 /// Wide enough for the word tabs, bare, beside the panel toggle at
@@ -324,12 +327,10 @@ impl Tty7App {
                     let row = h_flex()
                         .id("right-panel-titlebar-drag")
                         .flex_none()
-                        .h(px(crate::ui::app::TITLE_BAR_HEIGHT))
                         // Match TitleBar's content height, including its invisible
                         // bottom border. Otherwise this row centres the toggle
                         // half a point below its position in the closed panel.
-                        .border_b_1()
-                        .border_color(cx.theme().transparent);
+                        .title_strip_row(px(TITLE_BAR_BORDER), cx.theme().transparent);
                     crate::ui::app::window_move_gesture(
                         row,
                         "right-panel-titlebar-drag",

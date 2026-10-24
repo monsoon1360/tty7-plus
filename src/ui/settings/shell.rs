@@ -6,10 +6,14 @@ use std::rc::Rc;
 
 use super::kit::{self, BtnKind, Tk, fs};
 use super::*;
+use crate::ui::app::{TITLE_BAR_BORDER, TitleStripRow as _};
 use gpui_component::ActiveTheme as _;
 
 /// What a menu row does when picked.
 pub(crate) type PickFn = Rc<dyn Fn(&mut Tty7App, &mut Window, &mut Context<Tty7App>)>;
+
+/// The settings page's own close tile, hung in the top band's right corner.
+const CLOSE_TILE: f32 = 26.;
 
 /// One line of a dropdown's menu.
 pub(crate) enum MenuEntry {
@@ -935,7 +939,10 @@ impl Tty7App {
             .h_full()
             .child(
                 h_flex()
-                    .h(px(TITLE_BAR_HEIGHT))
+                    // The band carries no visible rule, but the traffic lights
+                    // hang over it and this row's contents stand on the same line
+                    // as the rest of the chrome.
+                    .title_strip_row(px(TITLE_BAR_BORDER), gpui::transparent_black())
                     .flex_shrink_0()
                     .items_center()
                     .px(px(56.))
@@ -1017,9 +1024,12 @@ impl Tty7App {
                 div()
                     .id("settings-close")
                     .absolute()
-                    .top(px((TITLE_BAR_HEIGHT - 26.) / 2.))
+                    // On the chrome line rather than in the middle of the band:
+                    // the band spends a point of its height below its contents,
+                    // so `TITLE_BAR_HEIGHT / 2` is not where the rest sits.
+                    .top(crate::ui::app::title_strip_centre() - px(CLOSE_TILE / 2.))
                     .right(px(12.))
-                    .size(px(26.))
+                    .size(px(CLOSE_TILE))
                     .rounded(px(6.))
                     .flex()
                     .items_center()

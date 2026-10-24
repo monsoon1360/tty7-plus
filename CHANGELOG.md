@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Editor and settings headers share the title bar's vertical centre** —
+  Editor, settings, and sidebar header rows reserve the same bottom-edge
+  height so their controls stay on the macOS traffic lights' centre line.
+  The editor preserves the full leading reserve, keeping its return control
+  and docked file tabs at the intended inset without changing document controls.
+
 - **A client that reconnects no longer takes back a workspace someone else is
   using** — A laptop that slept while holding a remote workspace, then woke and
   reconnected, used to attach to it again and push the machine that had taken

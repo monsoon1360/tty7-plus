@@ -254,6 +254,75 @@ pub(crate) fn document_column_px(body: f32, ratio: f32) -> Option<f32> {
 
 pub(crate) const TITLE_BAR_HEIGHT: f32 = 48.;
 
+/// The rule every title-bar row carries along its bottom edge.
+///
+/// `TitleBar` itself draws one (`gpui-component`'s own `.border_b_1()`), and
+/// taffy sizes a node by its border box, so the bar's content box is this one
+/// point short of its height and `items_center` puts a tile's centre half a
+/// point above the bar's middle. Every row that stands in for the title bar
+/// has to carry the same point — in a transparent ink where the row shows no
+/// rule of its own — or its tiles land half a point below the traffic lights
+/// and below the strip they are meant to read as one line with: one device
+/// pixel on a Retina panel, and visible precisely because the two are side by
+/// side in the same band.
+pub(crate) const TITLE_BAR_BORDER: f32 = 1.;
+
+/// The line the traffic lights and every [`title_strip_row`]'s contents sit
+/// on, from the top of the window's content.
+///
+/// The lights hang from a point, not a centre, so macOS gives this back through
+/// `theme::traffic_light_position` less half the system button's height.
+pub(crate) const TITLE_STRIP_CENTRE: f32 = (TITLE_BAR_HEIGHT - TITLE_BAR_BORDER) / 2.;
+
+pub(crate) fn title_strip_centre() -> gpui::Pixels {
+    gpui::px(TITLE_STRIP_CENTRE)
+}
+
+/// Split the title bar's bottom edge between the rule a row draws and the
+/// padding that stands in for the part of it the rule does not reach.
+fn title_strip_rule_and_pad(rule: gpui::Pixels) -> (gpui::Pixels, gpui::Pixels) {
+    let border = rule.min(gpui::px(TITLE_BAR_BORDER));
+    (border, gpui::px(TITLE_BAR_BORDER - border.as_f32()))
+}
+
+/// The centre of the box a row built by [`title_strip_row`] gives its contents:
+/// the bar's height, less whatever its bottom edge spends on rule and padding.
+#[cfg(test)]
+fn title_strip_content_centre(rule: gpui::Pixels) -> gpui::Pixels {
+    let (border, pad) = title_strip_rule_and_pad(rule);
+    gpui::px((TITLE_BAR_HEIGHT - border.as_f32() - pad.as_f32()) / 2.)
+}
+
+/// Give a row the title bar's geometry: its height, its vertical centring, and
+/// a bottom edge that leaves the content box the height
+/// [`title_strip_centre`] assumes.
+///
+/// A method rather than a function, because a row's own chain — its insets, its
+/// tiles, its drag band — is what the file is about, and this is one more link in
+/// it. Calling it mid-chain keeps the row readable instead of burying it in an
+/// argument.
+///
+/// `rule` is the border the row wants. A row standing in for the title bar with
+/// no visible rule passes [`TITLE_BAR_BORDER`] in a transparent ink, so the point
+/// is spent on the box and not on the paint. A row that draws its own thinner
+/// hairline keeps that hairline — it stays flush with the box's bottom edge
+/// either way — and makes up the difference as padding, which is what keeps its
+/// tiles on the same line as the lights over them.
+pub(crate) trait TitleStripRow: Sized {
+    fn title_strip_row(self, rule: gpui::Pixels, ink: gpui::Hsla) -> Self;
+}
+
+impl<R: gpui::Styled> TitleStripRow for R {
+    fn title_strip_row(self, rule: gpui::Pixels, ink: gpui::Hsla) -> Self {
+        let (border, pad) = title_strip_rule_and_pad(rule);
+        self.h(gpui::px(TITLE_BAR_HEIGHT))
+            .items_center()
+            .border_b(border)
+            .border_color(ink)
+            .pb(pad)
+    }
+}
+
 /// Work to run against the settings window once it has been built.
 type SettingsFollowUp = Box<dyn FnOnce(&mut Tty7App, &mut Window, &mut Context<Tty7App>)>;
 
@@ -9244,11 +9313,8 @@ impl Render for Tty7App {
                     .flex_shrink_0()
                     .flex()
                     .flex_row()
-                    .items_center()
-                    .h(px(TITLE_BAR_HEIGHT))
                     .pl(px(TITLE_BAR_LEAD))
-                    .border_b_1()
-                    .border_color(cx.theme().transparent)
+                    .title_strip_row(px(TITLE_BAR_BORDER), cx.theme().transparent)
                     .child(
                         div()
                             .flex()
@@ -11374,11 +11440,12 @@ mod tests {
     use super::close_reason;
     use super::{
         CloseReason, DOCUMENT_MIN_W, Dir, OpenedFrom, Pane, Rename, TERMINAL_MIN_W,
-        TITLE_BAR_HEIGHT, Tab, TabAgentSession, clear_window_override_values, close_prompt,
-        document_column_px, inherited_start_dir, join_shell_args, leaf_shares_the_window_daemon,
-        mru_order, native_ssh_pane_alive, one_slot_move, pane_free_for, parse_ssh_connect_input,
-        parse_ssh_option_words, rename_outcome, side_panel_max, split_machine_held,
-        split_shell_args, step_in_order, strip_band, wd_path_saveable,
+        TITLE_BAR_BORDER, TITLE_BAR_HEIGHT, Tab, TabAgentSession, clear_window_override_values,
+        close_prompt, document_column_px, inherited_start_dir, join_shell_args,
+        leaf_shares_the_window_daemon, mru_order, native_ssh_pane_alive, one_slot_move,
+        pane_free_for, parse_ssh_connect_input, parse_ssh_option_words, rename_outcome,
+        side_panel_max, split_machine_held, split_shell_args, step_in_order, strip_band,
+        title_strip_centre, title_strip_content_centre, title_strip_rule_and_pad, wd_path_saveable,
     };
     use gpui::{Edges, point, px, size};
 
@@ -11390,6 +11457,38 @@ mod tests {
         // On: painted exactly while the pointer is over the bar.
         assert!(!super::titlebar_chrome_shown(true, false));
         assert!(super::titlebar_chrome_shown(true, true));
+    }
+
+    /// A title-bar row spends [`TITLE_BAR_BORDER`] of its height below its
+    /// contents, and there are two ways it does that: it carries the whole point
+    /// as a rule painted transparent (the strip's `TitleBar`, the rail's header,
+    /// the code panel's, the settings band), or it draws its own thinner hairline
+    /// and gives the rest back as padding (the diff overlay's 0.5pt rule). Both
+    /// have to leave the contents on the line the traffic lights hang on — the
+    /// rows sit side by side in the same band, and half a point of difference is
+    /// the one device pixel that reads as a step.
+    #[test]
+    fn a_rows_own_hairline_and_the_bars_invisible_rule_reach_the_same_centre() {
+        for rule in [px(0.), px(0.5), px(TITLE_BAR_BORDER), px(2.)] {
+            let (border, pad) = title_strip_rule_and_pad(rule);
+            assert!(
+                border.as_f32() <= TITLE_BAR_BORDER,
+                "a thicker rule than the bar's own point would push the contents \
+                 onto a line nothing else is on"
+            );
+            assert!(
+                pad.as_f32() >= 0.,
+                "negative padding is not padding, and taffy would swallow it"
+            );
+            assert_eq!(
+                title_strip_content_centre(rule),
+                title_strip_centre(),
+                "a rule of {} leaves the box short by {} of border and {} of padding",
+                rule.as_f32(),
+                border.as_f32(),
+                pad.as_f32()
+            );
+        }
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::core::group_key::{
     place, sections,
 };
 use crate::terminal::git_status::GitStatusCache;
-use crate::ui::app::{TITLE_BAR_HEIGHT, Tab, Tty7App};
+use crate::ui::app::{TITLE_BAR_BORDER, Tab, TitleStripRow as _, Tty7App};
 use crate::ui::hints::tab_badge_label;
 use crate::ui::i18n::{L10nKey, t, t_fmt};
 use crate::ui::reorder::{self, Reorder, Surface};
@@ -1750,10 +1750,7 @@ impl Tty7App {
         );
         let controls = h_flex()
             .flex_shrink_0()
-            .h(px(TITLE_BAR_HEIGHT))
-            .border_b_1()
-            .border_color(cx.theme().transparent)
-            .items_center()
+            .title_strip_row(px(TITLE_BAR_BORDER), cx.theme().transparent)
             .justify_end()
             .gap(px(2.))
             .pr(px(RAIL_INSET))
