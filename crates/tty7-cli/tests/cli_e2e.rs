@@ -1004,12 +1004,9 @@ fn capture_still_answers_after_a_resize(daemon: &Daemon) {
 /// `--tail` against a real pane, whose replay carries a shell prompt, escapes
 /// and CRLF rather than the tidy fixtures the unit tests craft.
 ///
-/// The contract is only "the last N lines of what the command would have
-/// printed", so what is pinned is that the tail is the end of the whole answer,
-/// that it holds the marker the pane printed last, and that it dropped the one
-/// the pane printed first — not the exact line count, which depends on how the
-/// test machine's shell decorates its prompt, and on macOS on the zsh banner
-/// the runner's bash prints at startup.
+/// The contract is "the last N lines of what the command would have printed".
+/// The last two may be entirely shell prompt, so assert the suffix and line
+/// count without requiring a command marker to survive the trim.
 ///
 /// The tail and the whole are separate calls, so they have to be taken while
 /// the pane is holding still or they describe different moments — which is what
@@ -1043,9 +1040,13 @@ fn capture_tail_trims_a_real_panes_answer(daemon: &Daemon) {
         let tail_text = tail["text"].as_str().unwrap_or_default();
         let settled = before == after
             && before.contains("tty7_e2e_tail_line_1")
-            && before.contains("tty7_e2e_tail_line_6")
-            && tail_text.contains("tty7_e2e_tail_line_6");
+            && before.contains("tty7_e2e_tail_line_6");
         if settled {
+            assert_eq!(
+                tail_text.lines().count(),
+                2,
+                "--tail 2 must return two lines, whatever the prompt draws: {tail_text:?}"
+            );
             assert!(
                 before.trim_end().ends_with(tail_text.trim_end()),
                 "a tail has to be the end of the answer it was cut from:\n\

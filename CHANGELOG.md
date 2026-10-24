@@ -7,23 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Editor and settings headers share the title bar's vertical centre** —
-  Editor, settings, and sidebar header rows reserve the same bottom-edge
-  height so their controls stay on the macOS traffic lights' centre line.
-  The editor preserves the full leading reserve, keeping its return control
-  and docked file tabs at the intended inset without changing document controls.
-
-- **A client that reconnects no longer takes back a workspace someone else is
-  using** — A laptop that slept while holding a remote workspace, then woke and
-  reconnected, used to attach to it again and push the machine that had taken
-  it over in the meantime out, over and over. After a reconnect a workspace is
-  now claimed only if nobody else is holding it; otherwise the window opens
-  taken over, with Take Back, as if the notice had arrived. Opening a workspace
-  and Take Back still take it (#1193).
-
 ### Added
+
+- **Jump to the agent waiting longest.** `Cmd+Shift+U` on macOS or
+  `Ctrl+Shift+U` elsewhere focuses the agent that has waited longest for input,
+  across windows; completed unread agents follow. The switcher and `tty7 agents`
+  also show how long an agent has been in its current state.
 
 - **AI and Git settings with editable commit drafts.** Separate local Codex
   tools from the additional DeepSeek provider card, with an explicit enable
@@ -60,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be disabled or revoked. See [pairing, security, builds and deployment](docs/remote/workspaces.mdx#android-remote-terminals).
 
 ### Changed
+
+- **Selected upstream fixes through `9dd06c63`.** Integrate 26 reviewed commits
+  while retaining the fork's Android relay protocol, vendored terminal engine,
+  AI/Git settings, external-editor controls and disabled upstream updater.
+  GitHub-panel, upstream-release/update, legacy iroh replay and CI-policy changes
+  remain excluded; title-bar changes do not restore removed document switches.
 
 - **Settings alignment and monitor placement.** Align the Git provider and
   language dropdowns, shorten AI/Git help text, and open new settings windows
@@ -132,6 +127,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upward movement that reaches the live viewport's top can open it.
 
 ### Fixed
+
+- **Editor and settings headers share the title bar's vertical centre** —
+  Editor, settings, and sidebar header rows reserve the same bottom-edge
+  height so their controls stay on the macOS traffic lights' centre line.
+  The editor preserves the full leading reserve, keeping its return control
+  and docked file tabs at the intended inset without changing document controls.
+
+- **A client that reconnects no longer takes back a workspace someone else is
+  using** — A laptop that slept while holding a remote workspace, then woke and
+  reconnected, used to attach to it again and push the machine that had taken
+  it over in the meantime out, over and over. After a reconnect a workspace is
+  now claimed only if nobody else is holding it; otherwise the window opens
+  taken over, with Take Back, as if the notice had arrived. Opening a workspace
+  and Take Back still take it (#1193).
+
+- **Daemon recovery preserves live sessions.** A failed version handshake or
+  connection no longer automatically kills a still-live daemon. Rotating logs
+  retain diagnostics and stderr while preserving websocket credential filtering.
+- **Many open panes keep accepting mobile input.** Raise the Unix open-file
+  soft limit, within the hard limit, before serving pane connections.
+- **Handoffs retain terminal modes as well as exact screens.** Carry replay-head
+  modes alongside the fork's parser checkpoints. Hidden panes answer device and
+  color-scheme queries without leaving requests queued in discarded replay.
+- **Shell prompts clear stale kitty keyboard stacks.** Reset both terminal grids'
+  keyboard state after prompt marks, including in the authoritative mobile mirror
+  and restored checkpoints, without replacing the vendored parser.
+- **History and shell integration survive real-world configurations.** Decode
+  zsh's metafied history, load native SSH history, follow shell-reported history
+  files and preserve configured ZDOTDIR without bypassing the integration shim.
+  Config symlinks no longer prevent shortcut hot reload.
+- **Remote installation targets the daemon, not pane bridges.** Unix restart
+  discovery requires `--daemon`; fish login shells use a POSIX wrapper and report
+  failed remote commands instead of waiting for a nonexistent startup.
+- **Terminal and window interactions stay local.** Fix prompt double-click word
+  selection, mouse drags without a matching press, icon clipping, negative Git
+  probe retries, fractional docked-document widths, nested settings scrolling,
+  host-menu disconnect crashes and Linux client-side frame clipping. Copy Raw
+  is rebindable; macOS gains a close-window shortcut and reverse-search execution.
+- **Windows notification history reveals the right pane.** Register the toast
+  activator with the installer so clicking an older notification can activate
+  its terminal rather than doing nothing.
 
 - **Android typing no longer repeats earlier text.** Consume each IME edit
   once instead of replaying overlapping delayed textarea snapshots. Autocorrection
