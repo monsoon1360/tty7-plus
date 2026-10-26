@@ -958,6 +958,7 @@ mod gpui_tests {
                 path: "/project/hello.rs".into(),
                 tab: editor,
                 terminal: Some(terminal),
+                program: "hx".into(),
             });
             app.select_external_editor(editor, window, cx);
         });
@@ -1011,6 +1012,7 @@ mod gpui_tests {
                 path: "/project/hello.rs".into(),
                 tab: editor,
                 terminal: Some(terminal),
+                program: "hx".into(),
             });
             app.active = 1;
             cx.notify();

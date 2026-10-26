@@ -24,8 +24,7 @@ const MAX_TABS: usize = 256;
 
 const WRITE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// One tab's editor, as it was last seen. `files` and `active` are the left
-/// group's — the only group, unless the editor was split.
+/// One tab's editor, as it was last seen: the one file it showed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TabEditor {
     pub(crate) files: Vec<PathBuf>,
@@ -35,20 +34,6 @@ pub(crate) struct TabEditor {
     pub(crate) visible: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) external: Option<TabId>,
-    /// The right group of a split editor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) split: Option<SplitEditor>,
-}
-
-/// The right-hand group of a split editor.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SplitEditor {
-    pub(crate) files: Vec<PathBuf>,
-    #[serde(default)]
-    pub(crate) active: usize,
-    /// Whether this group, not the left one, had the focus.
-    #[serde(default)]
-    pub(crate) focused: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -215,15 +200,10 @@ mod tests {
             id,
             Entry {
                 state: TabEditor {
-                    files: vec![PathBuf::from("/src/main.rs"), PathBuf::from("/README.md")],
-                    active: 1,
+                    files: vec![PathBuf::from("/src/main.rs")],
+                    active: 0,
                     visible: true,
                     external: None,
-                    split: Some(SplitEditor {
-                        files: vec![PathBuf::from("/src/lib.rs")],
-                        active: 0,
-                        focused: true,
-                    }),
                 },
                 touched: 7,
             },
@@ -234,13 +214,23 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_before_the_split_still_reads() {
+    fn a_record_from_before_one_file_per_tab_still_reads() {
         let old = r#"{"tabs": {}}"#;
         assert!(serde_json::from_str::<Doc>(old).is_ok());
-        let state: TabEditor =
-            serde_json::from_str(r#"{"files": ["/a.rs"], "active": 0, "visible": true}"#).unwrap();
-        assert_eq!(state.split, None);
-        assert!(!serde_json::to_string(&state).unwrap().contains("split"));
+        // A record written when a tab held several files and a split reads
+        // as the file that was in front then.
+        let state: TabEditor = serde_json::from_str(
+            r#"{"files": ["/a.rs", "/b.rs"], "active": 1, "visible": true,
+                "split": {"files": ["/c.rs"], "active": 0, "focused": true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state.files,
+            vec![PathBuf::from("/a.rs"), PathBuf::from("/b.rs")]
+        );
+        assert_eq!(state.active, 1);
+        let back = serde_json::to_string(&state).unwrap();
+        assert!(!back.contains("split"), "a split is no longer recorded");
     }
 
     #[test]
@@ -250,6 +240,7 @@ mod tests {
             path: PathBuf::from("/project/a b.rs"),
             tab: TabId::new(),
             terminal: Some(TabId::new()),
+            program: "hx".into(),
         };
         doc.external_editors.insert(editor.tab, editor.clone());
         let back: Doc = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();

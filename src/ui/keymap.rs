@@ -719,22 +719,8 @@ fn shipped_bindings() -> Vec<(&'static str, &'static str)> {
             "EditorNavigateForward",
             per_platform("ctrl-shift--", "alt-right"),
         ),
-        // VS Code's Split Editor. Off macOS Ctrl+\ is the terminal's SIGQUIT,
-        // which it keeps: the binding lives in the editor's context only.
-        ("EditorSplitRight", "secondary-\\"),
-        // Moving between the two groups, on the chords that move between
-        // panes — at the edge of the editor, or with no split, they carry on
-        // to the panes. Off macOS those are Alt+←/→, which Back and Forward
-        // hold inside the editor.
-        (
-            "EditorFocusLeftGroup",
-            per_platform("secondary-alt-left", "ctrl-alt-left"),
-        ),
-        (
-            "EditorFocusRightGroup",
-            per_platform("secondary-alt-right", "ctrl-alt-right"),
-        ),
-        // Unbound: ⌘N is New Window, and the editor's header has a + for it.
+        // Unbound: ⌘N is New Window, and the built-in editor's header has a +
+        // for it.
         ("EditorNewFile", ""),
         // The language-server commands. Unbound here — a default on a bare
         // function key would take it from the shell — and bound instead in
@@ -1102,18 +1088,6 @@ fn authored_entry(action: &str) -> Option<(CommandGroup, String)> {
         "EditorNavigateForward" => (
             CommandGroup::Terminal,
             t(L10nKey::EditorNavigateForward).to_string(),
-        ),
-        "EditorSplitRight" => (
-            CommandGroup::Terminal,
-            t(L10nKey::EditorSplitRight).to_string(),
-        ),
-        "EditorFocusLeftGroup" => (
-            CommandGroup::Terminal,
-            t(L10nKey::EditorFocusLeftGroup).to_string(),
-        ),
-        "EditorFocusRightGroup" => (
-            CommandGroup::Terminal,
-            t(L10nKey::EditorFocusRightGroup).to_string(),
         ),
         "EditorNewFile" => (
             CommandGroup::Terminal,
@@ -1729,12 +1703,9 @@ fn action_context(action: &str) -> Option<&'static str> {
         // carries on to the PTY as SYN (#677).
         "AlternatePaste" => Some("Terminal && !alt_screen"),
         "ScmCommit" | "ScmCommitAmend" => Some("ScmCommit"),
-        "EditorGoToSymbol"
-        | "EditorNavigateBack"
-        | "EditorNavigateForward"
-        | "EditorSplitRight"
-        | "EditorFocusLeftGroup"
-        | "EditorFocusRightGroup" => Some(crate::ui::code_editor::NAV_KEY_CONTEXT),
+        "EditorGoToSymbol" | "EditorNavigateBack" | "EditorNavigateForward" => {
+            Some(crate::ui::code_editor::NAV_KEY_CONTEXT)
+        }
         _ => None,
     }
 }
@@ -1883,21 +1854,6 @@ fn make_binding(action: &str, keystroke: &str) -> Option<KeyBinding> {
         "EditorNavigateForward" => KeyBinding::new(
             keystroke,
             EditorNavigateForward,
-            Some(crate::ui::code_editor::NAV_KEY_CONTEXT),
-        ),
-        "EditorSplitRight" => KeyBinding::new(
-            keystroke,
-            EditorSplitRight,
-            Some(crate::ui::code_editor::NAV_KEY_CONTEXT),
-        ),
-        "EditorFocusLeftGroup" => KeyBinding::new(
-            keystroke,
-            EditorFocusLeftGroup,
-            Some(crate::ui::code_editor::NAV_KEY_CONTEXT),
-        ),
-        "EditorFocusRightGroup" => KeyBinding::new(
-            keystroke,
-            EditorFocusRightGroup,
             Some(crate::ui::code_editor::NAV_KEY_CONTEXT),
         ),
         "EditorNewFile" => KeyBinding::new(keystroke, EditorNewFile, None),
@@ -3473,15 +3429,6 @@ mod gpui_tests {
                 ("secondary-shift-o", EditorGoToSymbol::name_for_type()),
                 (back, EditorNavigateBack::name_for_type()),
                 (forward, EditorNavigateForward::name_for_type()),
-                ("secondary-\\", EditorSplitRight::name_for_type()),
-                (
-                    per_platform("secondary-alt-left", "ctrl-alt-left"),
-                    EditorFocusLeftGroup::name_for_type(),
-                ),
-                (
-                    per_platform("secondary-alt-right", "ctrl-alt-right"),
-                    EditorFocusRightGroup::name_for_type(),
-                ),
             ] {
                 assert_eq!(
                     in_input(keys).first(),

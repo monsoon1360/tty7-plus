@@ -400,10 +400,9 @@ impl Tty7App {
         cx: &mut Context<Self>,
     ) -> bool {
         let at = Instant::now();
-        if let Some(id) = target.buffer {
-            if self.buffer(id).is_none() {
-                return false;
-            }
+        if let Some(id) = target.buffer
+            && self.buffer(id).is_some()
+        {
             self.editor
                 .nav
                 .tabs
@@ -421,6 +420,12 @@ impl Tty7App {
                 );
             }
             return true;
+        }
+        // A tab shows one file, so the buffer a history entry names may have
+        // been replaced by another file since. A saved file is opened again
+        // from its path; an untitled one is gone with its buffer.
+        if target.path.as_os_str().is_empty() {
+            return false;
         }
         let Some(host) = crate::ui::host_registry::HostRegistry::lookup(cx, target.host) else {
             return false;
@@ -681,7 +686,6 @@ impl Tty7App {
                 L10nKey::CmdEditorGoForward,
                 CommandKind::EditorNavigateForward,
             ),
-            (L10nKey::CmdEditorSplitRight, CommandKind::EditorSplitRight),
         ]
         .into_iter()
         .map(|(key, kind)| Item::localized(key, kind).in_group(CommandGroup::View))
@@ -694,26 +698,8 @@ impl Tty7App {
         element: E,
         cx: &mut Context<Self>,
     ) -> E {
-        use crate::core::actions::{
-            EditorFocusLeftGroup, EditorFocusRightGroup, EditorGoToSymbol, EditorNavigateBack,
-            EditorNavigateForward, EditorSplitRight,
-        };
+        use crate::core::actions::{EditorGoToSymbol, EditorNavigateBack, EditorNavigateForward};
         element
-            .on_action(cx.listener(|this, _: &EditorSplitRight, window, cx| {
-                if !this.editor_split(window, cx) {
-                    cx.propagate();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &EditorFocusLeftGroup, window, cx| {
-                if !this.editor_focus_group(true, window, cx) {
-                    cx.propagate();
-                }
-            }))
-            .on_action(cx.listener(|this, _: &EditorFocusRightGroup, window, cx| {
-                if !this.editor_focus_group(false, window, cx) {
-                    cx.propagate();
-                }
-            }))
             .on_action(cx.listener(|this, _: &EditorGoToSymbol, window, cx| {
                 this.editor_go_to_symbol(window, cx)
             }))
@@ -733,8 +719,7 @@ impl Tty7App {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let id = self.tab_code().and_then(TabCode::active_id)?;
-        let slot = self.tab_code().map_or(0, TabCode::focused_slot);
-        self.render_editor_breadcrumbs_for(id, slot, true, window, cx)
+        self.render_editor_breadcrumbs_for(id, 0, window, cx)
     }
 
     /// The breadcrumbs of one group's file. `focused` is whether that group
@@ -743,7 +728,6 @@ impl Tty7App {
         &mut self,
         id: BufferId,
         slot: usize,
-        focused: bool,
         _window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -855,13 +839,9 @@ impl Tty7App {
                     gpui_component::tooltip::Tooltip::new(t(L10nKey::EditorGoToSymbolAction))
                         .build(window, cx)
                 })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if !focused {
-                        let left = slot == 0;
-                        this.editor_focus_group(left, window, cx);
-                    }
-                    this.editor_go_to_symbol(window, cx)
-                }))
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.editor_go_to_symbol(window, cx)),
+                )
         });
 
         Some(
@@ -1290,9 +1270,15 @@ pub(super) mod gpui_tests {
 
     #[gpui::test]
     fn a_symbol_jump_can_be_walked_back_and_forward(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::ui::code_editor::tests::test_real_dir(dir.path());
+        let (a, b) = (root.join("a.rs"), root.join("b.rs"));
+        for path in [&a, &b] {
+            std::fs::write(path, source()).unwrap();
+        }
         let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
         crate::ui::i18n::set_locale("en");
-        open_rs(&app, &mut vcx, "/nav-test/a.rs");
+        open_rs(&app, &mut vcx, a.to_str().unwrap());
         put_caret(&app, &mut vcx, 5);
 
         app.update_in(&mut vcx, |app, window, cx| {
@@ -1330,19 +1316,23 @@ pub(super) mod gpui_tests {
         draw(&app, &mut vcx);
 
         // Another file coming forward is a jump too, and Back returns to the
-        // first one.
-        open_rs(&app, &mut vcx, "/nav-test/b.rs");
+        // first one. A tab shows one file, so it comes back from disk.
+        open_rs(&app, &mut vcx, b.to_str().unwrap());
         draw(&app, &mut vcx);
         app.update_in(&mut vcx, |app, window, cx| {
             app.editor_navigate(false, window, cx)
         });
-        vcx.run_until_parked();
-        app.read_with(&vcx, |app, _| {
-            assert_eq!(
-                app.active_buffer().unwrap().path,
-                PathBuf::from("/nav-test/a.rs")
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.read_with(&vcx, |app, _| {
+            app.active_buffer().is_none_or(|f| f.path != a)
+        }) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the file never came back"
             );
-        });
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            vcx.run_until_parked();
+        }
         assert_eq!(caret(&app, &mut vcx), Position::new(50, 3));
     }
 
@@ -1445,7 +1435,6 @@ pub(super) mod gpui_tests {
                 CommandKind::EditorGoToSymbol,
                 CommandKind::EditorNavigateBack,
                 CommandKind::EditorNavigateForward,
-                CommandKind::EditorSplitRight,
             ]
         );
     }

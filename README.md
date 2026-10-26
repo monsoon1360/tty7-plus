@@ -117,11 +117,15 @@ WebSocket relay you deploy yourself.
   **Settings → Keybindings** (or `keybindings` in `config.json`).
 - **External editors** — **Settings → General → Editor → File open method** can
   open local files in the built-in editor (default), Helix (`hx`), or Vim
-  (`vim`) in the same document region, with shared file tabs, Dock/Fill layouts,
-  and 140 ms transitions. No extra terminal row appears in the sidebar. Opening
-  a file focuses its editor; on macOS, Helix/Vim also select the last ASCII
-  keyboard layout. Search hits pass a location; remote files always use the
-  built-in editor.
+  (`vim`) in the same document region, with Dock/Fill layouts and 140 ms
+  transitions. The region shows no file name of its own: Helix and Vim name the
+  file in their own status line, and the built-in editor names it in the status
+  bar at the foot. One file is shown at a time — opening another replaces the
+  built-in editor's file, while Helix and Vim hand it to the session already
+  running in that terminal, so their own buffer switching keeps working. No
+  extra terminal row appears in the sidebar. Opening a file focuses its editor;
+  on macOS, Helix/Vim also select the last ASCII keyboard layout. Search hits
+  pass a location; remote files always use the built-in editor.
 - **Global document layout** — **Document layout** chooses **Dock beside
   terminal** or **Fill window** for every tab and window, and persists across
   relaunches.

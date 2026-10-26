@@ -126,15 +126,23 @@ in the file tree, in quick open or in a search result opens in:
 
 | Method | What happens |
 |---|---|
-| **Built-in editor** | The column above. The default. |
+| **Built-in editor** | The column above. The default. It shows one file and names it in the status bar at its foot. |
 | **Helix** | The same document region running `hx <path>` — `hx <path>:<line>:<column>` from a search hit. |
 | **Vim** | The same document region running `vim <path>`, or `vim +<line> <path>` from a search hit. |
 
-All three methods share the document region, its file tabs, Dock/Fill layout
-and 140 ms open/close animations. Helix and Vim have dedicated backing sessions,
-not extra Terminal rows in the sidebar or terminal switcher. Their processes
-start in the current terminal's directory. Opening the same file again selects
-its existing file tab rather than starting another editor.
+All three methods share the document region, its Dock/Fill layout and 140 ms
+open/close animations. The region shows no file name of its own: Helix and Vim
+put it in their own status line, and the built-in editor puts it in its status
+bar.
+
+One file is on screen at a time. Opening another file **replaces** the file the
+built-in editor shows; with Helix or Vim it is handed to the session already
+running in that terminal, so those editors keep their buffers and their own way
+of switching between them (`gn`/`gp`, the buffer picker). Helix and Vim have one
+dedicated backing session per terminal, not extra Terminal rows in the sidebar
+or terminal switcher, and their processes start in the current terminal's
+directory. Opening a file focuses the editor; a line from a search hit with
+Helix sends `:goto <line>` to the running session.
 
 Opening a file puts keyboard focus in its editor. On macOS, Helix and Vim also
 select the user's last ASCII-capable keyboard layout so modal commands do not

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, Entity, EntityInputHandler as _, Focusable as _, MouseButton, PromptLevel,
+    AnyElement, Context, Entity, EntityInputHandler as _, Focusable as _, PromptLevel,
     SharedString, Subscription, Window, div, px, rems,
 };
 use gpui_component::button::Button;
@@ -26,7 +26,6 @@ mod gutter;
 mod nav;
 pub(crate) mod outline;
 mod problems;
-mod split;
 mod strip;
 
 pub(crate) use nav::KEY_CONTEXT as NAV_KEY_CONTEXT;
@@ -49,6 +48,11 @@ pub(crate) struct ExternalEditorTab {
     pub path: PathBuf,
     pub tab: TabId,
     pub terminal: Option<TabId>,
+    /// The editor this session runs — `hx`, `vim` — as it was launched. The
+    /// record carries it so a later file-open asks the right editor without
+    /// having to re-read the pane.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub program: String,
 }
 
 /// What a buffer's text looked like the last time it matched the disk.
@@ -186,8 +190,8 @@ pub(crate) struct LocalFile {
     pub(crate) indent: Indent,
 }
 
-/// One tab's view of the editor: which buffers it shows, in the order its
-/// strip draws them, and which one is in front.
+/// One tab's view of the editor: the file it shows. A tab holds one file —
+/// the editor's own UI names it, so the tab keeps no copy to draw.
 pub(crate) struct TabCode {
     pub(crate) visible: bool,
     /// A dedicated terminal session rendered in this document slot.
@@ -197,14 +201,6 @@ pub(crate) struct TabCode {
     pub(crate) roots: Vec<PathBuf>,
     pub(crate) expanded: std::collections::HashSet<PathBuf>,
     pub(crate) selected: Option<PathBuf>,
-    /// The second editor group, when the editor is split — the one without
-    /// the focus. `files` and `active` above are always the focused group's
-    /// (see `split`).
-    pub(crate) split: Option<split::OtherGroup>,
-    /// Buffers in the order they were last in front, most recent first —
-    /// what decides which files keep a place in the header's strip when
-    /// it cannot hold them all (see `strip`).
-    pub(crate) recent: Vec<BufferId>,
 }
 
 impl TabCode {
@@ -217,59 +213,77 @@ impl TabCode {
             roots: Vec::new(),
             expanded: std::collections::HashSet::new(),
             selected: None,
-            split: None,
-            recent: Vec::new(),
         }
     }
 
     pub(crate) fn active_id(&self) -> Option<BufferId> {
-        self.files.get(self.active).copied()
+        self.files.first().copied()
     }
 
-    /// Adds a buffer just right of the one in front, the way a browser opens
-    /// a tab, and brings it forward. One the tab already shows only comes
-    /// forward — it keeps its place in the strip.
+    /// Puts a file in front. A tab shows one file, so whatever it showed
+    /// before is replaced rather than listed beside it.
     fn show(&mut self, id: BufferId) {
-        if let Some(pos) = self.files.iter().position(|f| *f == id) {
-            self.active = pos;
-            return;
-        }
-        let at = if self.files.is_empty() {
-            0
-        } else {
-            (self.active + 1).min(self.files.len())
-        };
-        self.files.insert(at, id);
-        self.active = at;
+        self.files.clear();
+        self.files.push(id);
+        self.active = 0;
     }
 
-    /// Lists a buffer at the end of the strip without bringing it forward —
-    /// for files arriving in the background: a restore, a merge, a rescue.
+    /// Takes a file a caller loaded in the background, when the tab has room
+    /// for it — that is, when it shows nothing.
     fn append(&mut self, id: BufferId) {
-        if !self.files.contains(&id) {
+        if self.files.is_empty() {
             self.files.push(id);
+            self.active = 0;
         }
     }
 
-    /// Lists another strip's files after this one's, in their order.
+    /// Takes a file from a tab that is being merged into this one, when this
+    /// tab has none of its own; a tab's file is not displaced by a merge.
     pub(crate) fn adopt(&mut self, ids: &[BufferId]) {
-        for id in ids {
+        if let Some(id) = ids.first() {
             self.append(*id);
         }
     }
 
-    /// Takes a buffer out of the strip. The neighbour that slides into its
-    /// place comes forward, so closing tabs one after another walks along the
-    /// strip rather than jumping about.
+    /// Takes a file out of the tab.
     fn forget(&mut self, id: BufferId) -> bool {
         let Some(pos) = self.files.iter().position(|f| *f == id) else {
             return false;
         };
         self.files.remove(pos);
-        if self.active > pos || self.active >= self.files.len() {
-            self.active = self.active.saturating_sub(1);
-        }
+        self.active = self.active.min(self.files.len().saturating_sub(1));
         true
+    }
+
+    /// Whether the tab shows this buffer. One file per tab, so this is the
+    /// same question as "is it the file in front".
+    pub(crate) fn shows(&self, id: BufferId) -> bool {
+        self.files.contains(&id)
+    }
+
+    /// How many places in this tab show the buffer: 0 or 1.
+    pub(crate) fn views_of(&self, id: BufferId) -> usize {
+        usize::from(self.files.contains(&id))
+    }
+
+    /// Every buffer the tab shows, once each.
+    pub(crate) fn all_files(&self) -> Vec<BufferId> {
+        self.files.clone()
+    }
+
+    /// There is no second editor group any more.
+    pub(crate) fn other_active_id(&self) -> Option<BufferId> {
+        None
+    }
+
+    /// Closes a file in the tab's only group.
+    pub(crate) fn close_in_focused(&mut self, id: BufferId) -> bool {
+        self.forget(id)
+    }
+
+    /// Takes a buffer out of the tab, edits and all.
+    pub(crate) fn forget_everywhere(&mut self, id: BufferId) -> bool {
+        self.forget(id)
     }
 }
 
@@ -277,9 +291,9 @@ impl TabCode {
 #[derive(Clone, Debug)]
 pub(crate) enum AfterUnsaved {
     CloseTab(TabId),
-    /// Take these files out of that tab's strip — Close Others and Close to
-    /// the Right.
-    CloseFiles(TabId, Vec<BufferId>),
+    /// Put this buffer in front of that tab's editor, replacing the file it
+    /// showed, once the files leaving have been saved or discarded.
+    ShowInTab(TabId, BufferId),
     ClosePane,
     CloseWindow,
     Quit,
@@ -331,6 +345,9 @@ pub(crate) struct EditorPanelState {
     /// What was last written to the session store for each tab, so an
     /// unchanged tab costs a comparison per frame and nothing more.
     recorded: HashMap<TabId, TabEditor>,
+    /// A file loaded and waiting on an unsaved-changes answer before it can
+    /// be shown. Orphan cleanup leaves it alone until the answer lands.
+    pending_show: Option<BufferId>,
     watch: Option<Arc<WatchSub>>,
     watch_host: Option<SharedHost>,
     watch_opening: bool,
@@ -343,8 +360,6 @@ pub(crate) struct EditorPanelState {
     nav: nav::EditorNav,
     /// The Problems list at the foot of the panel — see `problems`.
     problems: problems::ProblemsPane,
-    /// The header's list of every open file, while it is open.
-    strip_picker: Option<strip::StripPicker>,
     /// The focus of a panel with no file in it. Without one there is nothing
     /// in the panel to hold the focus, so closing the last file handed it to
     /// the terminal and the next ⌘W closed the terminal instead of the panel.
@@ -387,6 +402,7 @@ impl EditorPanelState {
             unsaved_prompt_open: false,
             restored: HashSet::new(),
             recorded: HashMap::new(),
+            pending_show: None,
             watch: None,
             watch_host: None,
             watch_opening: false,
@@ -397,7 +413,6 @@ impl EditorPanelState {
             events_tx: tx,
             nav: nav::EditorNav::new(cx),
             problems: Default::default(),
-            strip_picker: None,
             empty_focus: cx.focus_handle(),
             had_focus: None,
         }
@@ -464,6 +479,18 @@ pub(crate) fn is_external_editor_program(program: &str) -> bool {
         Path::new(program).file_name().and_then(|s| s.to_str()),
         Some("hx" | "helix" | "vim" | "nvim")
     )
+}
+
+/// A Vim expression yielding a literal filename for `:execute`. Code points
+/// keep terminal control keys out of the input stream; Vim's own fnameescape
+/// handles command separators, wildcard expansion and shell backticks.
+fn vim_command_path(path: &str) -> String {
+    let chars = path
+        .chars()
+        .map(|ch| (ch as u32).to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("fnameescape(list2str([{chars}]))")
 }
 
 fn external_editor_shell(
@@ -1010,8 +1037,7 @@ impl Tty7App {
         self.tabs.iter().position(|t| t.tree_id.get() == tab)
     }
 
-    /// How many places show this buffer: every tab showing it, twice for a
-    /// tab whose split shows it in both groups.
+    /// How many places show this buffer: every tab showing it.
     fn buffer_refs(&self, id: BufferId) -> usize {
         self.tabs
             .iter()
@@ -1371,7 +1397,9 @@ impl Tty7App {
     }
 
     /// Opens local modal editors in the same document slot as the built-in
-    /// editor. Their backing sessions never become the active terminal.
+    /// editor. One session per terminal: a file opened while one is already
+    /// running is handed to that editor, which owns its buffers — and the
+    /// name it shows — from then on.
     pub(crate) fn open_file_preferred(
         &mut self,
         path: &Path,
@@ -1391,15 +1419,20 @@ impl Tty7App {
         let Some(owner) = self.tabs.get(self.active).map(|tab| tab.tree_id.get()) else {
             return;
         };
-        if let Some(id) = self
-            .external_editor_tabs
-            .iter()
-            .find(|editor| editor.path == path && self.tab_index_of(editor.tab).is_some())
-            .map(|editor| editor.tab)
-        {
-            self.select_external_editor(id, window, cx);
+        // The editor already running for this terminal takes the file. It
+        // decides whether this is a new buffer or one coming forward, and
+        // its own status line shows which file is in front.
+        if let Some(index) = self.external_editor_session(owner, cx) {
+            self.external_editor_open(index, path, line, column, cx);
+            let session = self.tabs[index].tree_id.get();
+            self.select_external_editor(session, window, cx);
             return;
         }
+        // A record whose session is gone — an older build, or a quit that
+        // closed the tab — must not stand in for the one about to start.
+        let live: HashSet<TabId> = self.tabs.iter().map(|tab| tab.tree_id.get()).collect();
+        self.external_editor_tabs
+            .retain(|editor| editor.terminal != Some(owner) || live.contains(&editor.tab));
         let cwd = self
             .tabs
             .get(self.active)
@@ -1407,6 +1440,7 @@ impl Tty7App {
             .and_then(|pane| pane.read(cx).spawnable_cwd());
         let terminal_visible = self.terminal_visible;
         let shell = external_editor_shell(mode, path, line, column);
+        let program = shell.program.clone();
         let maximized = self.maximized.clone();
         let Some(_slot) = self.new_tab_slot(cwd, Some(shell), window, cx) else {
             log::warn!("no editor opened for {:?}", path);
@@ -1416,6 +1450,7 @@ impl Tty7App {
             path: path.to_path_buf(),
             tab: self.tabs[self.active].tree_id.get(),
             terminal: Some(owner),
+            program,
         };
         editor_session::put_external_editor(cx, editor.clone());
         self.external_editor_tabs.push(editor.clone());
@@ -1428,6 +1463,96 @@ impl Tty7App {
         self.maximized = maximized;
         self.select_external_editor(editor.tab, window, cx);
         self.save_session(cx);
+    }
+
+    /// The live editor session opened from `owner`, if it is still running.
+    fn external_editor_session(&self, owner: TabId, cx: &gpui::App) -> Option<usize> {
+        let editor = self
+            .external_editor_tabs
+            .iter()
+            .rev()
+            .find(|editor| editor.terminal == Some(owner))?;
+        let index = self.tab_index_of(editor.tab)?;
+        let recorded = (!editor.program.is_empty()).then(|| editor.program.clone());
+        let live = self.tabs[index].pane.terminals().iter().any(|terminal| {
+            let view = terminal.read(cx);
+            // A session record only ever names an editor tab. A pane whose
+            // program is known to be something else is a stale record; one
+            // with no program to go on (a restored quiet pane) is still the
+            // session.
+            !view.terminal.exited
+                && match recorded.as_deref() {
+                    Some(program) => is_external_editor_program(program),
+                    None => view
+                        .shell_spec()
+                        .is_none_or(|shell| is_external_editor_program(&shell.program)),
+                }
+        });
+        live.then_some(index)
+    }
+
+    /// Asks the running editor for `path`, in the words it understands. The
+    /// editor keeps its buffers: there is no file tab strip to mirror them,
+    /// and its own status line names whichever is in front.
+    fn external_editor_open(
+        &self,
+        index: usize,
+        path: &Path,
+        line: Option<u32>,
+        column: Option<u32>,
+        cx: &gpui::App,
+    ) {
+        let Some(terminal) = self
+            .tabs
+            .get(index)
+            .and_then(|tab| tab.pane.terminals().into_iter().next())
+        else {
+            return;
+        };
+        let session = self.tabs[index].tree_id.get();
+        let program = self
+            .external_editor_tabs
+            .iter()
+            .find(|editor| editor.tab == session)
+            .map(|editor| editor.program.clone())
+            .filter(|program| !program.is_empty())
+            .or_else(|| terminal.read(cx).shell_spec().map(|shell| shell.program));
+        let Some(program) = program else {
+            return;
+        };
+        let path_text = path.to_string_lossy();
+        // A newline would end the command line early and run whatever follows
+        // as a second command; nothing legitimate needs one in a path.
+        if path_text.contains(['\n', '\r']) {
+            return;
+        }
+        let name = Path::new(&program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let mut commands = String::new();
+        match name {
+            "hx" | "helix" => {
+                // Single-quoted is Helix's literal token: spaces, `%`, and
+                // backslashes all stay part of the path. A quote inside it is
+                // escaped by doubling.
+                commands.push_str(&format!(":open '{}'\r", path_text.replace('\'', "''")));
+                if let Some(line) = line {
+                    commands.push_str(&format!(":goto {line}\r"));
+                }
+            }
+            "vim" | "nvim" => {
+                commands.push_str(&format!(
+                    ":execute 'hide edit ' . {}\r",
+                    vim_command_path(&path_text)
+                ));
+                if let Some(line) = line {
+                    commands.push_str(&format!(":call cursor({line}, {})\r", column.unwrap_or(1)));
+                }
+            }
+            _ => return,
+        }
+        terminal.read(cx).run_editor_command(&commands);
     }
 
     /// [`Self::open_file_in_editor`] against an explicit host — the SFTP
@@ -1530,8 +1655,9 @@ impl Tty7App {
         }
     }
 
-    /// Puts a buffer in a tab's strip and, when `front`, in front of its
-    /// editor with the panel open and focused.
+    /// Puts a buffer in front of a tab's editor. A tab shows one file: every
+    /// other file it held leaves with this one — after asking about anything
+    /// unsaved, so a click in the tree cannot lose edits.
     fn editor_show_in_tab(
         &mut self,
         tab: TabId,
@@ -1548,19 +1674,75 @@ impl Tty7App {
         if self.document_closing.is_some_and(|(id, _)| id == tab) {
             self.document_closing = None;
         }
-        let Some(t) = self.tabs.get_mut(tab_ix) else {
-            return;
-        };
-        let code = t.code.get_or_insert_with(|| Box::new(TabCode::new()));
+        if let Some(t) = self.tabs.get_mut(tab_ix)
+            && t.code.is_none()
+        {
+            t.code = Some(Box::new(TabCode::new()));
+        }
         if !front {
-            // Listed, not brought forward: the one in front stays in front.
-            code.append(id);
-            cx.notify();
+            // Listed only: a tab with nothing in it takes the file; one that
+            // already shows something does not grow a second file.
+            let mut took = false;
+            if let Some(code) = self
+                .tabs
+                .get_mut(tab_ix)
+                .and_then(|t| t.code.as_deref_mut())
+            {
+                if code.files.is_empty() && code.external.is_none() {
+                    code.append(id);
+                    took = true;
+                }
+            }
+            if took {
+                cx.notify();
+            }
             return;
         }
-        code.show(id);
-        code.external = None;
-        code.visible = true;
+        // One file per tab. The files it replaces are asked about first, so
+        // an unsaved buffer is never dropped by a click in the tree.
+        let others: Vec<BufferId> = self
+            .tabs
+            .get(tab_ix)
+            .and_then(|t| t.code.as_deref())
+            .map(|code| {
+                code.all_files()
+                    .into_iter()
+                    .filter(|other| *other != id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let unsaved: Vec<BufferId> = others
+            .iter()
+            .copied()
+            .filter(|other| {
+                self.buffer(*other).is_some_and(|f| f.dirty) && self.buffer_refs(*other) == 1
+            })
+            .collect();
+        if !unsaved.is_empty() {
+            // One question at a time. The file is already loaded behind it;
+            // cleanup keeps it until the answer comes back, or drops it when
+            // the answer is cancel.
+            if self.editor.unsaved_prompt_open {
+                return;
+            }
+            self.editor.pending_show = Some(id);
+            if self.editor_guard_unsaved(unsaved, AfterUnsaved::ShowInTab(tab, id), window, cx) {
+                return;
+            }
+            self.editor.pending_show = None;
+        }
+        for other in others {
+            self.editor_remove_from_tab(tab_ix, other, cx);
+        }
+        if let Some(code) = self
+            .tabs
+            .get_mut(tab_ix)
+            .and_then(|t| t.code.as_deref_mut())
+        {
+            code.show(id);
+            code.external = None;
+            code.visible = true;
+        }
         if tab_ix == self.active {
             self.editor.bar = None;
             self.focus_editor(window, cx);
@@ -1871,26 +2053,6 @@ impl Tty7App {
         if let Some(f) = self.active_buffer() {
             f.input.update(cx, |input, cx| input.focus(window, cx));
         }
-    }
-
-    /// Brings the file at `pos` in the active tab's strip to the front.
-    pub(crate) fn editor_activate(
-        &mut self,
-        pos: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(code) = self.tab_code_mut() else {
-            return;
-        };
-        if pos >= code.files.len() {
-            return;
-        }
-        code.active = pos;
-        code.external = None;
-        self.editor.bar = None;
-        self.focus_editor(window, cx);
-        cx.notify();
     }
 
     /// The status bar's Preview / Edit button, and `ToggleDocumentPreview`.
@@ -2551,7 +2713,7 @@ impl Tty7App {
         }
     }
 
-    /// Closes the file at `pos` in the active tab's strip. Asks first only
+    /// Closes the file at `pos` in the active tab's editor. Asks first only
     /// when this is the last tab showing a buffer with unsaved changes.
     pub(crate) fn editor_close_file(
         &mut self,
@@ -2598,48 +2760,6 @@ impl Tty7App {
             });
         })
         .detach();
-    }
-
-    /// Closes the file with this buffer in the front tab's strip, wherever
-    /// it has moved to since a menu was built for it.
-    fn editor_close_buffer(&mut self, id: BufferId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pos) = self
-            .tab_code()
-            .and_then(|c| c.files.iter().position(|f| *f == id))
-        {
-            self.editor_close_file(pos, window, cx);
-        }
-    }
-
-    /// Closes several files in the front tab's strip, asking once about the
-    /// ones whose edits would be lost with them — not those another tab still
-    /// shows.
-    fn editor_close_buffers(
-        &mut self,
-        ids: Vec<BufferId>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let tab_ix = self.active;
-        let Some(tab) = self.tabs.get(tab_ix).map(|t| t.tree_id.get()) else {
-            return;
-        };
-        let unsaved: Vec<BufferId> = ids
-            .iter()
-            .copied()
-            .filter(|id| self.buffer(*id).is_some_and(|f| f.dirty) && self.buffer_refs(*id) == 1)
-            .collect();
-        if self.editor_guard_unsaved(
-            unsaved,
-            AfterUnsaved::CloseFiles(tab, ids.clone()),
-            window,
-            cx,
-        ) {
-            return;
-        }
-        for id in ids {
-            self.editor_remove_from_tab(tab_ix, id, cx);
-        }
     }
 
     /// Types `@path` into the running agent's prompt, with the selected
@@ -2733,49 +2853,6 @@ impl Tty7App {
                 Box::new(edit::MoveToMatchingBracket),
             );
         let menu = this.lsp_menu_items(menu, id, cx);
-        this.editor_file_menu_items(menu, id, app, cx)
-    }
-
-    /// Right-click on a file in the header's strip.
-    fn editor_tab_menu(
-        menu: PopupMenu,
-        app: &gpui::WeakEntity<Self>,
-        pos: usize,
-        cx: &gpui::App,
-    ) -> PopupMenu {
-        let Some(this) = app.upgrade() else {
-            return menu;
-        };
-        let this = this.read(cx);
-        let Some(files) = this.tab_code().map(|c| c.files.clone()) else {
-            return menu;
-        };
-        let Some(&id) = files.get(pos) else {
-            return menu;
-        };
-        let others: Vec<BufferId> = files.iter().copied().filter(|f| *f != id).collect();
-        let right = files[pos + 1..].to_vec();
-        let close = |label: L10nKey, ids: Vec<BufferId>| {
-            let app = app.clone();
-            PopupMenuItem::new(t(label))
-                .disabled(ids.is_empty())
-                .on_click(move |_, window, cx| {
-                    let ids = ids.clone();
-                    let _ = app.update(cx, |this, cx| this.editor_close_buffers(ids, window, cx));
-                })
-        };
-        let menu = menu
-            .min_w(px(220.))
-            .item(
-                PopupMenuItem::new(t(L10nKey::TabContextCloseTab)).on_click({
-                    let app = app.clone();
-                    move |_, window, cx| {
-                        let _ = app.update(cx, |this, cx| this.editor_close_buffer(id, window, cx));
-                    }
-                }),
-            )
-            .item(close(L10nKey::AppMenuCloseOtherTabs, others))
-            .item(close(L10nKey::AppMenuCloseTabsRight, right));
         this.editor_file_menu_items(menu, id, app, cx)
     }
 
@@ -2892,7 +2969,7 @@ impl Tty7App {
         true
     }
 
-    /// Takes a buffer out of one tab's strip, and drops it once no tab shows
+    /// Takes a buffer out of one tab's editor, and drops it once no tab shows
     /// it any more.
     fn editor_remove_from_tab(&mut self, tab_ix: usize, id: BufferId, cx: &mut Context<Self>) {
         if let Some(code) = self
@@ -2989,12 +3066,7 @@ impl Tty7App {
                 .position(|t| t.code.as_deref().is_some_and(|c| c.shows(*id)))
         }) && tab_ix == self.active
             && let Some(code) = self.tab_code_mut()
-            && let Some(pos) = {
-                if !code.files.contains(&ids[0]) {
-                    code.swap_focus();
-                }
-                code.files.iter().position(|f| *f == ids[0])
-            }
+            && let Some(pos) = code.files.iter().position(|f| *f == ids[0])
         {
             code.active = pos;
             code.visible = true;
@@ -3019,7 +3091,13 @@ impl Tty7App {
                         }
                         app.editor_continue(then, window, cx);
                     }
-                    _ => cx.notify(),
+                    _ => {
+                        // The answer that backs out leaves a file that was
+                        // only open to be shown with nowhere to go; cleanup
+                        // takes it from here.
+                        app.editor.pending_show = None;
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -3057,12 +3135,9 @@ impl Tty7App {
                     self.close_tab(ix, window, cx);
                 }
             }
-            AfterUnsaved::CloseFiles(tab, ids) => {
-                if let Some(ix) = self.tab_index_of(tab) {
-                    for id in ids {
-                        self.editor_remove_from_tab(ix, id, cx);
-                    }
-                }
+            AfterUnsaved::ShowInTab(tab, id) => {
+                self.editor.pending_show = None;
+                self.editor_show_in_tab(tab, id, true, window, cx);
             }
             AfterUnsaved::ClosePane => self.close_pane_after_unsaved(window, cx),
             AfterUnsaved::CloseWindow => self.close_window_after_unsaved(window, cx),
@@ -3357,21 +3432,41 @@ impl Tty7App {
         if orphans.is_empty() {
             return;
         }
+        // A tab shows one file, so an orphan can only be rescued into a tab
+        // that has room: the one in front when it is empty, or when the file
+        // it shows is clean. A tab whose own file is unsaved keeps it; the
+        // orphan waits for the next opportunity rather than losing either.
+        let current = self
+            .tabs
+            .get(self.active)
+            .and_then(|t| t.code.as_deref())
+            .and_then(TabCode::active_id);
+        let current_dirty = current
+            .and_then(|id| self.buffer(id))
+            .is_some_and(|f| f.dirty);
+        let Some(tab) = self.tabs.get(self.active).map(|t| t.tree_id.get()) else {
+            return;
+        };
         let mut changed = false;
         for (id, dirty) in orphans {
+            // Loaded for a tab that is waiting on an unsaved-changes answer:
+            // not an orphan, just not shown yet.
+            if self.editor.pending_show == Some(id) {
+                continue;
+            }
             if !dirty {
                 self.editor.buffers.retain(|b| b.id() != id);
                 self.editor.nav.forget_buffer(id);
                 changed = true;
                 continue;
             }
-            // Nowhere to put it (every tab gone mid-restart): keep it, and it
-            // is adopted on a later frame.
-            let Some(tab) = self.tabs.get(self.active).map(|t| t.tree_id.get()) else {
+            if current.is_some() && current_dirty {
                 continue;
-            };
+            }
             let name = self.buffer(id).map(OpenFile::label).unwrap_or_default();
-            self.editor_show_in_tab(tab, id, false, window, cx);
+            // An empty tab takes it in the background; a tab with a clean
+            // file swaps it in front, since only one file can be shown.
+            self.editor_show_in_tab(tab, id, current.is_some(), window, cx);
             window.push_notification(t_fmt(L10nKey::EditorOrphanAdopted, &[("name", &name)]), cx);
             changed = true;
         }
@@ -3403,91 +3498,66 @@ impl Tty7App {
             let code = self.tab_code_mut_or_init().unwrap();
             code.external = Some(external);
             code.visible = state.visible;
-        }
-        // The left group can be empty while the right is not: it held only
-        // files that are not recorded (untitled, remote).
-        if state.files.is_empty() && state.split.as_ref().is_none_or(|s| s.files.is_empty()) {
             return;
         }
+        // One file: the one that was in front when it was recorded.
+        let Some(path) = state
+            .files
+            .get(state.active.min(state.files.len().saturating_sub(1)))
+            .or_else(|| state.files.first())
+            .cloned()
+        else {
+            return;
+        };
         let Some(host) = self.active_host(cx) else {
             return;
         };
         // What was recorded is what is being put back; recording it again
-        // before the files have loaded would write down an empty tab.
-        self.editor.recorded.insert(tab_id, state.clone());
-        // Both groups' files in one trip, the left group's first.
-        let files: Vec<PathBuf> = state
-            .files
-            .iter()
-            .chain(state.split.iter().flat_map(|s| s.files.iter()))
-            .cloned()
-            .collect();
-        let requested = files.clone();
+        // before the file has loaded would write down an empty tab.
+        let visible = state.visible;
+        self.editor.recorded.insert(tab_id, state);
         HostOps::run_in(
             host.clone(),
             window,
             cx,
-            move |h| {
-                files
-                    .into_iter()
-                    .map(|p| load_file(h, p).ok())
-                    .collect::<Vec<_>>()
-            },
-            move |app, loaded: Vec<Option<Loaded>>, window, cx| {
-                let mut opened: Vec<(PathBuf, BufferId)> = Vec::new();
-                for (path, l) in requested.into_iter().zip(loaded) {
-                    if let Some(l) = l {
-                        let id = app.editor_install(host.clone(), l, tab_id, false, window, cx);
-                        opened.push((path, id));
-                    }
-                }
-                let group = |paths: &[PathBuf], active: usize| -> (Vec<BufferId>, usize) {
-                    let front = paths.get(active);
-                    let mut ids: Vec<BufferId> = Vec::new();
-                    let mut at = 0;
-                    for path in paths {
-                        let Some(&(_, id)) = opened.iter().find(|(p, _)| p == path) else {
-                            continue;
-                        };
-                        if ids.contains(&id) {
-                            continue;
-                        }
-                        if Some(path) == front {
-                            at = ids.len();
-                        }
-                        ids.push(id);
-                    }
-                    (ids, at)
-                };
-                let (left, left_active) = group(&state.files, state.active);
-                let right = state
-                    .split
-                    .as_ref()
-                    .map(|s| (group(&s.files, s.active), s.focused));
-                let Some(tab_ix) = app.tab_index_of(tab_id) else {
+            move |h| load_file(h, path).ok(),
+            move |app, loaded, window, cx| {
+                let Some(loaded) = loaded else {
                     return;
                 };
-                let Some(code) = app.tabs[tab_ix].code.as_deref_mut() else {
-                    return;
-                };
-                let restored: Vec<BufferId> = opened.iter().map(|(_, id)| *id).collect();
-                // Merged into what the tab has now, not written over it: a
-                // file opened, or a split made, while these were loading stays.
-                let untouched = code.restore_groups(
-                    &restored,
-                    (left, left_active),
-                    right.map(|((files, active), focused)| (files, active, focused)),
-                );
-                let visible = state.visible && !code.files.is_empty();
-                code.visible |= visible;
-                // Only a restore nobody has touched takes the keyboard; one the
-                // reader has moved on from leaves it where they put it.
-                if untouched && tab_ix == app.active && visible {
-                    app.focus_editor(window, cx);
-                }
-                cx.notify();
+                app.editor_finish_restore(host, loaded, tab_id, visible, window, cx);
             },
         );
+    }
+
+    /// A restore may finish after another file was opened or the tab closed.
+    /// Only an empty, still-live tab takes it, without forcing the panel open.
+    fn editor_finish_restore(
+        &mut self,
+        host: SharedHost,
+        loaded: Loaded,
+        tab: TabId,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab_ix) = self.tab_index_of(tab) else {
+            return;
+        };
+        if self.tabs[tab_ix]
+            .code
+            .as_deref()
+            .is_some_and(|code| !code.files.is_empty() || code.external.is_some())
+        {
+            return;
+        }
+        self.editor_install(host, loaded, tab, false, window, cx);
+        let code = self.tabs[tab_ix].code.as_deref_mut().unwrap();
+        code.visible |= visible;
+        if code.visible && tab_ix == self.active {
+            self.focus_editor(window, cx);
+        }
+        cx.notify();
     }
 
     fn editor_record_sessions(&mut self, cx: &mut Context<Self>) {
@@ -3498,44 +3568,27 @@ impl Tty7App {
                 continue;
             };
             let tab_id = tab.tree_id.get();
-            // A tab still waiting for its files to come back has nothing to
-            // say about them yet.
+            // A tab still waiting for its file to come back has nothing to
+            // say about it yet.
             if !self.editor.restored.contains(&tab_id) {
                 continue;
             }
-            // Only files on the window's own machine: an SFTP buffer's host
-            // is a connection that will not exist next launch.
-            let group = |ids: &[BufferId], front: usize| -> (Vec<PathBuf>, usize) {
-                let mut files = Vec::new();
-                let mut active = 0;
-                for (pos, id) in ids.iter().enumerate() {
-                    let Some(f) = self.buffer(*id) else { continue };
-                    if f.untitled.is_some() || f.host.id() != spawn_host {
-                        continue;
-                    }
-                    if pos == front {
-                        active = files.len();
-                    }
-                    files.push(f.path.clone());
-                }
-                (files, active)
-            };
-            let sides = code.sides();
-            let (files, active) = group(&sides[0].files, sides[0].active);
-            let split = sides.get(1).and_then(|right| {
-                let (files, active) = group(&right.files, right.active);
-                (!files.is_empty()).then_some(editor_session::SplitEditor {
-                    files,
-                    active,
-                    focused: right.focused,
-                })
-            });
+            // One file per tab: the one in front, when it is a local file
+            // this window can open again next launch. An SFTP buffer's host
+            // is a connection that will not exist then; an untitled buffer
+            // has no path to come back to.
+            let files: Vec<PathBuf> = code
+                .active_id()
+                .and_then(|id| self.buffer(id))
+                .filter(|f| f.untitled.is_none() && f.host.id() == spawn_host)
+                .map(|f| f.path.clone())
+                .into_iter()
+                .collect();
             let state = TabEditor {
                 files,
-                active,
+                active: 0,
                 visible: code.visible,
                 external: code.external,
-                split,
             };
             if self.editor.recorded.get(&tab_id) != Some(&state) {
                 changed.push((tab_id, state));
@@ -3603,18 +3656,10 @@ impl Tty7App {
             self.editor.empty_focus.focus(window, cx);
         }
         self.editor.had_focus = tab.filter(|_| self.editor_panel_has_focus(window, cx));
-        self.editor_split_follow_focus(window, cx);
         self.editor_gutter_sync(cx);
         self.editor_nav_tick(cx);
-        if let Some(code) = self.tab_code_mut() {
-            code.note_front();
-        }
         let breadcrumbs = self.render_editor_breadcrumbs(window, cx);
-        let body = self.render_editor_body(
-            self.tab_code().and_then(TabCode::active_id),
-            self.tab_code().map_or(0, TabCode::focused_slot),
-            cx,
-        );
+        let body = self.render_editor_body(self.tab_code().and_then(TabCode::active_id), 0, cx);
         let conflict_banner = self
             .active_buffer()
             .and_then(|f| f.conflict.map(|c| (f.id(), c)))
@@ -3631,7 +3676,15 @@ impl Tty7App {
             .children(header)
             .when_some(conflict_banner, |this, b| this.child(b))
             .children(bar)
-            .child(self.render_editor_groups(breadcrumbs, body, window, cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .h_full()
+                    .children(breadcrumbs)
+                    .child(div().flex_1().min_h_0().child(body)),
+            )
             .children(self.render_editor_problems(window, cx));
 
         // The panel's own paint is the same either way; only the box is not.
@@ -3657,7 +3710,6 @@ impl Tty7App {
             DocumentChrome::Dock | DocumentChrome::DockHoisted => shell.size_full().min_w_0(),
         };
         let shell = self.editor_nav_actions(shell, cx);
-        let shell = self.editor_split_command_sync(shell, cx);
         Some(
             shell
                 .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
@@ -3777,55 +3829,14 @@ impl Tty7App {
         } else {
             row
         };
-        // v6 chrome: no rule under the bar — the header, the breadcrumbs and
-        // the text are one plane — and only as many file cells as the column
-        // has room for, the rest behind a `+N` list (see `strip`).
+        // The header carries no file names: the editor itself shows what it
+        // has open (Helix's status line, the built-in editor's own bar at the
+        // foot), and a second, stale copy here would only disagree with it.
         let (tile, glyph) = (
             crate::ui::tab_strip::RAIL_TILE,
             crate::ui::tab_strip::RAIL_TILE_GLYPH,
         );
-        let cap = self.editor_strip_cap(chrome, cx);
         let external = self.external_editor_index().is_some();
-        let (shown, hidden) = self
-            .tab_code()
-            .filter(|_| !external)
-            .map(|c| c.strip_split(cap))
-            .unwrap_or_default();
-        let active_id = self.tab_code().and_then(TabCode::active_id);
-        let files: Vec<(usize, SharedString, String, bool, bool)> = shown
-            .into_iter()
-            .filter_map(|(pos, id)| {
-                let f = self.buffer(id)?;
-                let tip = if f.untitled.is_some() {
-                    f.label().to_string()
-                } else {
-                    f.path.display().to_string()
-                };
-                Some((pos, f.label(), tip, Some(id) == active_id, f.dirty))
-            })
-            .collect();
-        let strip = if external {
-            self.render_external_editor_tabs(cx)
-        } else if files.is_empty() {
-            div()
-                .min_w_0()
-                .px(px(8.))
-                .text_ellipsis()
-                .text_size(gpui::rems(strip::CELL_TEXT))
-                .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(t(L10nKey::EditorNoFileOpen)))
-                .into_any_element()
-        } else {
-            h_flex()
-                .id("editor-file-tabs")
-                .min_w_0()
-                .gap(px(2.))
-                .overflow_hidden()
-                .children(files.into_iter().map(|(pos, name, tip, active, dirty)| {
-                    self.render_file_tab(pos, name, tip, active, dirty, cx)
-                }))
-                .into_any_element()
-        };
         let back =
             (chrome == DocumentChrome::Fill).then(|| self.render_back_to_terminal(window, cx));
         row.flex_none()
@@ -3835,30 +3846,32 @@ impl Tty7App {
             .title_strip_row(px(TITLE_BAR_BORDER), cx.theme().transparent)
             .gap(px(2.))
             // Keep the whole leading reserve outside the first control's own
-            // padding, for both the return pill and the docked file tabs.
+            // padding, for both the return pill and the file controls.
             .pl(px(lead))
             // The glyph, not the tile, lands on `CONTENT_INSET`, the column
             // the file name starts on at the other end of the bar.
             .pr(px(crate::ui::app::CONTENT_INSET - (tile - glyph) / 2.))
             .children(back)
-            .child(strip)
-            .children(self.render_strip_overflow(&hidden, cap, cx))
-            .child(
-                div().occlude().flex_none().child(
-                    crate::ui::tab_strip::chrome_tile_sized(
-                        Button::new("editor-new-file").icon(Icon::new(IconName::Plus)),
-                        tile,
-                        glyph,
-                        false,
-                        cx,
-                    )
-                    .rounded(px(crate::ui::tab_strip::RAIL_TILE_RADIUS))
-                    .tooltip(t(L10nKey::EditorNewFile))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.editor_new_file(window, cx);
-                    })),
-                ),
-            )
+            // A new file belongs to the built-in editor: Helix and Vim own
+            // their own buffers and their own way of opening one.
+            .when(!external, |row| {
+                row.child(
+                    div().occlude().flex_none().child(
+                        crate::ui::tab_strip::chrome_tile_sized(
+                            Button::new("editor-new-file").icon(Icon::new(IconName::Plus)),
+                            tile,
+                            glyph,
+                            false,
+                            cx,
+                        )
+                        .rounded(px(crate::ui::tab_strip::RAIL_TILE_RADIUS))
+                        .tooltip(t(L10nKey::EditorNewFile))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.editor_new_file(window, cx);
+                        })),
+                    ),
+                )
+            })
             // Whatever is left of the bar stays a place to drag the window by.
             .child(div().flex_1().h_full())
             .child(
@@ -3877,215 +3890,6 @@ impl Tty7App {
                     })),
                 ),
             )
-    }
-
-    fn render_external_editor_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
-        let owner = self.tabs.get(self.active).map(|tab| tab.tree_id.get());
-        let selected = self.tab_code().and_then(|code| code.external);
-        h_flex()
-            .id("external-editor-file-tabs")
-            .min_w_0()
-            .gap(px(2.))
-            .overflow_x_scroll()
-            .children(
-                self.external_editor_tabs
-                    .iter()
-                    .filter(|editor| editor.terminal == owner || selected == Some(editor.tab))
-                    .filter(|editor| self.tab_index_of(editor.tab).is_some())
-                    .enumerate()
-                    .map(|(pos, editor)| {
-                        let id = editor.tab;
-                        let active = selected == Some(id);
-                        let name = editor
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy();
-                        let tip = editor.path.display().to_string();
-                        let group: SharedString = format!("external-editor-file-tab-{pos}").into();
-                        div()
-                            .id(("external-editor-file-tab", pos))
-                            .role(gpui::Role::Tab)
-                            .aria_label(name.to_string())
-                            .aria_selected(active)
-                            .group(group.clone())
-                            .occlude()
-                            .flex_none()
-                            .min_w_0()
-                            .max_w(px(strip::CELL_MAX_W))
-                            .h(px(strip::CELL_H))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .pl(px(10.))
-                            .pr(px(6.))
-                            .rounded(px(strip::CELL_RADIUS))
-                            .text_size(gpui::rems(strip::CELL_TEXT))
-                            .text_color(cx.theme().muted_foreground)
-                            .when(active, |d| {
-                                d.font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(cx.theme().foreground)
-                                    .bg(cx.theme().sidebar_accent)
-                            })
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .text_ellipsis()
-                                    .child(SharedString::from(name.into_owned())),
-                            )
-                            .child(
-                                div()
-                                    .id(("external-editor-file-close", pos))
-                                    .size(px(16.))
-                                    .flex_none()
-                                    .rounded(px(4.))
-                                    .when(!active, |d| d.invisible())
-                                    .group_hover(group, |d| d.visible())
-                                    .hover(|d| d.bg(cx.theme().muted))
-                                    .child(Icon::new(IconName::Close).xsmall())
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_external_editor(id, window, cx);
-                                    })),
-                            )
-                            .tooltip(move |window, cx| {
-                                gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_external_editor(id, window, cx);
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Middle,
-                                cx.listener(move |this, _, window, cx| {
-                                    this.close_external_editor(id, window, cx);
-                                }),
-                            )
-                    }),
-            )
-            .into_any_element()
-    }
-
-    /// One file in the header's strip: its name, and a slot that shows the
-    /// unsaved dot at rest and the close button under the pointer — the dot
-    /// says there is something to lose before the × offers to lose it.
-    fn render_file_tab(
-        &self,
-        pos: usize,
-        name: SharedString,
-        tip: String,
-        active: bool,
-        dirty: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let group: SharedString = format!("editor-file-tab-{pos}").into();
-        let slot = 16.;
-        let muted = cx.theme().muted_foreground;
-        let close = div()
-            .id(("editor-file-tab-close", pos))
-            .role(gpui::Role::Button)
-            .aria_label(format!("{} {name}", t(L10nKey::Close)))
-            .flex_none()
-            .size(px(slot))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(4.))
-            .hover(|s| s.bg(cx.theme().muted))
-            .child(Icon::new(IconName::Close).xsmall().text_color(muted))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.editor_close_file(pos, window, cx);
-            }));
-        // Unsaved is a state, not an alarm: the dot is in caption ink, the
-        // same as the `+N` button's, not the warning hue.
-        let slot_el = div()
-            .flex_none()
-            .size(px(slot))
-            .flex()
-            .items_center()
-            .justify_center()
-            .when(dirty, |d| {
-                d.child(
-                    div()
-                        .group_hover(group.clone(), |s| s.invisible())
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(muted),
-                )
-            });
-        div()
-            .id(("editor-file-tab", pos))
-            .role(gpui::Role::Tab)
-            .aria_label(match dirty {
-                true => format!("{name}, {}", t(L10nKey::SettingsUnsaved)),
-                false => name.to_string(),
-            })
-            .aria_selected(active)
-            .group(group.clone())
-            .occlude()
-            .flex_none()
-            .min_w_0()
-            .max_w(px(strip::CELL_MAX_W))
-            .h(px(strip::CELL_H))
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .pl(px(10.))
-            .pr(px(6.))
-            .rounded(px(strip::CELL_RADIUS))
-            .text_size(gpui::rems(strip::CELL_TEXT))
-            .map(|d| match active {
-                true => d
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(cx.theme().foreground)
-                    .bg(cx.theme().sidebar_accent),
-                false => d.text_color(muted).hover(|s| {
-                    s.bg(gpui::rgb(
-                        cx.global::<crate::ui::presets::Surfaces>().sidebar.hover,
-                    ))
-                }),
-            })
-            .child(
-                div()
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(name),
-            )
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .size(px(slot))
-                    .child(div().absolute().inset_0().child(slot_el))
-                    .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .when(!active, |d| d.invisible())
-                            .when(dirty, |d| d.invisible())
-                            .group_hover(group, |s| s.visible())
-                            .child(close),
-                    ),
-            )
-            .tooltip(move |window, cx| {
-                gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-            })
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.editor_activate(pos, window, cx);
-            }))
-            .on_mouse_down(
-                MouseButton::Middle,
-                cx.listener(move |this, _, window, cx| {
-                    this.editor_close_file(pos, window, cx);
-                }),
-            )
-            .context_menu({
-                let app = cx.entity().downgrade();
-                move |menu, _window, cx| Self::editor_tab_menu(menu, &app, pos, cx)
-            })
-            .into_any_element()
     }
 
     fn render_editor_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -4164,6 +3968,15 @@ impl Tty7App {
         let line_ending: Option<&'static str> = active.map(|f| f.format.line_ending.label());
         let encoding: Option<SharedString> = active.map(|f| f.format.encoding_label().into());
         let language: Option<&'static str> = active.and_then(|f| language_label(f.language()));
+        // The header carries no file name any more; this bar is where the
+        // file says what it is, the way Helix's status line does.
+        let file: Option<(SharedString, String)> = active.map(|f| {
+            let tip = match f.untitled {
+                Some(_) => f.label().to_string(),
+                None => f.path.display().to_string(),
+            };
+            (f.label(), tip)
+        });
         let (lsp_lead, lsp_tail) = match self.render_lsp_status(cx) {
             Some((el, true)) => (Some(el), None),
             Some((el, false)) => (None, Some(el)),
@@ -4202,6 +4015,19 @@ impl Tty7App {
             .text_size(gpui::rems(11.5 / 16.))
             .text_color(muted)
             .whitespace_nowrap()
+            .children(file.map(|(name, tip)| {
+                div()
+                    .id("status-file")
+                    .flex_none()
+                    .max_w(px(360.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_color(fg)
+                    .child(name)
+                    .tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+            }))
             .children(lsp_lead)
             .child(div().flex_1())
             // The counts open the Problems list.
@@ -4384,6 +4210,46 @@ impl Tty7App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vim_opens_literal_paths_and_keeps_unsaved_buffers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_real_dir(dir.path());
+        let first = root.join("first.rs");
+        let second = root.join("`touch\tEXECUTED` ' | $ % # * ? [ { < \\ \" 中文.rs");
+        std::fs::write(&first, "first\n").unwrap();
+        std::fs::write(&second, "second\n").unwrap();
+        let result = root.join("result");
+        let script = root.join("test.vim");
+        std::fs::write(
+            &script,
+            format!(
+                "execute 'edit ' . {}\n\
+                 let first = bufnr('%')\n\
+                 call setline(1, 'unsaved edit')\n\
+                 execute 'hide edit ' . {}\n\
+                 call writefile([expand('%:p'), getline(1), getbufline(first, 1)[0], string(getbufvar(first, '&modified'))], '{}')\n\
+                 qa!\n",
+                vim_command_path(first.to_str().unwrap()),
+                vim_command_path(second.to_str().unwrap()),
+                result.display(),
+            ),
+        )
+        .unwrap();
+        let output = std::process::Command::new("/usr/bin/vim")
+            .args(["-Nu", "NONE", "-i", "NONE", "-n", "-es", "-S"])
+            .arg(script)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read_to_string(result).unwrap(),
+            format!("{}\nsecond\nunsaved edit\n1\n", second.display())
+        );
+        assert!(!root.join("EXECUTED").exists());
+    }
 
     #[test]
     fn external_editors_spawn_as_the_recorded_program_with_literal_arguments() {
@@ -4569,58 +4435,35 @@ mod tests {
     }
 
     #[test]
-    fn a_strip_opens_new_files_beside_the_current_one_and_closes_toward_the_right() {
-        let ids: Vec<BufferId> = (1..=4u64).map(gpui::EntityId::from).collect();
+    fn showing_a_file_replaces_the_one_the_tab_showed() {
+        let ids: Vec<BufferId> = (1..=3u64).map(gpui::EntityId::from).collect();
         let mut code = TabCode::new();
         code.show(ids[0]);
+        assert_eq!(code.files, vec![ids[0]]);
         code.show(ids[1]);
-        assert_eq!(code.files, vec![ids[0], ids[1]]);
-        code.active = 0;
-        code.show(ids[2]);
-        assert_eq!(
-            code.files,
-            vec![ids[0], ids[2], ids[1]],
-            "opened right of the active one"
-        );
-        assert_eq!(code.active, 1);
-
-        // Showing one already open only brings it forward.
-        code.show(ids[1]);
-        assert_eq!(code.files.len(), 3);
-        assert_eq!(code.active, 2);
-
-        // Closing the active file brings its right-hand neighbour forward,
-        // or the left one at the end of the strip.
-        code.active = 1;
-        assert!(code.forget(ids[2]));
-        assert_eq!(code.files, vec![ids[0], ids[1]]);
-        assert_eq!(code.active, 1);
-        assert!(code.forget(ids[1]));
-        assert_eq!(code.active, 0);
-        // Closing one left of the active file keeps the same file in front.
-        code.show(ids[3]);
-        assert_eq!(code.files, vec![ids[0], ids[3]]);
+        assert_eq!(code.files, vec![ids[1]], "one file per tab");
+        assert_eq!(code.active_id(), Some(ids[1]));
+        code.show(ids[0]);
+        assert_eq!(code.files, vec![ids[0]]);
         assert!(code.forget(ids[0]));
-        assert_eq!(code.active_id(), Some(ids[3]));
+        assert!(code.files.is_empty());
         assert!(!code.forget(ids[0]));
     }
 
     #[test]
-    fn files_arriving_in_the_background_keep_their_order_and_the_front_file() {
-        let ids: Vec<BufferId> = (1..=4u64).map(gpui::EntityId::from).collect();
+    fn a_file_loaded_in_the_background_only_fills_an_empty_tab() {
+        let ids: Vec<BufferId> = (1..=2u64).map(gpui::EntityId::from).collect();
         let mut code = TabCode::new();
-        code.show(ids[0]);
-        // A restore lists files in the order they were recorded; showing each
-        // beside the active one would have reversed them.
+        code.append(ids[0]);
+        assert_eq!(code.files, vec![ids[0]]);
+        code.append(ids[1]);
+        assert_eq!(code.files, vec![ids[0]], "no second file");
         code.adopt(&ids[1..]);
-        assert_eq!(code.files, ids);
-        assert_eq!(code.active_id(), Some(ids[0]));
-        code.adopt(&ids[2..3]);
-        assert_eq!(
-            code.files.len(),
-            4,
-            "a file already listed is not listed twice"
-        );
+        assert_eq!(code.files, vec![ids[0]], "a merge does not displace it");
+
+        let mut empty = TabCode::new();
+        empty.adopt(&ids[1..]);
+        assert_eq!(empty.files, vec![ids[1]]);
     }
 }
 
@@ -4628,7 +4471,8 @@ mod tests {
 mod close_gpui_tests {
     use gpui::{Entity, TestAppContext, VisualTestContext};
 
-    use super::nav::gpui_tests::open_rs;
+    use super::nav::gpui_tests::{open_rs, source};
+    use super::tests::test_real_dir;
     use super::*;
     use crate::core::actions::CloseActiveTab;
     use crate::ui::app::test_window::harness_with_tabs;
@@ -4715,6 +4559,227 @@ mod close_gpui_tests {
         settle(&mut vcx);
         assert_eq!(panel(&app, &mut vcx), (true, 0));
         assert!(terminal_focused(&app, &mut vcx));
+    }
+
+    /// One file per tab: opening another file replaces the one in front, and
+    /// the file it replaced goes with it.
+    #[gpui::test]
+    fn opening_another_file_replaces_the_file_in_the_editor(cx: &mut TestAppContext) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
+        crate::ui::i18n::set_locale("en");
+        let first = open_rs(&app, &mut vcx, "/single/a.rs");
+        let second = open_rs(&app, &mut vcx, "/single/b.rs");
+        app.read_with(&vcx, |app, _| {
+            let code = app.tab_code().expect("the tab is still there");
+            assert_eq!(code.files, vec![second]);
+            assert_eq!(app.active_buffer().map(|f| f.id()), Some(second));
+            assert!(
+                app.editor.buffers.iter().all(|f| f.id() != first),
+                "the file that left is closed, not kept behind"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn replacing_a_shared_dirty_file_preserves_its_other_view(cx: &mut TestAppContext) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 2);
+        let shared = open_rs(&app, &mut vcx, "/single/shared.rs");
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.active = 1;
+            let tab = app.tabs[1].tree_id.get();
+            app.editor_show_in_tab(tab, shared, true, window, cx);
+            let input = app.buffer(shared).unwrap().input.clone();
+            replace_buffer_text(&input, "unsaved edit", window, cx);
+            app.editor_note_edit(shared, cx);
+            assert_eq!(app.buffer_refs(shared), 2);
+            assert!(app.buffer(shared).unwrap().dirty);
+        });
+        let replacement = open_rs(&app, &mut vcx, "/single/replacement.rs");
+        app.read_with(&vcx, |app, cx| {
+            assert_eq!(app.active_buffer().unwrap().id(), replacement);
+            assert!(!app.editor.unsaved_prompt_open);
+            assert_eq!(app.tabs[0].code.as_ref().unwrap().active_id(), Some(shared));
+            let kept = app.buffer(shared).unwrap();
+            assert!(kept.dirty);
+            assert_eq!(kept.input.read(cx).text().to_string(), "unsaved edit");
+        });
+    }
+
+    #[gpui::test]
+    fn restoring_a_file_preserves_the_panels_recorded_visibility(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = test_real_dir(dir.path()).join("restored.rs");
+        std::fs::write(&path, source()).unwrap();
+        for visible in [false, true] {
+            let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
+            app.update_in(&mut vcx, |app, window, cx| {
+                let tab = app.tabs[0].tree_id.get();
+                editor_session::put(
+                    cx,
+                    tab,
+                    TabEditor {
+                        files: vec![path.clone()],
+                        visible,
+                        ..Default::default()
+                    },
+                );
+                app.tabs[0].code = None;
+                app.editor.restored.remove(&tab);
+                app.focus_active(window, cx);
+                app.editor_restore_active(window, cx);
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while app.read_with(&vcx, |app, _| app.active_buffer().is_none()) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "restore did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                vcx.run_until_parked();
+            }
+            assert_eq!(panel(&app, &mut vcx), (visible, 1));
+            assert_eq!(terminal_focused(&app, &mut vcx), !visible);
+        }
+    }
+
+    #[gpui::test]
+    fn a_late_restore_does_not_replace_a_file_opened_since(cx: &mut TestAppContext) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
+        let current = open_rs(&app, &mut vcx, "/single/current.rs");
+        app.update_in(&mut vcx, |app, window, cx| {
+            let host = app.active_host(cx).unwrap();
+            let tab = app.tabs[0].tree_id.get();
+            let loaded = Loaded {
+                path: "/single/restored.rs".into(),
+                text: source(),
+                format: TextFormat::default(),
+                config: EditorConfig::default(),
+                mtime: None,
+            };
+            app.editor_finish_restore(host, loaded, tab, true, window, cx);
+            assert_eq!(app.active_buffer().unwrap().id(), current);
+            assert_eq!(app.editor.buffers.len(), 1);
+        });
+    }
+
+    /// A file loaded behind an unsaved-changes question is not a stray
+    /// buffer: cleanup must leave it alone until the answer lands, then take
+    /// it when the answer is to back out.
+    #[gpui::test]
+    fn a_file_waiting_on_a_question_survives_orphan_cleanup(cx: &mut TestAppContext) {
+        let (app, mut vcx, _streams) = harness_with_tabs(cx, 1);
+        crate::ui::i18n::set_locale("en");
+        let opener = open_rs(&app, &mut vcx, "/single/shown.rs");
+        let waiting = app.update_in(&mut vcx, |app, window, cx| {
+            let host = app.active_host(cx).expect("a host");
+            let indent = crate::ui::editor_text::detect_indent("", "rust");
+            app.editor_new_buffer(
+                host,
+                PathBuf::from("/single/waiting.rs"),
+                None,
+                source(),
+                TextFormat::default(),
+                EditorConfig::default(),
+                indent,
+                None,
+                window,
+                cx,
+            )
+        });
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.editor.pending_show = Some(waiting);
+            app.editor_adopt_orphans(window, cx);
+        });
+        app.read_with(&vcx, |app, _| {
+            assert_eq!(app.active_buffer().map(|f| f.id()), Some(opener));
+            assert!(
+                app.editor.buffers.iter().any(|f| f.id() == waiting),
+                "the file behind the question is kept"
+            );
+        });
+        // The answer backing out drops the file that was only waiting.
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.editor.pending_show = None;
+            app.editor_adopt_orphans(window, cx);
+        });
+        app.read_with(&vcx, |app, _| {
+            assert!(
+                app.editor.buffers.iter().all(|f| f.id() != waiting),
+                "nothing is left pointing at it"
+            );
+        });
+    }
+
+    /// In Helix mode a file opened while the editor runs is handed to that
+    /// editor: no second process, and no tty7 file tab to go stale.
+    #[gpui::test]
+    fn a_file_opened_while_helix_runs_is_handed_to_the_running_editor(cx: &mut TestAppContext) {
+        let (app, mut vcx, mut streams) = harness_with_tabs(cx, 2);
+        crate::ui::i18n::set_locale("en");
+        let (owner, session) = app.read_with(&vcx, |app, _| {
+            (app.tabs[0].tree_id.get(), app.tabs[1].tree_id.get())
+        });
+        app.update_in(&mut vcx, |app, _, cx| {
+            let mut cfg = cx.global::<crate::core::config::Config>().clone();
+            cfg.file_open_with = crate::core::config::FileOpenWith::Helix;
+            cx.set_global(cfg);
+            app.external_editor_tabs.push(ExternalEditorTab {
+                path: "/project/a.rs".into(),
+                tab: session,
+                terminal: Some(owner),
+                program: "hx".into(),
+            });
+        });
+        let before = app.read_with(&vcx, |app, _| app.tabs.len());
+        app.update_in(&mut vcx, |app, window, cx| {
+            app.open_file_preferred(
+                std::path::Path::new("/project/b.rs"),
+                Some(12),
+                Some(3),
+                window,
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            app.read_with(&vcx, |app, _| app.tabs.len()),
+            before,
+            "the running editor takes the file; no second process"
+        );
+        assert_eq!(
+            app.read_with(&vcx, |app, _| app.external_editor_index()),
+            Some(1),
+            "the session is the document in front"
+        );
+        assert_eq!(
+            drain(&mut streams[1]),
+            b"\x1b:open '/project/b.rs'\r:goto 12\r",
+        );
+    }
+
+    /// Everything the pane wrote to the PTY, in order.
+    fn drain(daemon: &mut crate::daemon::transport::Stream) -> Vec<u8> {
+        use crate::daemon::protocol::ClientMsg;
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_millis(150)))
+            .unwrap();
+        let mut out = Vec::new();
+        loop {
+            match ClientMsg::read(daemon) {
+                Ok(ClientMsg::Input(bytes)) => out.extend_from_slice(&bytes),
+                Ok(_) => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(e) => panic!("pane link failed: {e}"),
+            }
+        }
+        out
     }
 
     /// With the focus in the terminal beside an empty editor, ⌘W is still

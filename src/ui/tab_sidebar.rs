@@ -3245,6 +3245,7 @@ mod fold_tests {
                     path: PathBuf::from(format!("/w/file-{i}.rs")),
                     tab: app.tabs[i].tree_id.get(),
                     terminal: Some(app.tabs[1].tree_id.get()),
+                    program: "hx".into(),
                 });
             }
             for (i, repo) in [

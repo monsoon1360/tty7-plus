@@ -121,7 +121,6 @@ pub(crate) fn set_menus(cx: &mut App) {
             MenuItem::action(t(L10nKey::EditorGoToSymbolAction), EditorGoToSymbol),
             MenuItem::action(t(L10nKey::EditorNavigateBack), EditorNavigateBack),
             MenuItem::action(t(L10nKey::EditorNavigateForward), EditorNavigateForward),
-            MenuItem::action(t(L10nKey::EditorSplitRight), EditorSplitRight),
             MenuItem::separator(),
             MenuItem::action(t(L10nKey::AppMenuIncreaseFontSize), IncreaseFontSize),
             MenuItem::action(t(L10nKey::AppMenuDecreaseFontSize), DecreaseFontSize),

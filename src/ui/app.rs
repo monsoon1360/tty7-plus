@@ -4674,9 +4674,16 @@ impl Tty7App {
         let host = &mut self.tabs[self.active];
         match (host.code.as_deref_mut(), moved.code) {
             (None, code) => host.code = code,
-            // Both had an editor: the files come along into this tab's strip
-            // rather than being dropped with the tab that brought them.
-            (Some(code), Some(theirs)) => code.adopt(&theirs.all_files()),
+            // Both had an editor: this tab keeps the file it shows. With one
+            // file per tab there is nowhere to put a second one, so a moved
+            // tab's file only comes along when this one had none.
+            (Some(code), Some(theirs)) => {
+                if code.active_id().is_none() {
+                    if let Some(id) = theirs.active_id() {
+                        code.adopt(&[id]);
+                    }
+                }
+            }
             (Some(_), None) => {}
         }
         if host.diff_overlay.is_none() {
@@ -6641,9 +6648,6 @@ impl Tty7App {
             EditorGoToSymbol => self.editor_go_to_symbol(window, cx),
             EditorNavigateBack => self.editor_navigate(false, window, cx),
             EditorNavigateForward => self.editor_navigate(true, window, cx),
-            EditorSplitRight => {
-                self.editor_split(window, cx);
-            }
             RestartSshSession => self.restart_ssh_session(window, cx),
             SetTheme(i) => {
                 if let Some(id) = crate::ui::presets::all(cx).get(i).map(|t| t.id.clone()) {
@@ -13326,6 +13330,7 @@ mod displayed_gpui_tests {
                     path: "/project/hello.rs".into(),
                     tab: editor,
                     terminal: Some(terminal),
+                    program: "hx".into(),
                 });
             app.select_external_editor(editor, window, cx);
             app.declare_displayed_panes(cx);

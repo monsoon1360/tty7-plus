@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   external editors run in the shared document region — `hx path:line:column`
   or `vim +line path`, so a search hit lands on its line. Files on a remote
   host always open in the built-in editor, which is the only one that can read
-  them. Asking for an already-open file selects its existing editor file tab.
+  them. Opening another file hands it to the editor already running in that
+  terminal.
 - **The Files panel can show dotfiles, and remembers the choice.** An eye in
   the panel's title bar — alongside the row menu's existing **Show Dotfiles**
   switch — lists dotfiles and dot-directories. The preference is saved to
@@ -49,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be disabled or revoked. See [pairing, security, builds and deployment](docs/remote/workspaces.mdx#android-remote-terminals).
 
 ### Changed
+
+- **One file at a time in the editor, named by the editor itself.** The document
+  region no longer shows a file-tab strip. The built-in editor shows one file
+  and names it in the status bar at its foot; opening another file replaces it,
+  asking first about unsaved edits, and Back/Forward reopen a file that has
+  left. Helix and Vim keep one session per terminal, so later files are handed
+  to the running editor (`:open` / `:edit`) and its own buffer switching and
+  status line stay authoritative. The editor split (`Split Editor Right`,
+  focus left/right) goes with the file strip it existed for.
 
 - **Selected upstream fixes through `9dd06c63`.** Integrate 26 reviewed commits
   while retaining the fork's Android relay protocol, vendored terminal engine,
@@ -131,8 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Editor and settings headers share the title bar's vertical centre** —
   Editor, settings, and sidebar header rows reserve the same bottom-edge
   height so their controls stay on the macOS traffic lights' centre line.
-  The editor preserves the full leading reserve, keeping its return control
-  and docked file tabs at the intended inset without changing document controls.
+  The editor preserves the full leading reserve, keeping its return control at
+  the intended inset without changing document controls.
 
 - **A client that reconnects no longer takes back a workspace someone else is
   using** — A laptop that slept while holding a remote workspace, then woke and
@@ -182,8 +192,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earlier rows remain readable and the complete emitted text survives.
 - **Helix and Vim share the built-in editor's region.** Opening a file focuses
   the editor without adding a Terminal row to the sidebar or terminal switcher.
-  External editors use the same file tabs, Dock/Fill layouts and 140 ms
-  transitions; `Ctrl+2` focuses the original terminal and `Ctrl+3` toggles the
+  External editors use the same Dock/Fill layouts and 140 ms transitions;
+  `Ctrl+2` focuses the original terminal and `Ctrl+3` toggles the
   editor region without changing the selected terminal. macOS selects the last
   ASCII keyboard layout when opening an external-editor file. Session ID
   handoffs preserve document selection, and visible editor sessions continue

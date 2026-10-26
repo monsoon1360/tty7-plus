@@ -416,8 +416,7 @@ impl Tty7App {
         if !enabled(cx) {
             return;
         }
-        // Both groups' files when the editor is split: the one without the
-        // focus is on screen too.
+        // The file in front.
         let shown = self
             .tab_code()
             .map(|c| [c.active_id(), c.other_active_id()])
