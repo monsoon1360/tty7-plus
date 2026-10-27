@@ -8449,7 +8449,7 @@ pub(crate) fn open_file_path(path: &std::path::Path) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener).arg(path).spawn()?;
+    tty7_core::core::proc::spawn_reaped(std::process::Command::new(opener).arg(path))?;
     Ok(())
 }
 
@@ -8483,7 +8483,7 @@ pub(crate) fn reveal_file_path(path: &std::path::Path) -> std::io::Result<()> {
         c.arg(path.parent().unwrap_or(path));
         c
     };
-    command.spawn()?;
+    tty7_core::core::proc::spawn_reaped(&mut command)?;
     Ok(())
 }
 
@@ -8503,7 +8503,7 @@ fn run_file_command(
             "link_file_command expanded to nothing",
         ));
     };
-    std::process::Command::new(program).args(args).spawn()?;
+    tty7_core::core::proc::spawn_reaped(std::process::Command::new(program).args(args))?;
     Ok(())
 }
 
