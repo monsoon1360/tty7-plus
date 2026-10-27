@@ -1533,6 +1533,10 @@ impl Tty7App {
         let mut commands = String::new();
         match name {
             "hx" | "helix" => {
+                // A bare ESC immediately followed by `:` is parsed as Alt-:
+                // by Helix. Encode Escape as CSI-u so the following `:open`
+                // cannot turn into normal-mode `o` and insert the path.
+                commands.push_str("\x1b[27u");
                 // Single-quoted is Helix's literal token: spaces, `%`, and
                 // backslashes all stay part of the path. A quote inside it is
                 // escaped by doubling.
@@ -1542,6 +1546,7 @@ impl Tty7App {
                 }
             }
             "vim" | "nvim" => {
+                commands.push('\x1b');
                 commands.push_str(&format!(
                     ":execute 'hide edit ' . {}\r",
                     vim_command_path(&path_text)
@@ -4739,6 +4744,13 @@ mod close_gpui_tests {
                 window,
                 cx,
             );
+            app.open_file_preferred(
+                std::path::Path::new("/project/c.rs"),
+                None,
+                None,
+                window,
+                cx,
+            );
         });
         vcx.run_until_parked();
         assert_eq!(
@@ -4753,8 +4765,9 @@ mod close_gpui_tests {
         );
         assert_eq!(
             drain(&mut streams[1]),
-            b"\x1b:open '/project/b.rs'\r:goto 12\r",
+            b"\x1b[27u:open '/project/b.rs'\r:goto 12\r\x1b[27u:open '/project/c.rs'\r",
         );
+        assert!(drain(&mut streams[0]).is_empty());
     }
 
     /// Everything the pane wrote to the PTY, in order.

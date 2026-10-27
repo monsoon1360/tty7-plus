@@ -2472,11 +2472,11 @@ impl TerminalView {
         self.terminal.write(format!("{cmd}\r").into_bytes());
     }
 
-    /// Sends a command line to a modal editor running in this pane: Escape
-    /// back to normal mode first, so a command typed into Insert mode (or an
-    /// open picker) is not mistaken for text.
+    /// Sends a command sequence to a modal editor running in this pane. The
+    /// caller includes the editor's Escape encoding to leave Insert mode or
+    /// a picker before entering the command line.
     pub fn run_editor_command(&self, cmd: &str) {
-        self.terminal.write(format!("\x1b{cmd}").into_bytes());
+        self.terminal.write(cmd.as_bytes().to_vec());
     }
 
     pub fn shell_spec(&self) -> Option<ShellSpec> {
