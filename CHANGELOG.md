@@ -60,11 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status line stay authoritative. The editor split (`Split Editor Right`,
   focus left/right) goes with the file strip it existed for.
 
-- **Selected upstream fixes through `9dd06c63`.** Integrate 26 reviewed commits
+- **Selected upstream fixes through `8ad8841e`.** Integrate 29 reviewed commits
   while retaining the fork's Android relay protocol, vendored terminal engine,
   AI/Git settings, external-editor controls and disabled upstream updater.
   GitHub-panel, upstream-release/update, legacy iroh replay and CI-policy changes
   remain excluded; title-bar changes do not restore removed document switches.
+  The latest three keep the SSH host list's wheel inside the list, reap opened
+  files' helper processes instead of leaving zombies behind, and resolve
+  `path:start-end` links at the range's first line.
 
 - **Settings alignment and monitor placement.** Align the Git provider and
   language dropdowns, shorten AI/Git help text, and open new settings windows

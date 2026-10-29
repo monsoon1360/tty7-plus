@@ -370,9 +370,11 @@ Android 路径的权威说明见
 
 上游项目是 [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7)。本分支选择性
 引入提交，不整批合并上游默认分支。最近评估的上游版本为
-[`9dd06c63`](https://github.com/l0ng-ai/tty7/commit/9dd06c639cddcefc82e59059139f39b527baf799)：
-选取了 26 个提交，并针对 daemon 交接、vendored 终端引擎、快捷键和标题栏
-对齐保留本分支的适配。
+[`8ad8841e`](https://github.com/l0ng-ai/tty7/commit/8ad8841e4835e4e6c4e6f4d5a0a16541eaa9107f)：
+选取了 29 个提交，并针对 daemon 交接、vendored 终端引擎、快捷键和标题栏
+对齐保留本分支的适配。最新三个提交分别让 SSH 主机列表的滚轮留在列表内部、
+回收打开文件时的辅助进程（不再留下僵尸进程），并让 `path:start-end` 链接
+定位到区间首行。
 
 上游 GitHub 面板、更新器与版本发布、旧 iroh 回放修复、将警告视为错误的 CI
 调整，以及已撤回的标签按钮与视频改动均不引入。Android relay 协议、AI/Git
@@ -381,7 +383,7 @@ Android 路径的权威说明见
 ```bash
 git remote add upstream https://github.com/l0ng-ai/tty7.git # 只需一次
 git fetch upstream
-git log --oneline 9dd06c63..upstream/main
+git log --oneline 8ad8841e..upstream/main
 # 逐项评估后再引入：
 git cherry-pick -x <reviewed-commit>
 ```
