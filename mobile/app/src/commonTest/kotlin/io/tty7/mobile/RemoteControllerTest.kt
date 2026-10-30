@@ -329,6 +329,168 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
+    @Test fun agentNotificationsCoverUnopenedPanesAndOnlyNewWaitingOrDoneTransitions() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val socket = platform.socket
+        socket.agentUpdate("done", 1, initial = true, paneId = 9)
+        socket.agentUpdate("done", 2, paneId = 9)
+        socket.agentUpdate("working", 3, paneId = 9)
+        socket.agentUpdate("waiting", 4, paneId = 9)
+        socket.agentUpdate("waiting", 4, paneId = 9)
+        socket.agentUpdate("done", 3, paneId = 9)
+        socket.agentUpdate("waiting", 5, paneId = 9)
+        socket.agentUpdate("working", 6, paneId = 9)
+        socket.agentUpdate("waiting", 7, paneId = 9)
+        socket.agentUpdate("done", 8, paneId = 9)
+        runCurrent()
+        assertEquals(listOf("waiting", "waiting", "done"), platform.notifications.map { it.status })
+        assertTrue(platform.notifications.all { it.hostId == approved.hostId && it.workspaceId == "workspace" && it.paneId == 9L })
+        assertNull(controller.state.value.terminal)
+        controller.setForeground(false)
+    }
+
+    @Test fun notificationStreamIsIndependentOfTerminalStatusAndOlderLists() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        platform.socket.agentUpdate("working", 1, initial = true)
+        platform.socket.agent("waiting", 2)
+        platform.socket.agentUpdate("waiting", 2)
+        platform.socket.agent("done", 3)
+        platform.socket.agentUpdate("done", 3)
+        controller.refresh()
+        runCurrent()
+        val list = platform.socket.encryptedMessages.last { it.optionalText("op") == "list" }
+        platform.socket.response(list.getValue("id").jsonPrimitive.long, listing("working", revision = 1))
+        runCurrent()
+        assertEquals(listOf("waiting", "done"), platform.notifications.map { it.status })
+        assertEquals("done", feed.pane.agentStatus)
+        controller.setForeground(false)
+    }
+
+    @Test fun backgroundMonitoringDetachesRendererButDeliversBothAgentAlerts() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        controller.setBackgroundMonitoring(true)
+        controller.setForeground(false)
+        runCurrent()
+        assertFalse(feed.active)
+        assertNull(controller.state.value.terminal)
+        assertTrue(controller.state.value.connected)
+        assertFalse(platform.socket.closed)
+        val unsubscribe = platform.socket.encryptedMessages.last { it.optionalText("op") == "unsubscribe" }
+        platform.socket.response(unsubscribe.getValue("id").jsonPrimitive.long, JsonNull)
+        platform.socket.agentUpdate("working", 1, initial = true)
+        platform.socket.agentUpdate("waiting", 2)
+        platform.socket.agentUpdate("done", 3)
+        runCurrent()
+        assertEquals(listOf("waiting", "done"), platform.notifications.map { it.status })
+        controller.disconnect()
+        controller.setBackgroundMonitoring(false)
+        runCurrent()
+        assertTrue(platform.socket.closed)
+        assertFalse(controller.state.value.connected)
+        controller.setForeground(true)
+        runCurrent()
+        assertEquals(1, platform.connections.size, "Explicit disconnect must not restart monitoring")
+        controller.setForeground(false)
+    }
+
+    @Test fun backgroundReconnectRetainsMonitoringIntentUntilExplicitDisconnect() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.setBackgroundMonitoring(true)
+        controller.setForeground(false)
+        platform.socket.close()
+        runCurrent()
+        assertTrue(controller.state.value.connectionRequested)
+        val resumed = platform.nextSocket().apply { authenticate() }
+        advanceTimeBy(1_001)
+        runCurrent()
+        resumed.response(2, listing())
+        resumed.agentUpdate("done", 1, initial = true)
+        resumed.agentUpdate("working", 2)
+        resumed.agentUpdate("waiting", 3)
+        runCurrent()
+        assertTrue(controller.state.value.connected)
+        assertNull(controller.state.value.terminal)
+        assertEquals(listOf("waiting"), platform.notifications.map { it.status })
+        controller.disconnect()
+        runCurrent()
+        assertFalse(controller.state.value.connectionRequested)
+        controller.setBackgroundMonitoring(false)
+    }
+
+    @Test fun notificationTapUsesPairedHostAndExactListedPaneAfterForegroundRestore() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.setBackgroundMonitoring(true)
+        controller.setForeground(false)
+        controller.openNotification(approved.hostId, "workspace", pane.id)
+        controller.setForeground(true)
+        runCurrent()
+        val refresh = platform.socket.encryptedMessages.last { it.optionalText("op") == "list" }
+        platform.socket.response(refresh.getValue("id").jsonPrimitive.long, listing("waiting", revision = 2))
+        runCurrent()
+        val selected = assertNotNull(controller.state.value.terminalSelection)
+        assertEquals("workspace", selected.first)
+        assertEquals(pane.id, selected.second.id)
+        assertEquals("waiting", selected.second.agentStatus)
+        controller.disconnect()
+        controller.setBackgroundMonitoring(false)
+        controller.setForeground(false)
+    }
+
+    @Test fun notificationForAnotherHostDoesNotOpenTerminal() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.openNotification("unpaired-host", "workspace", pane.id)
+        runCurrent()
+        val refresh = platform.socket.encryptedMessages.last { it.optionalText("op") == "list" }
+        platform.socket.response(refresh.getValue("id").jsonPrimitive.long, listing("waiting", revision = 2))
+        runCurrent()
+        assertNull(controller.state.value.terminalSelection)
+        assertTrue(platform.socket.encryptedMessages.none { it.optionalText("op") == "subscribe" })
+        controller.setForeground(false)
+    }
+
+    @Test fun reconnectBaselineDoesNotRepeatAlertAndAcceptsRestartedAgentRevisions() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        platform.socket.agentUpdate("working", 98, initial = true)
+        platform.socket.agentUpdate("done", 99)
+        runCurrent()
+        controller.setForeground(false)
+        runCurrent()
+        val next = platform.nextSocket().apply { authenticate() }
+        controller.setForeground(true)
+        runCurrent()
+        next.response(2, listing("done", revision = 1))
+        next.agentUpdate("done", 1, initial = true)
+        next.agentUpdate("done", 2)
+        next.agentUpdate("working", 3)
+        next.agentUpdate("waiting", 4)
+        runCurrent()
+        assertEquals(listOf("done", "waiting"), platform.notifications.map { it.status })
+        assertTrue(controller.state.value.connected)
+        controller.setForeground(false)
+    }
+
+    @Test fun tapOnRemovedTerminalReportsRemovalWithoutSelectingAnotherPane() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        controller.openNotification(approved.hostId, "workspace", 999)
+        runCurrent()
+        val refresh = platform.socket.encryptedMessages.last { it.optionalText("op") == "list" }
+        platform.socket.response(refresh.getValue("id").jsonPrimitive.long, listing())
+        runCurrent()
+        assertNull(controller.state.value.terminalSelection)
+        assertEquals("The notified terminal no longer exists.", controller.state.value.error)
+        controller.setForeground(false)
+    }
+
     @Test fun liveAgentStateWinsOverOlderListAndReplayedCompletion() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
@@ -1356,6 +1518,8 @@ class RemoteControllerTest {
         var afterCommit: suspend (List<Computer>) -> Unit = {}
         var afterEncrypt: (JsonObject) -> Unit = {}
         val connections = mutableListOf<Computer>()
+        val notifications = mutableListOf<AgentNotification>()
+        override fun notifyAgent(notification: AgentNotification) { notifications.add(notification) }
         val socket = ControlledSocket()
         private val sockets = mutableListOf(socket)
         fun nextSocket() = ControlledSocket().also { sockets.add(it) }
@@ -1408,6 +1572,8 @@ class RemoteControllerTest {
                 val inner = wireJson.parseToJsonElement(outer.text("payload")).jsonObject
                 if (inner.optionalText("kind") == "encrypted") {
                     check(inner.getValue("sequence").jsonPrimitive.long == nextEncryptedSequence++) { "Encrypted send sequence skipped" }
+                    val message = wireJson.parseToJsonElement(inner.text("plain")).jsonObject
+                    if (message.optionalText("op") == "watch_agents") response(message.getValue("id").jsonPrimitive.long, JsonNull)
                 }
             }
             sent.add(outer)
@@ -1437,6 +1603,11 @@ class RemoteControllerTest {
         fun agent(status: String?, revision: Long, subscription: String = subscriptionId) = encrypted(obj(
             "type" to JsonPrimitive("agent"), "pane_id" to JsonPrimitive(1),
             "subscription_id" to JsonPrimitive(subscription), "agent_revision" to JsonPrimitive(revision),
+            "agent" to (status?.let { obj("status" to JsonPrimitive(it), "name" to JsonPrimitive("Pi")) } ?: JsonNull)))
+        fun agentUpdate(status: String?, revision: Long, initial: Boolean = false, paneId: Long = 1) = encrypted(obj(
+            "type" to JsonPrimitive("agent_update"), "pane_id" to JsonPrimitive(paneId),
+            "workspace_id" to JsonPrimitive("workspace"), "title" to JsonPrimitive("Agent task"),
+            "initial" to JsonPrimitive(initial), "agent_revision" to JsonPrimitive(revision.toString()),
             "agent" to (status?.let { obj("status" to JsonPrimitive(it), "name" to JsonPrimitive("Pi")) } ?: JsonNull)))
         fun output(
             data: String, snapshot: Boolean = false, subscriptionId: String = this.subscriptionId, sequence: Long = nextSequence++, paneId: Long = 1,

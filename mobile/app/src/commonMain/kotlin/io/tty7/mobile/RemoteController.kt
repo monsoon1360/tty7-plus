@@ -14,6 +14,8 @@ data class RemoteState(
     val terminal: TerminalFeed? = null, val terminalSelection: Pair<String, Pane>? = null,
     val terminalSynced: Boolean = false, val terminalError: String? = null, val error: String? = null,
     val reconnecting: Boolean = false,
+    val connectionRequested: Boolean = false,
+    val notificationNavigation: Long = 0,
 )
 class RemoteController(
     private val platform: MobilePlatform,
@@ -31,6 +33,11 @@ class RemoteController(
     private val storage = Mutex()
     private var loaded = false
     private val lifetime = ForegroundLifetime()
+    private var foreground = false
+    // Background monitoring owns the transport, not a terminal renderer or size lease.
+    private var backgroundMonitoring = false
+    private data class NotificationTarget(val hostId: String, val workspaceId: String, val paneId: Long)
+    private var notificationTarget: NotificationTarget? = null
     private val actions = mutableSetOf<Job>()
     private val retiredRequests = RetiredRequestIds()
     private val switching = Mutex()
@@ -50,6 +57,7 @@ class RemoteController(
         fun apply(pane: Pane) = pane.copy(agentName = name, agentStatus = status, agentRevision = revision)
     }
     private val agentReadings = mutableMapOf<Long, AgentReading>()
+    private val notificationReadings = mutableMapOf<Long, AgentReading>()
     private fun fail(error: Throwable) {
         mutable.value = mutable.value.copy(error = error.message ?: "Remote connection failed")
     }
@@ -109,16 +117,43 @@ class RemoteController(
         }
     }
     fun setForeground(foreground: Boolean) {
-        if (lifetime.active == foreground) return
-        lifetime.setForeground(foreground)
-        if (foreground) restoreConnection() else stopConnection()
+        if (this.foreground == foreground) return
+        this.foreground = foreground
+        updateLifetime()
+        if (foreground && mutable.value.connected) {
+            if (notificationTarget != null) refresh()
+            else mutable.value.terminalSelection?.let { (workspace, pane) -> selectTerminal(workspace, pane) }
+        } else if (!foreground && lifetime.active) {
+            invalidateTerminalIntent()
+            mutable.value.terminal?.cancel()
+            mutable.value = mutable.value.copy(terminal = null, terminalSynced = false)
+            unsubscribeTerminal(selectionIntent)
+        }
+    }
+    fun setBackgroundMonitoring(enabled: Boolean) {
+        backgroundMonitoring = enabled
+        updateLifetime()
+    }
+    private fun updateLifetime() {
+        val active = foreground || backgroundMonitoring
+        if (lifetime.active == active) return
+        lifetime.setForeground(active)
+        if (active) restoreConnection() else stopConnection()
+    }
+    fun openNotification(hostId: String, workspaceId: String, paneId: Long) {
+        notificationTarget = NotificationTarget(hostId, workspaceId, paneId)
+        if (foreground) {
+            if (mutable.value.connected) refresh() else restoreConnection()
+        }
     }
     private fun restoreConnection(allowPending: Boolean = false) {
         restoring = action {
             val generation = lifetime.generation
             ensureLoaded()
-            if (networkAvailable && automaticConnection && lifetime.accepts(generation) && connection?.isActive != true) {
-                val saved = mutable.value.computer?.takeUnless { it.pending && !allowPending }
+            if (!lifetime.accepts(generation)) return@action
+            val saved = mutable.value.computer?.takeUnless { it.pending && !allowPending }
+            if (saved != null && notificationTarget?.hostId == saved.hostId) automaticConnection = true
+            if (networkAvailable && automaticConnection && connection?.isActive != true) {
                 saved?.let { connect(it) }
             }
         }
@@ -149,7 +184,7 @@ class RemoteController(
         previous?.cancel()
         socket?.close()
         mutable.value = mutable.value.copy(computer = computer, connected = false, status = "Connecting", error = null,
-            verificationCode = computer.verificationCode, reconnecting = true)
+            verificationCode = computer.verificationCode, reconnecting = true, connectionRequested = true)
         if (!networkAvailable) {
             mutable.value = mutable.value.copy(status = "Reconnecting")
             return
@@ -238,7 +273,8 @@ class RemoteController(
                             currentCoroutineContext().ensureActive()
                             mutable.value = mutable.value.copy(connected = true, status = "Connected", error = null, reconnecting = false)
                             refresh()
-                            if (mutable.value.terminalError == null) {
+                            action { request("watch_agents", id = 9_007_199_254_740_991L) }
+                            if (foreground && notificationTarget == null && mutable.value.terminalError == null) {
                                 mutable.value.terminalSelection?.let { (workspace, pane) -> selectTerminal(workspace, pane) }
                             }
                             polling = scope.launch {
@@ -296,6 +332,10 @@ class RemoteController(
                                 )
                             }
                         }
+                        "agent_update" -> {
+                            require(authenticated) { "Agent notification before authentication" }
+                            receiveAgentUpdate(computer, message)
+                        }
                         "agent" -> {
                             require(authenticated) { "Agent status before authentication" }
                             val feed = mutable.value.terminal
@@ -350,6 +390,7 @@ class RemoteController(
                 pendingSubscriptions.clear()
                 retiredRequests.clear()
                 agentReadings.clear()
+                notificationReadings.clear()
                 subscribedPane = null
                 failedTerminal = null
                 invalidateTerminalIntent()
@@ -409,11 +450,10 @@ class RemoteController(
     }
     private suspend fun request(
         op: String, vararg fields: Pair<String, JsonElement>, subscribing: TerminalFeed? = null, input: TerminalFeed? = null,
-        sizing: TerminalFeed? = null, target: TerminalFeed? = null,
+        sizing: TerminalFeed? = null, target: TerminalFeed? = null, id: Long = nextRequest++,
     ): JsonElement {
         check(mutable.value.connected) { "Connect to a computer first" }
         val generation = lifetime.generation
-        val id = nextRequest++
         val result = CompletableDeferred<JsonElement>()
         requests[id] = result
         if (subscribing != null) pendingSubscriptions[id] = subscribing
@@ -428,6 +468,33 @@ class RemoteController(
         } finally {
             if (requests.remove(id) != null && lifetime.accepts(generation)) retiredRequests.add(id)
             pendingSubscriptions.remove(id)
+        }
+    }
+    private fun receiveAgentUpdate(computer: Computer, message: JsonObject) {
+        val paneId = message.getValue("pane_id").jsonPrimitive.long
+        val agent = message["agent"]?.takeUnless { it is JsonNull }?.jsonObject
+        val reading = AgentReading(message.text("agent_revision").toULong(),
+            agent?.optionalText("name"), agent?.optionalText("status"))
+        val previous = notificationReadings[paneId]
+        if (previous != null && reading.revision <= previous.revision) return
+        notificationReadings[paneId] = reading
+        val known = agentReadings[paneId]
+        if (known == null || reading.revision >= known.revision) {
+            agentReadings[paneId] = reading
+            val workspaces = mutable.value.workspaces.map { workspace ->
+                workspace.copy(panes = workspace.panes.map { if (it.id == paneId) reading.apply(it) else it })
+            }
+            val selected = mutable.value.terminalSelection?.let { (workspace, pane) ->
+                workspace to if (pane.id == paneId) reading.apply(pane) else pane
+            }
+            mutable.value.terminal?.takeIf { it.pane.id == paneId }?.let { it.updatePane(reading.apply(it.pane)) }
+            mutable.value = mutable.value.copy(workspaces = workspaces, terminalSelection = selected)
+        }
+        if (!message.getValue("initial").jsonPrimitive.boolean && reading.name != null &&
+            (reading.status == "done" || reading.status == "waiting") &&
+            (previous?.status != reading.status || previous?.name != reading.name)) {
+            platform.notifyAgent(AgentNotification(computer.hostId, message.text("workspace_id"), paneId,
+                reading.name, message.text("title"), reading.status!!))
         }
     }
     private fun reconcileAgent(pane: Pane): Pane {
@@ -457,6 +524,19 @@ class RemoteController(
                 })
             }
             mutable.value = mutable.value.copy(workspaces = workspaces)
+            val target = notificationTarget
+            if (foreground && target != null) {
+                notificationTarget = null
+                if (target.hostId == mutable.value.computer?.hostId) {
+                    val pane = workspaces.firstOrNull { it.id == target.workspaceId }?.panes?.firstOrNull { it.id == target.paneId }
+                    if (pane != null) {
+                        selectTerminal(target.workspaceId, pane)
+                        mutable.value = mutable.value.copy(notificationNavigation = mutable.value.notificationNavigation + 1)
+                        return@action
+                    }
+                    mutable.value = mutable.value.copy(error = "The notified terminal no longer exists.")
+                }
+            }
             mutable.value.terminalSelection?.let { (workspace, pane) ->
                 val listed = workspaces.firstOrNull { it.id == workspace }?.panes?.firstOrNull { it.id == pane.id }
                 if (listed != null) {
@@ -490,7 +570,7 @@ class RemoteController(
         mutable.value = mutable.value.copy(terminal = null, terminalSelection = null, terminalSynced = false, terminalError = null)
     }
     fun selectTerminal(workspace: String, pane: Pane): Job? {
-        if (!lifetime.active) return null
+        if (!foreground || !lifetime.active) return null
         failedTerminal = null
         val intent = invalidateTerminalIntent()
         mutable.value.terminal?.cancel()
@@ -614,6 +694,8 @@ class RemoteController(
         ensureLoaded()
         if (mutable.value.computers.singleOrNull()?.hostId != computer.hostId) return@action
         automaticConnection = false
+        mutable.value = mutable.value.copy(connectionRequested = false)
+        notificationTarget = null
         val unpairing = currentCoroutineContext()[Job]
         restoring?.cancel()
         actions.toList().filterNot { it === unpairing }.forEach { it.cancel() }
@@ -640,6 +722,8 @@ class RemoteController(
     }
     fun disconnect() {
         automaticConnection = false
+        mutable.value = mutable.value.copy(connectionRequested = false)
+        notificationTarget = null
         clearTerminalSelection()
         stopConnection()
     }

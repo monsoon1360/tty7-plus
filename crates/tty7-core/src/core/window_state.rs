@@ -8,6 +8,8 @@ pub struct WindowState {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_uuid: Option<uuid::Uuid>,
 }
 
 impl WindowState {
@@ -52,6 +54,30 @@ impl WindowState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_geometry_has_no_display() {
+        let state: WindowState =
+            serde_json::from_str(r#"{"x":-120.5,"y":42,"width":1440,"height":900}"#)
+                .unwrap();
+        assert_eq!(state.display_uuid, None);
+        let json = serde_json::to_value(state).unwrap();
+        assert!(json.get("display_uuid").is_none());
+    }
+
+    #[test]
+    fn stable_display_round_trips() {
+        let uuid = uuid::Uuid::from_u128(42);
+        let state = WindowState {
+            x: 10.0,
+            y: 20.0,
+            width: 1440.0,
+            height: 900.0,
+            display_uuid: Some(uuid),
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<WindowState>(&json).unwrap(), state);
+    }
 
     #[test]
     fn rejects_degenerate_geometry() {

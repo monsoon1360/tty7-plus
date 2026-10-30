@@ -379,29 +379,6 @@ pub(crate) fn title_bar_hug_offset() -> f32 {
     }
 }
 
-/// The bounds to remember for reopening this window at the same place.
-///
-/// Under client-side decorations the window's *outer* rectangle is the whole
-/// surface, shadow included, and both Linux backends put the shadow back on
-/// their own once the window is up: Wayland's first sized configure adds the
-/// inset to whatever geometry was asked for (`compute_outer_size`), and on X11
-/// the inset travels as `_GTK_FRAME_EXTENTS`, which a window manager only
-/// advertises — and gpui only turns CSD on for — when it honours those extents
-/// by keeping the *visible* frame put. Save the outer rectangle either way and
-/// it comes back twice the shadow larger every launch; that is the bug Zed
-/// fixed in ca9cee85e1 ("linux: Fix non-maximized Zed windows growing larger
-/// across sessions", #22301), whose own measurements were taken on X11.
-///
-/// So save the inner rectangle, exactly as Zed does, on every platform. It is
-/// the visible frame, which is what the backends re-inflate back to, and it
-/// costs nothing elsewhere: `inner_window_bounds` defaults to `window_bounds`
-/// on the `PlatformWindow` trait, and neither the macOS nor the Windows backend
-/// nor gpui's `TestWindow` overrides it. On X11 without a compositor the same
-/// holds for a different reason — `window_decorations()` answers `Server`, the
-/// window border never calls `set_client_inset`, and the insets stay zero.
-fn window_bounds_to_remember(window: &Window) -> Bounds<Pixels> {
-    window.inner_window_bounds().get_bounds()
-}
 
 /// The band the tab strip claims for a drop, in the window's outer coordinates.
 ///
@@ -1153,7 +1130,7 @@ pub struct Tty7App {
     /// the tab or pane captured when the question was raised, not on whatever
     /// the app happens to be pointing at by the time it is answered.
     close_prompt_open: bool,
-    window_bounds: Bounds<Pixels>,
+    window_state: WindowState,
     pub(crate) workspace: WorkspaceId,
     pub(crate) workspace_rename: Option<WorkspaceRename>,
     pub(crate) group_rename: Option<GroupRename>,
@@ -1762,7 +1739,7 @@ impl Tty7App {
             settings_window: None,
             ssh_prompt: crate::ui::ssh_prompt::SshPromptState::new(cx),
             close_prompt_open: false,
-            window_bounds: window_bounds_to_remember(window),
+            window_state: WindowState::from_window(window, cx),
             workspace,
             workspace_rename: None,
             group_rename: None,
@@ -1794,13 +1771,13 @@ impl Tty7App {
         .detach();
         cx.on_app_quit(|app, cx| {
             app.save_session(cx);
-            crate::core::window_state::WindowState::from_bounds(app.window_bounds).save();
+            app.window_state.save();
             async move {}
         })
         .detach();
 
-        cx.observe_window_bounds(window, |this, window, _cx| {
-            this.window_bounds = window_bounds_to_remember(window);
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.window_state = WindowState::from_window(window, cx);
         })
         .detach();
 
@@ -1865,6 +1842,7 @@ impl Tty7App {
                 return false;
             }
             app.update(cx, |app, cx| {
+                app.window_state = WindowState::from_window(window, cx);
                 app.prepare_window_close(cx);
                 app.lsp_window_closed(cx);
             });
@@ -1890,11 +1868,7 @@ impl Tty7App {
                 );
             }
         }
-        WorkspaceStore::record_geometry(
-            cx,
-            self.workspace,
-            WindowState::from_bounds(self.window_bounds),
-        );
+        WorkspaceStore::record_geometry(cx, self.workspace, self.window_state);
         crate::ui::tree_sync::sync_window(self, cx);
     }
 
@@ -1934,6 +1908,7 @@ impl Tty7App {
     }
 
     fn prepare_window_close(&self, cx: &mut App) {
+        self.window_state.save();
         let last_window = crate::ui::windows::WindowRegistry::count(cx) <= 1;
         self.detach_workspace(cx);
         if last_window {
@@ -1968,6 +1943,7 @@ impl Tty7App {
         ) {
             return;
         }
+        self.window_state = WindowState::from_window(window, cx);
         self.prepare_window_close(cx);
         self.lsp_window_closed(cx);
         window.remove_window();
@@ -13782,7 +13758,8 @@ mod unfocused_shortcut_tests {
 mod close_window_action_tests {
     use crate::core::actions::CloseWindow;
     use crate::core::config::Config;
-    use crate::core::session::Session;
+    use crate::core::session::{Session, WindowViews, WorkspaceStore};
+    use crate::core::window_state::{WindowGeometry as _, WindowState};
     use crate::ui::app::Tty7App;
     use crate::ui::windows::WindowRegistry;
     use gpui::{AppContext as _, TestAppContext, VisualTestContext};
@@ -13811,10 +13788,12 @@ mod close_window_action_tests {
             cx.set_global(Config::default());
             crate::ui::keymap::init(cx);
             WindowRegistry::init(cx);
+            WorkspaceStore::install_for_test(cx, WindowViews::default());
         });
+        let workspace = cx.update(|cx| WorkspaceStore::claim(cx, None));
         let window = cx.add_window(|window, cx| {
             let app =
-                cx.new(|cx| Tty7App::with_session(None, Some(Session::default()), window, cx));
+                cx.new(|cx| Tty7App::with_session(Some(workspace), Some(Session::default()), window, cx));
             gpui_component::Root::new(app, window, cx)
         });
         let app = window
@@ -13843,6 +13822,23 @@ mod close_window_action_tests {
             "the harness starts with exactly the one window"
         );
 
+        let (workspace, expected) = app.update_in(&mut vcx, |app, window, cx| {
+            let expected = WindowState::from_window(window, cx);
+            assert_eq!(expected.bounds(), window.inner_window_bounds().get_bounds());
+            assert_eq!(
+                expected.display_uuid,
+                window.display(cx).and_then(|display| display.uuid().ok())
+            );
+            // A close must capture immediately, even if the bounds observer
+            // has not yet refreshed the last saved geometry.
+            app.window_state = WindowState {
+                x: -9999.0,
+                display_uuid: Some(uuid::Uuid::from_u128(42)),
+                ..expected
+            };
+            (app.workspace, expected)
+        });
+
         vcx.dispatch_action(CloseWindow);
         drop(vcx);
 
@@ -13854,6 +13850,11 @@ mod close_window_action_tests {
             cx.update(|cx| WindowRegistry::open_windows(cx).is_empty()),
             "the close has to run the same cleanup the red button runs, \
              which is what takes the window out of the registry"
+        );
+        assert_eq!(
+            cx.update(|cx| WorkspaceStore::all(cx).get(workspace).and_then(|view| view.window)),
+            Some(expected),
+            "closing records fresh bounds and display together before retiring the workspace"
         );
     }
 }

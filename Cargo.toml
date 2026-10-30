@@ -139,11 +139,6 @@ reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "1d217ee
 # `capture` output through the same grid.
 alacritty_terminal.workspace = true
 
-# Desktop notifications driven by OSC 9 / OSC 777 escape sequences, on Linux and
-# Windows. On macOS only its `set_application` is used — never `show`; see
-# `terminal::remote::macos_notify` for why.
-notify-rust = "4"
-
 # Filesystem watcher for live config reload: watches `config.json` and reloads
 # `Config` + re-applies the theme without a restart. The code panel (file tree /
 # editor, `ui::code`) reuses it to refresh the tree and detect external edits.
@@ -247,12 +242,14 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSAppearance", "NSGraphics", "NSImage"] }
 # NSData feeds the runtime Dock icon for bare (non-bundled) binaries — see
 # `set_dock_icon_for_bare_binary` in main.rs.
-# NSUserNotification is the click-to-reveal notification path — see
-# `terminal::remote::macos_notify` for why it is driven directly.
+# NSBundle supplies the real application identity for UserNotifications — no
+# bundle-id swizzling or impersonation for unbundled development binaries.
 # NSUserDefaults (with NSDictionary for the domain it returns) is how a test
 # checks that `font_thicken: false` leaves `AppleFontSmoothing` alone — see
 # `apply_font_thicken` in main.rs.
-objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSString", "NSUserDefaults", "NSUserNotification"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSString", "NSUserDefaults", "NSBundle", "NSUUID"] }
+block2 = "0.6"
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNError", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSettings", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 # Dictionary-based Chinese word segmentation for double-click selection
 # (`terminal::smart_select`), as a *fallback* where the OS has no tokenizer of
@@ -263,6 +260,10 @@ objc2-foundation = { version = "0.3", features = ["NSData", "NSDictionary", "NSS
 # linked into the build that can't use it.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 jieba-rs = "0.10"
+
+# Desktop notification delivery outside macOS. macOS uses UserNotifications
+# directly, without the bundle-id swizzling of notify-rust's macOS backend.
+notify-rust = "4"
 
 # x11/wayland are the Linux windowing backends; only pull them on Linux. The
 # Windows backend (`gpui_windows`) and macOS backend are selected by gpui_platform

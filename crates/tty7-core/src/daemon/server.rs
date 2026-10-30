@@ -12,6 +12,7 @@ use crate::daemon::transport::{self, Stream};
 struct Registry {
     panes: Mutex<HashMap<u64, Arc<DaemonPane>>>,
     next_id: AtomicU64,
+    agent_watchers: Mutex<Vec<std::sync::Weak<crate::daemon::pane::MobileAgentWatcher>>>,
 }
 
 impl Registry {
@@ -19,6 +20,7 @@ impl Registry {
         Self {
             panes: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            agent_watchers: Mutex::new(Vec::new()),
         }
     }
 
@@ -57,7 +59,28 @@ impl Registry {
     }
 
     fn insert(&self, pane: Arc<DaemonPane>) {
-        self.panes.lock().unwrap().insert(pane.id, pane);
+        let mut watchers = self.agent_watchers.lock().unwrap();
+        let mut panes = self.panes.lock().unwrap();
+        watchers.retain(|watcher| {
+            let Some(watcher) = watcher.upgrade().filter(|watcher| watcher.active()) else {
+                return false;
+            };
+            pane.watch_mobile_agent(&watcher);
+            watcher.active()
+        });
+        panes.insert(pane.id, pane);
+    }
+
+    fn watch_agents(&self, watcher: &Arc<crate::daemon::pane::MobileAgentWatcher>) {
+        // Insert and registration share this lock: a new pane cannot fall
+        // between enumerating existing panes and installing the live watch.
+        let mut watchers = self.agent_watchers.lock().unwrap();
+        let panes = self.panes.lock().unwrap();
+        for pane in panes.values() {
+            pane.watch_mobile_agent(watcher);
+        }
+        watchers.retain(|watcher| watcher.upgrade().is_some_and(|watcher| watcher.active()));
+        watchers.push(Arc::downgrade(watcher));
     }
 
     fn get(&self, id: u64) -> Option<Arc<DaemonPane>> {
@@ -392,6 +415,36 @@ fn mobile_sections(
 }
 
 impl crate::mobile::Backend for MobileBackend {
+    fn watch_agents(&self, watcher: &Arc<crate::daemon::pane::MobileAgentWatcher>) -> std::io::Result<()> {
+        self.registry.watch_agents(watcher);
+        if !watcher.active() {
+            return Err(std::io::Error::other("mobile agent baseline exceeds queue limit"));
+        }
+        Ok(())
+    }
+
+    fn agent_context(&self, pane_id: u64) -> std::io::Result<Option<(String, String)>> {
+        let pane = self.registry.get(pane_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "terminal no longer exists")
+        })?;
+        let machine = self.machine.machine();
+        for workspace in &machine.workspaces {
+            for tab in &workspace.tabs {
+                if !tab.hibernated && tab.root.contains(pane_id) {
+                    let info = pane.info();
+                    let title = tab.name.as_deref()
+                        .or(info.osc_title.as_deref()).unwrap_or(&info.title);
+                    // Titles are untrusted runtime data and share encrypted frame limits.
+                    let title: String = title.chars().take(1024).collect();
+                    return Ok(Some((workspace.id.to_string(), title)));
+                }
+            }
+        }
+        // Spawning inserts the live pane before its machine-tree transaction.
+        // Keep its already captured baseline/transitions until it is filed.
+        Ok(None)
+    }
+
     fn request(&self, request: &serde_json::Value) -> std::io::Result<serde_json::Value> {
         use base64::Engine;
         use serde_json::{Value, json};

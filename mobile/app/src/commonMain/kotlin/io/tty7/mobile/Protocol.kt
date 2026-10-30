@@ -38,6 +38,10 @@ data class Pane(
     val agentRevision: ULong? = null,
 )
 data class Workspace(val id: String, val name: String, val panes: List<Pane>)
+data class AgentNotification(
+    val hostId: String, val workspaceId: String, val paneId: Long,
+    val agentName: String, val title: String, val status: String,
+)
 data class ScreenLine(val row: Int, val ansi: String) {
     fun toJson() = obj("row" to JsonPrimitive(row), "ansi" to JsonPrimitive(ansi))
 }
@@ -238,6 +242,7 @@ interface MobilePlatform {
     fun deriveSession(secret: String, clientNonce: String, hostNonce: String): SecureSession
     fun encodeInput(text: String): String
     fun nowSeconds(): Long
+    fun notifyAgent(notification: AgentNotification)
 }
 @Composable expect fun CameraScanner(onScan: (String) -> Unit, onClose: () -> Unit)
 @Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)

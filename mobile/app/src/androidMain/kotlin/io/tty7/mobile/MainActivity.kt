@@ -1,13 +1,14 @@
 package io.tty7.mobile
 
+import android.Manifest
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
@@ -20,31 +21,30 @@ import kotlinx.coroutines.flow.receiveAsFlow
 class MainActivity : ComponentActivity() {
     private val pairingLinks = Channel<String>(Channel.BUFFERED)
     private val linkFlow = pairingLinks.receiveAsFlow()
-    private var foregroundRemote: ((Boolean) -> Unit)? = null
-    private var networkRemote: ((Boolean) -> Unit)? = null
-    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
-    private var defaultNetwork: Network? = null
-    private var networkAvailable = false
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private lateinit var owner: AndroidRemoteOwner
     private var pendingPairingLink: String? = null
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        // Denial disables task alerts, not the permitted foreground connection service.
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val platform = AndroidPlatform(this)
+        owner = AndroidRemoteOwner.get(applicationContext)
+        owner.attachActivity()
+        AgentNotifications.channels(this)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            val preferences = getSharedPreferences("agent_monitor", MODE_PRIVATE)
+            if (!preferences.getBoolean("notification_permission_requested", false)) {
+                preferences.edit().putBoolean("notification_permission_requested", true).apply()
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
         // Do not automatically replay an old pairing deep link after rotation.
         if (savedInstanceState == null) receivePairingIntent(intent)
         setContent {
             Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = BuildConfig.DEBUG }) {
                 MobileApp(
-                    platform, linkFlow,
-                    registerLifecycle = {
-                        foregroundRemote = it
-                        it?.invoke(lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED))
-                    },
-                    registerNetwork = {
-                        networkRemote = it
-                        it?.invoke(networkAvailable)
-                    },
+                    owner.platform, linkFlow, owner.controller,
                 )
             }
         }
@@ -60,54 +60,19 @@ class MainActivity : ComponentActivity() {
             else pendingPairingLink = it
         }
     }
-    private fun updateNetwork(network: Network?, available: Boolean) {
-        if (defaultNetwork == network && networkAvailable == available) return
-        defaultNetwork = network
-        networkAvailable = available
-        networkRemote?.invoke(available)
-    }
-    private fun monitorNetwork() {
-        val active = connectivity.activeNetwork
-        updateNetwork(active, connectivity.getNetworkCapabilities(active)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true)
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                runOnUiThread {
-                    if (networkCallback === this) {
-                        updateNetwork(network, connectivity.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true)
-                    }
-                }
-            }
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                runOnUiThread {
-                    if (networkCallback === this && defaultNetwork == network) {
-                        updateNetwork(network, capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
-                    }
-                }
-            }
-            override fun onLost(network: Network) {
-                runOnUiThread {
-                    if (networkCallback === this && defaultNetwork == network) updateNetwork(null, false)
-                }
-            }
-        }
-        networkCallback = callback
-        connectivity.registerDefaultNetworkCallback(callback)
-    }
+    // Network monitoring lives in AndroidRemoteOwner, including while this Activity is stopped.
     override fun onStart() {
         super.onStart()
-        monitorNetwork()
-        foregroundRemote?.invoke(true)
+        owner.setForeground(true)
         pendingPairingLink?.let { pairingLinks.trySend(it) }
         pendingPairingLink = null
     }
     override fun onStop() {
-        foregroundRemote?.invoke(false)
-        networkCallback?.let { connectivity.unregisterNetworkCallback(it) }
-        networkCallback = null
+        owner.setForeground(false)
         super.onStop()
     }
     override fun onDestroy() {
-        foregroundRemote?.invoke(false)
+        owner.detachActivity(isChangingConfigurations)
         pairingLinks.close()
         super.onDestroy()
     }

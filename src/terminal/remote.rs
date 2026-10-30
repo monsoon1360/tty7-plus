@@ -2982,38 +2982,27 @@ fn leaf_id_in_identifier(identifier: &str) -> Option<u64> {
     leaf_id.parse().ok()
 }
 
-/// macOS notifications, straight to `NSUserNotificationCenter`.
+/// macOS local notifications use the actual application's bundle identity.
 ///
-/// This used to go through `mac-notification-sys` with `wait_for_click`, so a
-/// click could reveal the pane. The way that crate notices a click is to park
-/// the sending thread and, for every notification outstanding, add a repeating
-/// 0.5 s timer to the *main* run loop that calls `deliveredNotifications` — a
-/// synchronous XPC round trip — to see whether the banner is still there. A
-/// banner nobody clicks stays in Notification Center, so its timer never goes
-/// away. Sampled with nine outstanding: a fifth of the UI thread inside that
-/// XPC, every window juddering, and each agent turn adding one more timer.
-///
-/// Here the click arrives through the center's delegate, which is what the
-/// API is for: no parked thread, no timer, nothing on the main thread until
-/// the user actually clicks. The pane rides in the notification's identifier.
-///
-/// Nothing else may touch the center on this platform. `mac-notification-sys`
-/// installs a delegate of its own the first time it sends, the last
-/// `setDelegate:` wins, and `notify-rust` is that crate on macOS — so its
-/// `show` is never called here, only its `set_application`, which does not
-/// install one (that is what names a bare `cargo run` binary to the center).
+/// Both authorization and delivery report their result asynchronously. Clicks
+/// and foreground presentation use the center's delegate: no parked threads,
+/// repeating timers, or polling `deliveredNotifications` on the UI thread.
+/// Never use notify-rust's macOS backend here: it swizzles bundle identity and
+/// can silently fall back to impersonating Terminal for unbundled binaries.
 #[cfg(target_os = "macos")]
-#[allow(
-    deprecated,
-    reason = "UNUserNotificationCenter needs a signed, entitled bundle; NSUserNotification is what a bare binary can use"
-)]
 mod macos_notify {
+    use std::ptr::NonNull;
+
+    use block2::{DynBlock, RcBlock};
     use objc2::rc::{Retained, autoreleasepool};
-    use objc2::runtime::ProtocolObject;
+    use objc2::runtime::{Bool, ProtocolObject};
     use objc2::{AnyThread, define_class, msg_send};
-    use objc2_foundation::{
-        NSObject, NSObjectProtocol, NSString, NSUserNotification, NSUserNotificationCenter,
-        NSUserNotificationCenterDelegate,
+    use objc2_foundation::{NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString, NSUUID};
+    use objc2_user_notifications::{
+        UNAuthorizationOptions, UNAuthorizationStatus, UNErrorCode, UNErrorDomain,
+        UNMutableNotificationContent, UNNotification, UNNotificationDefaultActionIdentifier,
+        UNNotificationPresentationOptions, UNNotificationRequest, UNNotificationResponse,
+        UNNotificationSettings, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
 
     define_class!(
@@ -3026,71 +3015,166 @@ mod macos_notify {
         // SAFETY: `NSObjectProtocol` has no safety requirements.
         unsafe impl NSObjectProtocol for Delegate {}
 
-        // SAFETY: `NSUserNotificationCenterDelegate` has no safety requirements.
-        unsafe impl NSUserNotificationCenterDelegate for Delegate {
-            /// Runs on the main thread, when the user clicks the banner or the
-            /// entry in Notification Center. A channel push, then the clicked
-            /// entry is dropped from the center — a one-way message, unlike the
-            /// `deliveredNotifications` round trip this module exists to avoid.
-            #[unsafe(method(userNotificationCenter:didActivateNotification:))]
-            fn did_activate(
+        // SAFETY: The protocol has no additional safety requirements.
+        unsafe impl UNUserNotificationCenterDelegate for Delegate {
+            #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+            fn will_present(
                 &self,
-                center: &NSUserNotificationCenter,
-                notification: &NSUserNotification,
+                _center: &UNUserNotificationCenter,
+                _notification: &UNNotification,
+                completion: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
             ) {
-                if let Some(leaf_id) = notification
-                    .identifier()
-                    .and_then(|id| super::leaf_id_in_identifier(&id.to_string()))
+                // Policy was already checked before delivery. In particular,
+                // "Always" must not be silently suppressed by app foreground.
+                completion.call((
+                    UNNotificationPresentationOptions::Banner
+                        | UNNotificationPresentationOptions::List,
+                ));
+            }
+
+            #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+            fn did_receive_response(
+                &self,
+                center: &UNUserNotificationCenter,
+                response: &UNNotificationResponse,
+                completion: &DynBlock<dyn Fn()>,
+            ) {
+                let identifier = response.notification().request().identifier();
+                // A dismiss action is not a request to reveal a pane.
+                // SAFETY: The framework's constant is a valid static NSString.
+                if &*response.actionIdentifier()
+                    == unsafe { UNNotificationDefaultActionIdentifier }
+                    && let Some(leaf_id) = super::leaf_id_in_identifier(&identifier.to_string())
                 {
                     super::reveal_pane(leaf_id);
                 }
-                center.removeDeliveredNotification(notification);
+                center.removeDeliveredNotificationsWithIdentifiers(&NSArray::from_slice(&[
+                    identifier.as_ref(),
+                ]));
+                completion.call(());
             }
         }
     );
 
-    fn install_delegate() {
+    fn install_delegate(center: &UNUserNotificationCenter) {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            // Name the delivering application to the center before it is first
-            // touched: the center drops requests from a process with no bundle
-            // identity, which is what a bare `cargo run` binary is. This
-            // swizzles `-[NSBundle bundleIdentifier]` for the main bundle to
-            // `com.github.tty7` when LaunchServices knows that id (a bundled
-            // tty7.app, or a machine that has one installed); when it does not,
-            // the swizzle's own default, `com.apple.Terminal`, is what the
-            // center sees. It can only be called once per process, so there is
-            // no second chance to pass a different name.
-            let _ = notify_rust::set_application("com.github.tty7");
             // SAFETY: `NSObject`'s `init` takes nothing and returns the object.
             let delegate: Retained<Delegate> = unsafe { msg_send![Delegate::alloc(), init] };
-            let center = NSUserNotificationCenter::defaultUserNotificationCenter();
-            // SAFETY: `delegate` is a `Delegate`, which conforms to the protocol.
-            unsafe { center.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
-            // The center holds its delegate unretained. Ours lives as long as
-            // the process, so it is simply never released.
+            center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            // The center holds a weak reference; the delegate lives for the
+            // process, not just until this asynchronous request returns.
             std::mem::forget(delegate);
         });
     }
 
-    /// Hands the notification to the center and returns. `deliverNotification:`
-    /// is an XPC message, so it goes out on a short-lived thread rather than
-    /// from wherever the OSC sequence was parsed — never the UI thread.
-    pub(super) fn deliver(title: String, body: String, leaf_id: Option<u64>) {
-        std::thread::spawn(move || {
-            autoreleasepool(|_| {
-                install_delegate();
-                let notification = NSUserNotification::new();
-                notification.setTitle(Some(&NSString::from_str(&title)));
-                notification.setInformativeText(Some(&NSString::from_str(&body)));
-                if let Some(leaf_id) = leaf_id {
-                    let id = super::notification_identifier(leaf_id);
-                    notification.setIdentifier(Some(&NSString::from_str(&id)));
-                }
-                NSUserNotificationCenter::defaultUserNotificationCenter()
-                    .deliverNotification(&notification);
-            });
+    fn permission_denied(bundle_id: &str) {
+        log::warn!(
+            "macOS notification permission denied for {bundle_id}; \
+             review tty7 in System Settings > Notifications"
+        );
+    }
+
+    fn report_error(stage: &str, bundle_id: &str, error: &NSError) {
+        // A grant can be revoked between the settings read and submission.
+        // SAFETY: The framework's error-domain constant is a static NSString.
+        let denied = unsafe { UNErrorDomain }
+            .is_some_and(|domain| &*error.domain() == domain)
+            && error.code() == UNErrorCode::NotificationsNotAllowed.0;
+        if denied {
+            permission_denied(bundle_id);
+        } else {
+            log::error!("macOS notification {stage} failed for {bundle_id}: {error:?}");
+        }
+    }
+
+    fn submit(request: &UNNotificationRequest, bundle_id: &str) {
+        let bundle_id = bundle_id.to_owned();
+        let identifier = request.identifier().to_string();
+        let completion = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: The system supplies either nil or a live NSError for
+            // the duration of this completion callback.
+            if let Some(error) = unsafe { error.as_ref() } {
+                report_error("delivery", &bundle_id, error);
+            } else {
+                log::debug!("macOS notification accepted for {bundle_id}: {identifier}");
+            }
         });
+        UNUserNotificationCenter::currentNotificationCenter()
+            .addNotificationRequest_withCompletionHandler(request, Some(&completion));
+    }
+
+    /// The worker only initiates asynchronous system calls. It never waits for
+    /// authorization, delivery, or a click, and never adds a run-loop timer.
+    pub(super) fn deliver(title: String, body: String, leaf_id: Option<u64>) {
+        if let Err(error) = std::thread::Builder::new()
+            .name("macos-notification".into())
+            .spawn(move || {
+                autoreleasepool(|_| {
+                    let Some(bundle_id) = NSBundle::mainBundle().bundleIdentifier() else {
+                        log::error!(
+                            "macOS notifications require an application bundle; \
+                             launch tty7.app rather than an unbundled executable"
+                        );
+                        return;
+                    };
+                    let bundle_id = bundle_id.to_string();
+                    let center = UNUserNotificationCenter::currentNotificationCenter();
+                    install_delegate(&center);
+                    let content = UNMutableNotificationContent::new();
+                    content.setTitle(&NSString::from_str(&title));
+                    content.setBody(&NSString::from_str(&body));
+                    let identifier = leaf_id
+                        .map(|id| NSString::from_str(&super::notification_identifier(id)))
+                        .unwrap_or_else(|| NSUUID::UUID().UUIDString());
+                    let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+                        &identifier,
+                        &content,
+                        None,
+                    );
+                    let settings = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+                        // SAFETY: The callback's nonnull settings object lives
+                        // for the duration of this invocation.
+                        let settings = unsafe { settings.as_ref() };
+                        let status = settings.authorizationStatus();
+                        log::debug!(
+                            "macOS notification settings for {bundle_id}: \
+                             authorization={status:?}, alerts={:?}, center={:?}",
+                            settings.alertSetting(),
+                            settings.notificationCenterSetting(),
+                        );
+                        if status == UNAuthorizationStatus::Denied {
+                            permission_denied(&bundle_id);
+                        } else if status == UNAuthorizationStatus::NotDetermined {
+                            let request = request.clone();
+                            let bundle_id = bundle_id.clone();
+                            let authorization = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+                                // SAFETY: nil or a live NSError during this callback.
+                                if let Some(error) = unsafe { error.as_ref() } {
+                                    report_error("authorization", &bundle_id, error);
+                                } else if granted.as_bool() {
+                                    submit(&request, &bundle_id);
+                                } else {
+                                    permission_denied(&bundle_id);
+                                }
+                            });
+                            // Only an undetermined decision can prompt. Never
+                            // re-request authorization after a denial.
+                            UNUserNotificationCenter::currentNotificationCenter()
+                                .requestAuthorizationWithOptions_completionHandler(
+                                    UNAuthorizationOptions::Alert,
+                                    &authorization,
+                                );
+                        } else {
+                            submit(&request, &bundle_id);
+                        }
+                    });
+                    center.getNotificationSettingsWithCompletionHandler(&settings);
+                });
+            })
+        {
+            log::error!("could not start macOS notification delivery: {error}");
+        }
     }
 }
 

@@ -144,8 +144,8 @@ The Android Kotlin Multiplatform Compose app connects to this computer's
 background tty7 daemon through a Rust relay. Both computer and phone make
 outbound connections; closing the desktop GUI does not stop the daemon or its
 shells. This is terminal and session access, not screen sharing: no mouse,
-file browser, file transfer or push notifications. Keep the Android app in the
-foreground while connected.
+file browser or file transfer. Android can receive Agent notifications while the
+app is in the background through a foreground connection service.
 
 ### Pair and reconnect
 
@@ -182,12 +182,45 @@ foreground while connected.
    older multi-computer store keeps the last approved computer, or the latest
    pending pairing if none is approved.
 6. The approved computer reconnects automatically on cold launch and foreground
-   return; pairing does not need to be repeated. A foreground network interruption
-   keeps the selected terminal behind a reconnect overlay. After reconnection,
+   return; pairing does not need to be repeated. Network interruptions are retried
+   in the foreground and while the background connection service is running.
+   A foreground interruption keeps the selected terminal behind a reconnect overlay.
+   After reconnection,
    the overlay clears only when its new snapshot is completely parsed. There is
    no separate Disconnect button. Unpairing removes the phone's saved credential;
    **revoke** its device entry on the desktop to withdraw access there. Disabling
    desktop mobile access disconnects live phones and stops relay access.
+
+### Agent notifications
+
+Allow Android's notification permission when prompted (required on Android 13+).
+The app uses separate channels for **Agent 任务完成** and **Agent 需要人为干预**:
+
+- A transition to **Done** reports task completion.
+- A transition to **Waiting** reports a permission request, confirmation or question
+  requiring human input. Ordinary Working and Idle updates do not alert.
+- Every terminal is monitored, including those never selected on the phone.
+  The daemon captures transitions as they happen, so a short Waiting → Working
+  change between session-list refreshes is not lost.
+- Initial connection/reconnection snapshots do not alert. Duplicate statuses and
+  stale revisions are ignored; a later task or renewed request can alert again.
+- Tap a notification to open its exact terminal. If that terminal has closed, the
+  app reports that instead of selecting a different session. Notification details
+  are private on the lockscreen.
+
+While connected, **tty7 正在接收 Agent 通知** is the ongoing foreground-service
+indicator. Moving the app into the background releases the terminal renderer
+subscription and its phone-size lease, but keeps the encrypted Agent stream and
+network monitoring alive. Unpairing stops the connection and service.
+
+Update both the desktop daemon and Android app for this feature; it extends
+protocol 3 with the authenticated `watch_agents` subscription. The relay needs
+no notification-specific change and still cannot read the encrypted payloads.
+There is no FCM/APNs service or offline event inbox: force-stopping the app,
+stopping its connection service, device power restrictions or losing connectivity
+can prevent delivery. Reconnecting establishes a fresh baseline rather than
+replaying missed notifications. If permission or a notification channel is
+disabled, re-enable it in Android's app notification settings.
 
 ### Content synchronization and failure handling
 
@@ -485,3 +518,16 @@ twelve 1,300-physical-pixel upward-history swipes loaded older content without
 a cursor-expiry error. The service regression also ages an active view by one
 hour and verifies the next immutable page's exact rows; global view-count and
 byte-budget checks remain enabled.
+
+Agent notifications were exercised on the physical Honor phone using a separately
+identified debug APK and an encrypted local protocol fixture, without changing the
+installed production app's credentials. Background Waiting and Done transitions
+appeared as Android system notifications. Warm and cold notification taps opened
+the exact terminal with its screen rendered and keyboard still hidden; background
+transport recovery resumed alerts without notifying for its baseline. Denying
+notification permission suppressed alerts without breaking the connection.
+Rust regressions cover same-read transitions, watcher cancellation/overflow and
+encrypted forwarding;
+Android controller regressions cover baseline/stale-event suppression, background
+renderer release and notification routing. This fixture verification did not
+replace the user's running desktop daemon or deploy the production Android app.

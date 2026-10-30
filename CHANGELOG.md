@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Android Agent notifications.** Notify when an agent finishes a task or needs
+  permission, confirmation or an answer, including panes never opened on the phone.
+  A foreground connection service receives encrypted, ordered status transitions
+  in the background without retaining a terminal renderer or size lease. Initial
+  snapshots, repeated statuses and stale revisions do not produce duplicate alerts.
+  Tap an alert to open its terminal; Android notification permission is required.
+  Android Release 1.0.2 (versionCode 3) includes these notifications and upgrades
+  existing signed installations without removing saved pairings.
+  This uses the existing relay, not FCM or offline push delivery.
+
 - **Jump to the agent waiting longest.** `Cmd+Shift+U` on macOS or
   `Ctrl+Shift+U` elsewhere focuses the agent that has waited longest for input,
   across windows; completed unread agents follow. The switcher and `tty7 agents`
@@ -140,6 +150,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upward movement that reaches the live viewport's top can open it.
 
 ### Fixed
+
+- **Reopen windows on their remembered monitor.** Save a stable display UUID
+  with window geometry and explicitly select that display before restoring normal,
+  maximized or fullscreen windows. Closing a window into the tray also preserves
+  its placement. Disconnected displays fall back to the primary monitor with
+  reachable bounds; older geometry-only files remain readable.
+
+- **macOS notification authorization and foreground delivery.** Use the native
+  UserNotifications API with the actual app bundle identity, request permission
+  when undecided, and report authorization denial or delivery failures instead
+  of silently dropping notifications. Foreground presentation honors **Always**;
+  **When unfocused** checks the target pane rather than suppressing every pane
+  in an active window. Notification clicks still reveal the originating pane
+  and reject identifiers from an older process.
 
 - **Editor and settings headers share the title bar's vertical centre** —
   Editor, settings, and sidebar header rows reserve the same bottom-edge

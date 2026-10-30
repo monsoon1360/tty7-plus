@@ -949,6 +949,11 @@ impl TerminalView {
         super::remote::notify_desktop_for_pane(Some(&title), body, Some(cx.entity_id()));
     }
 
+    fn notifications_allowed(&self, window: &Window, cx: &Context<Self>) -> bool {
+        let watched = window.is_window_active() && self.focus_handle.is_focused(window);
+        cx.global::<Config>().notify_on_command_finish.allows(watched)
+    }
+
     /// Desktop notifications the program wrote (OSC 9, 99, 777), such as
     /// Claude Code's with its Notifications setting on `ghostty`, `kitty` or
     /// `iterm2`. The agent's Waiting mark on the tab is the daemon's doing.
@@ -962,13 +967,8 @@ impl TerminalView {
     /// is untrusted), with one note saying the rest were not shown.
     fn show_program_notes(&self, hooks_notify: bool, window: &Window, cx: &mut Context<Self>) {
         let notes = self.terminal.take_osc_notes();
-        let watched = window.is_window_active() && self.focus_handle.is_focused(window);
         let hooked = self.terminal.agent_session().is_some_and(|s| s.rich);
-        let show = cx
-            .global::<Config>()
-            .notify_on_command_finish
-            .allows(watched)
-            && !(hooked && hooks_notify);
+        let show = self.notifications_allowed(window, cx) && !(hooked && hooks_notify);
         if !notes.is_empty() {
             log::debug!(
                 "{} program notification(s) {}",
@@ -4257,10 +4257,7 @@ impl TerminalView {
     }
 
     fn poll_foreground(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let notify_allowed = cx
-            .global::<Config>()
-            .notify_on_command_finish
-            .allows(window.is_window_active());
+        let notify_allowed = self.notifications_allowed(window, cx);
         // Ahead of the exit check: what a program said just before its shell
         // exited is still shown.
         self.show_program_notes(notify_allowed, window, cx);
@@ -11634,6 +11631,66 @@ mod gpui_tests {
             poll_unread(window, &after, cx),
             "rebuilding the pane is not reading it"
         );
+    }
+
+    #[gpui::test]
+    fn notification_policy_tracks_the_watched_pane_not_just_the_window(cx: &mut TestAppContext) {
+        use crate::core::config::NotifyMode;
+
+        crate::core::config::pin_test_config_dir();
+        let (window, _root_daemon) = harness(cx);
+        let (other, _other_daemon) = window
+            .update(cx, |_, window, cx| super::quiet_test_pane(2, window, cx))
+            .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                window.activate_window();
+                view.focus_handle.focus(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        for (mode, watched_allowed, other_allowed) in [
+            (NotifyMode::Never, false, false),
+            (NotifyMode::Unfocused, false, true),
+            (NotifyMode::Always, true, true),
+        ] {
+            cx.update(|cx| cx.global_mut::<Config>().notify_on_command_finish = mode);
+            window
+                .update(cx, |view, window, cx| {
+                    assert!(window.is_window_active());
+                    assert!(view.focus_handle.is_focused(window));
+                    assert!(!other.read(cx).focus_handle.is_focused(window));
+                    assert_eq!(
+                        view.notifications_allowed(window, cx),
+                        watched_allowed,
+                        "{mode:?}: the pane the reader is watching"
+                    );
+                    other.update(cx, |pane, cx| {
+                        assert_eq!(
+                            pane.notifications_allowed(window, cx),
+                            other_allowed,
+                            "{mode:?}: another pane in the active window"
+                        );
+                    });
+                })
+                .unwrap();
+        }
+
+        cx.update(|cx| {
+            cx.global_mut::<Config>().notify_on_command_finish = NotifyMode::Unfocused;
+        });
+        gpui::VisualTestContext::from_window(window.into(), cx).deactivate_window();
+        window
+            .update(cx, |view, window, cx| {
+                // Deactivation is a platform event; blurring only clears pane focus.
+                assert!(!window.is_window_active());
+                assert!(view.notifications_allowed(window, cx));
+                other.update(cx, |pane, cx| {
+                    assert!(pane.notifications_allowed(window, cx));
+                });
+            })
+            .unwrap();
     }
 
     /// The badge answers "did the reader see this?", so it has to read the

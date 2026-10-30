@@ -829,28 +829,19 @@ fn window_options(cx: &mut App, workspace: Option<WorkspaceId>) -> WindowOptions
         .flatten();
 
     let existing = WindowRegistry::count(cx);
-    let bounds = match remembered {
-        Some(state) => {
-            let bounds = at_least_min_size(state.bounds());
-            if cx.displays().iter().any(|d| d.bounds().intersects(&bounds)) {
-                bounds
-            } else {
-                Bounds::centered(None, bounds.size, cx)
-            }
-        }
-        None => Bounds::centered(None, size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx),
-    };
-    let bounds = cascade(bounds, existing);
-
-    let window_bounds = match cx.global::<Config>().startup_mode {
-        _ if existing > 0 => WindowBounds::Windowed(bounds),
-        StartupMode::Normal => WindowBounds::Windowed(bounds),
-        StartupMode::Maximized => WindowBounds::Maximized(bounds),
-        StartupMode::Fullscreen => WindowBounds::Fullscreen(bounds),
-    };
+    let primary = cx.primary_display().map(|display| (display.id(), display.visible_bounds()));
+    let displays = cx.displays();
+    let (display_id, window_bounds) = window_placement(
+        remembered,
+        primary,
+        displays.iter().map(|display| (display.id(), display.uuid().ok(), display.visible_bounds())),
+        existing,
+        cx.global::<Config>().startup_mode,
+    );
 
     WindowOptions {
         window_bounds: Some(window_bounds),
+        display_id,
         app_id: Some("tty7".to_owned()),
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         icon: APP_ICON.as_ref().cloned(),
@@ -868,6 +859,59 @@ fn window_options(cx: &mut App, workspace: Option<WorkspaceId>) -> WindowOptions
         window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
         ..Default::default()
     }
+}
+
+/// Select the physical monitor before applying maximization/fullscreen. Coordinates
+/// alone are ambiguous on platforms whose displays all have a local origin.
+fn window_placement(
+    remembered: Option<WindowState>,
+    primary: Option<(gpui::DisplayId, Bounds<gpui::Pixels>)>,
+    displays: impl Iterator<Item = (gpui::DisplayId, Option<uuid::Uuid>, Bounds<gpui::Pixels>)> + Clone,
+    existing: usize,
+    mode: StartupMode,
+) -> (Option<gpui::DisplayId>, WindowBounds) {
+    let selected = remembered.and_then(|state| {
+        if let Some(uuid) = state.display_uuid {
+            displays.clone().find(|(_, candidate, _)| *candidate == Some(uuid))
+                .map(|(id, _, bounds)| (id, bounds))
+        } else {
+            // Legacy global coordinates identify a screen only when exactly one
+            // display intersects them. Never interpret an index as an identity.
+            let mut matches = displays.clone().filter(|(_, _, bounds)| bounds.intersects(&state.bounds()));
+            let first = matches.next()?;
+            matches.next().is_none().then_some((first.0, first.2))
+        }
+    });
+    let target = selected.or(primary);
+    let mut bounds = remembered.map(|state| at_least_min_size(state.bounds()))
+        .unwrap_or_else(|| Bounds::new(point(px(0.), px(0.)), size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1))));
+    if let Some((_, screen)) = target {
+        // A missing UUID means the monitor was disconnected, not that the same
+        // coordinates should now be applied to an unrelated screen.
+        let missing_monitor = remembered.is_some_and(|state| state.display_uuid.is_some()) && selected.is_none();
+        if remembered.is_none() || missing_monitor || !screen.intersects(&bounds) {
+            bounds.origin = point(
+                screen.origin.x + (screen.size.width - bounds.size.width) / 2.,
+                screen.origin.y + (screen.size.height - bounds.size.height) / 2.,
+            );
+        }
+        bounds = cascade(bounds, existing);
+        bounds.size.width = bounds.size.width.min(screen.size.width).max(px(MIN_SIZE.0));
+        bounds.size.height = bounds.size.height.min(screen.size.height).max(px(MIN_SIZE.1));
+        bounds.origin.x = bounds.origin.x.max(screen.origin.x)
+            .min(screen.origin.x + (screen.size.width - bounds.size.width).max(px(0.)));
+        bounds.origin.y = bounds.origin.y.max(screen.origin.y)
+            .min(screen.origin.y + (screen.size.height - bounds.size.height).max(px(0.)));
+    } else {
+        bounds = cascade(bounds, existing);
+    }
+    let window_bounds = match mode {
+        _ if existing > 0 => WindowBounds::Windowed(bounds),
+        StartupMode::Normal => WindowBounds::Windowed(bounds),
+        StartupMode::Maximized => WindowBounds::Maximized(bounds),
+        StartupMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+    };
+    (target.map(|(id, _)| id), window_bounds)
 }
 
 /// Grow a remembered bound back up to `MIN_SIZE`.
@@ -904,6 +948,89 @@ mod tests {
     use crate::core::session::{RemoteRef, RemoteTarget, WindowView, WindowViews};
     use crate::ui::i18n::{L10nKey, set_locale, t_plural};
 
+
+    fn saved_on(display_uuid: Option<uuid::Uuid>) -> WindowState {
+        WindowState { x: 100., y: 80., width: 800., height: 600., display_uuid }
+    }
+
+    #[test]
+    fn physical_display_uuid_survives_display_id_and_order_changes_in_every_mode() {
+        let primary_uuid = uuid::Uuid::from_u128(1);
+        let external_uuid = uuid::Uuid::from_u128(2);
+        let screen = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.)));
+        for ids in [[11, 92], [58, 3]] {
+            let primary = gpui::DisplayId::new(ids[0]);
+            let external = gpui::DisplayId::new(ids[1]);
+            let displays = [(external, Some(external_uuid), screen), (primary, Some(primary_uuid), screen)];
+            for (uuid, expected) in [(primary_uuid, primary), (external_uuid, external)] {
+                for mode in [StartupMode::Normal, StartupMode::Maximized, StartupMode::Fullscreen] {
+                    let (id, bounds) = window_placement(Some(saved_on(Some(uuid))), Some((primary, screen)), displays.into_iter(), 0, mode);
+                    assert!(id == Some(expected));
+                    assert_eq!(bounds.get_bounds(), saved_on(Some(uuid)).bounds());
+                    assert!(matches!((mode, bounds),
+                        (StartupMode::Normal, WindowBounds::Windowed(_))
+                        | (StartupMode::Maximized, WindowBounds::Maximized(_))
+                        | (StartupMode::Fullscreen, WindowBounds::Fullscreen(_))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn disconnected_display_recenters_and_resolution_changes_keep_the_titlebar_visible() {
+        let primary = gpui::DisplayId::new(9);
+        let screen = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
+        let displays = [(primary, Some(uuid::Uuid::from_u128(1)), screen)];
+        let (id, bounds) = window_placement(Some(saved_on(Some(uuid::Uuid::from_u128(2)))), Some((primary, screen)), displays.into_iter(), 0, StartupMode::Normal);
+        assert!(id == Some(primary));
+        assert_eq!(bounds.get_bounds().origin, point(px(240.), px(100.)));
+        let mut moved = saved_on(Some(uuid::Uuid::from_u128(1)));
+        moved.x = 1200.;
+        moved.y = 750.;
+        moved.width = 1800.;
+        let (_, bounds) = window_placement(Some(moved), Some((primary, screen)), displays.into_iter(), 4, StartupMode::Normal);
+        assert_eq!(bounds.get_bounds().size, size(px(1280.), px(600.)));
+        assert_eq!(bounds.get_bounds().origin, point(px(0.), px(200.)));
+        assert!(matches!(bounds, WindowBounds::Windowed(_)));
+    }
+
+    #[test]
+    fn legacy_coordinates_select_only_an_unambiguous_display() {
+        let primary = gpui::DisplayId::new(1);
+        let external = gpui::DisplayId::new(2);
+        let screen = Bounds::new(point(px(0.), px(0.)), size(px(1920.), px(1080.)));
+        let external_screen = Bounds::new(point(px(1920.), px(0.)), screen.size);
+        let mut state = saved_on(None);
+        state.x = 2000.;
+        let displays = [(primary, None, screen), (external, None, external_screen)];
+        let (id, bounds) = window_placement(Some(state), Some((primary, screen)), displays.into_iter(), 0, StartupMode::Normal);
+        assert!(id == Some(external));
+        assert_eq!(bounds.get_bounds(), state.bounds());
+        let ambiguous = [(external, None, screen), (primary, None, screen)];
+        let (id, bounds) = window_placement(Some(saved_on(None)), Some((primary, screen)), ambiguous.into_iter(), 0, StartupMode::Normal);
+        assert!(id == Some(primary));
+        assert_eq!(bounds.get_bounds(), saved_on(None).bounds());
+    }
+
+    #[gpui::test]
+    fn disabling_remember_ignores_workspace_monitor_and_geometry(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            WindowRegistry::init(cx);
+            let mut config = Config::default();
+            config.remember_window_size = false;
+            cx.set_global(config);
+            let mut view = WindowView::default();
+            let mut state = saved_on(Some(uuid::Uuid::from_u128(999)));
+            state.width = 900.;
+            view.window = Some(state);
+            let workspace = view.id;
+            WorkspaceStore::install_for_test(cx, WindowViews { views: vec![view], active: Some(workspace) });
+            let options = window_options(cx, Some(workspace));
+            let expected = window_options(cx, None);
+            assert!(options.display_id == expected.display_id);
+            assert_eq!(options.window_bounds.unwrap().get_bounds(), expected.window_bounds.unwrap().get_bounds());
+        });
+    }
     fn bounds_at(x: f32, y: f32) -> Bounds<gpui::Pixels> {
         Bounds {
             origin: point(px(x), px(y)),

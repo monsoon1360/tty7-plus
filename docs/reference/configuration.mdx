@@ -78,14 +78,28 @@ sessions.
 | `window_backdrop` | enum | `"auto"` | Windows only: `auto`, `blur`, `mica`, `mica-alt`, `acrylic`, `off`. |
 | `dim_inactive_panes` | bool | `true` | Dim panes that are not focused. |
 | `auto_hide_titlebar_buttons` | bool | `false` | Show the title bar's new tab and sidebar buttons only while the pointer is over the bar they sit in. |
-| `startup_mode` | enum | `"normal"` | `normal`, `maximized`, `fullscreen`. |
-| `remember_window_size` | bool | `true` | Reopen at the last size and position. |
+| `startup_mode` | enum | `"normal"` | `normal`, `maximized`, `fullscreen`; applied on the remembered monitor when available. |
+| `remember_window_size` | bool | `true` | Reopen at the last size and position on the same physical monitor. |
 | `restore_session` | bool | `true` | Reopen the last window's tabs, splits, and directories. |
 | `gui_language` | enum | `"en"` | `en`, `zh-CN`, `ja-JP`, `ru-RU`. Anything else falls back to `en`. |
 
 Built-in theme ids: `light`, `one_light`, `catppuccin_latte`, `rose_pine_dawn`,
 `dark`, `dracula`, `harbor`, `one_dark_pro`, `rose_pine`. Your own themes take
 their id from the file name. [More about themes →](/customization/themes)
+
+With `remember_window_size` enabled, window geometry includes the monitor's stable
+UUID, not its temporary display number or its position in the display list. This
+also applies when a window is closed into the tray and opened again. Each workspace
+retains its own placement; `window.json` supplies the fallback for a new window.
+If the remembered monitor is unavailable, tty7 places the window visibly on the
+primary display. Smaller or rearranged displays do not leave its title bar off-screen.
+
+Older geometry files contain no monitor identity. They still load, but on macOS
+their screen-local coordinates cannot identify the original monitor: after
+updating, move the window to the desired display and close it once to record that
+display. Disabling `remember_window_size` ignores both the saved geometry and
+monitor. This restores physical displays, not Mission Control virtual desktop
+(Space) assignments.
 
 ## Tabs, sidebar, panels
 

@@ -56,6 +56,7 @@ class AndroidPlatform(context: Context) : MobilePlatform {
     private val appearance = app.getSharedPreferences("appearance", Context.MODE_PRIVATE)
     override fun loadTheme(): MobileTheme? = MobileTheme.fromId(appearance.getString("theme", null))
     override fun saveTheme(theme: MobileTheme) { appearance.edit().putString("theme", theme.id).apply() }
+    override fun notifyAgent(notification: AgentNotification) { AgentNotifications.post(app, notification) }
     private val random = SecureRandom()
     override val deviceName: String get() = "${Build.MANUFACTURER} ${Build.MODEL}".take(128)
     override fun nowSeconds() = System.currentTimeMillis() / 1000

@@ -84,8 +84,10 @@ Two, both following your **Settings → General → Notifications** policy:
 - **"needs your permission…"** the moment an agent blocks on you
 - **"finished after 42s"** at the end of a turn
 
-Which means that by default — *When unfocused* — you are told the instant you
-are the bottleneck, and left alone while you are watching.
+By default — *When unfocused* — notifications are held back only while the target
+pane has focus in an active window. Another pane in that same window can still
+notify you. *Always* also permits notifications while you watch the target pane;
+*Never* disables them.
 
 A program can also post its own notification with OSC 9, OSC 777
 (`notify;title;body`) or kitty's OSC 99. tty7 shows it under the same policy,
@@ -94,6 +96,26 @@ pane. Claude Code writes one when its **Notifications** setting (`/config`) is
 `ghostty`, `kitty` or `iterm2`. Its default, `auto`, sends nothing in tty7. A
 pane whose agent already reports through tty7's hooks skips the copy that would
 repeat the notice above.
+
+### macOS permission and delivery
+
+The in-app policy and macOS notification authorization are separate. tty7 uses
+the actual `.app` bundle identity with UserNotifications, requests authorization
+if no decision has been made, and asks macOS to present eligible notifications
+even while tty7 is foreground. Run the bundled app for system notifications;
+an unbundled `cargo run` executable cannot borrow another app's identity.
+
+If notifications remain invisible, review **System Settings → Notifications →
+tty7**, including **Allow notifications**, banner style and Focus restrictions.
+An in-app **Always** policy cannot override a system denial. If the switch is
+already enabled, recheck authorization after launching the current app build;
+tty7 logs the effective OS decision rather than relying on stored preference
+flags. A denied authorization is logged separately from a delivery API error.
+
+Use `TTY7_LOG=debug` when diagnosing delivery. A settings log with
+`authorization=UNAuthorizationStatus(1)` means macOS returned **Denied**; it is
+not evidence that tty7's in-app switch is off. An `accepted` log means the system
+accepted the request, not proof that a banner was visibly presented.
 
 ## The tray icon
 

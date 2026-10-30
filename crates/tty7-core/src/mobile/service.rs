@@ -1,13 +1,13 @@
 use super::crypto::{self, Cipher, Envelope};
 use super::store::{Credential, Store};
 use super::{AdminReply, AdminRequest, Device, Pairing, Pending, Status};
-use crate::daemon::pane::{DaemonPane, MobileAgentState};
+use crate::daemon::pane::{DaemonPane, MobileAgentChange, MobileAgentState, MobileAgentWatcher};
 use crate::daemon::protocol::WinSize;
 use crate::daemon::screen::{HistorySnapshot, ScreenSnapshot};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::{
     Arc, OnceLock,
@@ -42,6 +42,8 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 pub(crate) trait Backend: Send + Sync {
     fn request(&self, request: &Value) -> io::Result<Value>;
     fn observe(&self, workspace: &str, pane_id: u64) -> io::Result<Observation>;
+    fn watch_agents(&self, watcher: &Arc<MobileAgentWatcher>) -> io::Result<()>;
+    fn agent_context(&self, pane_id: u64) -> io::Result<Option<(String, String)>>;
 }
 pub(crate) struct Observation {
     pub pane: Arc<DaemonPane>,
@@ -110,6 +112,7 @@ struct Peer {
     code: String,
     deadline: Instant,
     subscriptions: HashMap<u64, Subscription>,
+    agent_watch: Option<Arc<MobileAgentWatcher>>,
     alive: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     jobs: Arc<AtomicUsize>,
@@ -123,6 +126,7 @@ impl Peer {
             code: String::new(),
             deadline: Instant::now() + HANDSHAKE_LIFETIME,
             subscriptions: HashMap::new(),
+            agent_watch: None,
             alive: Arc::new(AtomicBool::new(true)),
             failed: Arc::new(AtomicBool::new(false)),
             jobs: Arc::new(AtomicUsize::new(0)),
@@ -133,6 +137,9 @@ impl Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.alive.store(false, Ordering::Release);
+        if let Some(watcher) = &self.agent_watch {
+            watcher.active.store(false, Ordering::Release);
+        }
     }
 }
 struct OperationGuard {
@@ -345,6 +352,11 @@ struct Output {
     sequence: Option<u64>,
     finished: bool,
 }
+struct AgentOutput {
+    client: String,
+    watcher: Arc<MobileAgentWatcher>,
+    value: Value,
+}
 struct Service {
     store: Option<Store>,
     backend: Arc<dyn Backend>,
@@ -356,6 +368,8 @@ struct Service {
     outputs: async_mpsc::Receiver<Output>,
     replies: async_mpsc::Sender<(String, Value)>,
     reply_receiver: async_mpsc::Receiver<(String, Value)>,
+    agent_output: async_mpsc::Sender<AgentOutput>,
+    agent_outputs: async_mpsc::Receiver<AgentOutput>,
     operation_slots: Arc<tokio::sync::Semaphore>,
     history: Arc<Mutex<HistoryStore>>,
     history_slots: Arc<tokio::sync::Semaphore>,
@@ -366,6 +380,7 @@ impl Service {
     fn new(store: io::Result<Store>, backend: Arc<dyn Backend>) -> Self {
         let (output, outputs) = async_mpsc::channel(128);
         let (replies, reply_receiver) = async_mpsc::channel(256);
+        let (agent_output, agent_outputs) = async_mpsc::channel(256);
         let (store, error) = match store {
             Ok(store) => (Some(store), None),
             Err(_) => (
@@ -384,6 +399,8 @@ impl Service {
             outputs,
             replies,
             reply_receiver,
+            agent_output,
+            agent_outputs,
             operation_slots: Arc::new(tokio::sync::Semaphore::new(128)),
             history: Arc::new(Mutex::new(HistoryStore::default())),
             history_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -425,6 +442,7 @@ impl Service {
                 Frame(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
                 Output(Option<Output>),
                 Reply(Option<(String, Value)>),
+                Agent(Option<AgentOutput>),
                 Tick,
             }
             let event = tokio::select! {
@@ -432,6 +450,7 @@ impl Service {
                 command = commands.recv() => Event::Admin(command),
                 reply = self.reply_receiver.recv() => Event::Reply(reply),
                 _ = ticks.tick() => Event::Tick,
+                output = self.agent_outputs.recv() => Event::Agent(output),
                 frame = async { match socket.as_mut() { Some(socket) => socket.next().await, None => std::future::pending().await } } => Event::Frame(frame),
                 output = self.outputs.recv() => Event::Output(output),
             };
@@ -476,6 +495,8 @@ impl Service {
                 Event::Frame(_) => reconnect = true,
                 Event::Output(Some(output)) => self.output_frame(output, &mut outgoing),
                 Event::Output(None) => break,
+                Event::Agent(Some(output)) => self.agent_frame(output, &mut outgoing),
+                Event::Agent(None) => break,
                 Event::Reply(Some((client, response))) => {
                     if let Some(peer) = self.peers.get_mut(&client)
                         && matches!(&peer.phase, Phase::Authenticated { .. })
@@ -507,6 +528,7 @@ impl Service {
                         .iter()
                         .filter(|(_, peer)| {
                             peer.deadline <= Instant::now() || peer.failed.load(Ordering::Acquire)
+                                || peer.agent_watch.as_ref().is_some_and(|watcher| !watcher.active())
                         })
                         .map(|(id, _)| id.clone())
                         .collect();
@@ -1091,8 +1113,46 @@ impl Service {
         Ok(())
     }
 
+    fn agent_frame(&mut self, output: AgentOutput, outgoing: &mut Vec<Message>) {
+        let Some(peer) = self.peers.get_mut(&output.client).filter(|peer| {
+            matches!(peer.phase, Phase::Authenticated { .. })
+                && peer.alive.load(Ordering::Acquire)
+                && output.watcher.active()
+                && peer.agent_watch.as_ref().is_some_and(|watcher| Arc::ptr_eq(watcher, &output.watcher))
+        }) else { return; };
+        match encrypted(&output.client, peer, &output.value) {
+            Ok(frame) => outgoing.push(frame),
+            Err(_) => {
+                outgoing.push(disconnect(&output.client));
+                self.peers.remove(&output.client);
+            }
+        }
+    }
+
+    async fn watch_agents(&self, client: &str, peer: &mut Peer) -> io::Result<Value> {
+        if !matches!(peer.phase, Phase::Authenticated { .. }) {
+            return Err(crypto::denied());
+        }
+        if peer.agent_watch.is_some() { return Ok(Value::Null); }
+        let (watcher, receiver) = MobileAgentWatcher::new();
+        let backend = self.backend.clone();
+        let registration = watcher.clone();
+        tokio::task::spawn_blocking(move || backend.watch_agents(&registration))
+            .await.map_err(|_| io::Error::other("agent watch registration failed"))??;
+        let backend = self.backend.clone();
+        let output = self.agent_output.clone();
+        let client = client.to_string();
+        let forwarding = watcher.clone();
+        std::thread::Builder::new().name("tty7-mobile-agents".into()).spawn(move || {
+            forward_agents(receiver, forwarding, backend, output, client);
+        })?;
+        peer.agent_watch = Some(watcher);
+        Ok(Value::Null)
+    }
+
     async fn operation(&self, client: &str, peer: &mut Peer, request: Value) -> io::Result<Value> {
         match field(&request, "op")? {
+            "watch_agents" => self.watch_agents(client, peer).await,
             "subscribe" => {
                 let workspace = field(&request, "workspace_id")?.to_string();
                 let pane = number(&request, "pane_id")?;
@@ -1184,6 +1244,67 @@ impl Service {
                 io::ErrorKind::PermissionDenied,
                 "operation is not permitted for mobile access",
             )),
+        }
+    }
+}
+
+fn agent_update(change: MobileAgentChange, workspace: &str, title: &str) -> Value {
+    json!({"type":"agent_update", "workspace_id":workspace, "pane_id":change.pane_id,
+        "agent_revision":change.state.revision.to_string(), "title":title, "initial":change.initial,
+        "agent":change.state.agent.map(|(name, status)| json!({
+            "name":name.display_name(), "status":status}))})
+}
+
+fn forward_agents(
+    receiver: mpsc::Receiver<MobileAgentChange>,
+    watcher: Arc<MobileAgentWatcher>,
+    backend: Arc<dyn Backend>,
+    output: async_mpsc::Sender<AgentOutput>,
+    client: String,
+) {
+    let mut pending: VecDeque<MobileAgentChange> = VecDeque::new();
+    let mut contexts = HashMap::new();
+    let mut blocked = std::collections::HashSet::new();
+    while watcher.active() {
+        match receiver.recv_timeout(Duration::from_millis(200)) {
+            Ok(change) => pending.push_back(change),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        blocked.clear();
+        for _ in 0..pending.len() {
+            let change = pending.pop_front().expect("pending agent change");
+            if blocked.contains(&change.pane_id) {
+                pending.push_back(change);
+                continue;
+            }
+            match backend.agent_context(change.pane_id) {
+                Ok(Some(context)) => { contexts.insert(change.pane_id, context); }
+                Ok(None) if !contexts.contains_key(&change.pane_id) => {
+                    // Registration precedes a new pane's tree transaction.
+                    // Keep every captured event, not a polled replacement.
+                    blocked.insert(change.pane_id);
+                    pending.push_back(change);
+                    continue;
+                }
+                // Keep the last context for a queued Done whose pane exited
+                // before this worker ran; its revision/state were captured live.
+                _ => {}
+            }
+            if let Some((workspace, title)) = contexts.get(&change.pane_id) {
+                if !watcher.active() { return; }
+                if output.try_send(AgentOutput {
+                    client: client.clone(), watcher: watcher.clone(),
+                    value: agent_update(change, workspace, title),
+                }).is_err() {
+                    watcher.failed.store(true, Ordering::Release);
+                    return;
+                }
+            }
+        }
+        if pending.len() >= 256 || contexts.len() > 4096 {
+            watcher.failed.store(true, Ordering::Release);
+            break;
         }
     }
 }
@@ -1800,6 +1921,136 @@ mod tests {
             );
         credit
     }
+    #[test]
+    fn agent_watch_wire_uses_baselines_and_lossless_unsigned_revisions() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent};
+        let mut change = MobileAgentChange {
+            pane_id: 73,
+            state: MobileAgentState { revision: u64::MAX, agent: None },
+            initial: true,
+        };
+        let baseline = agent_update(change, "workspace", "Terminal");
+        assert_eq!(baseline["type"], "agent_update");
+        assert_eq!(baseline["workspace_id"], "workspace");
+        assert_eq!(baseline["pane_id"], 73);
+        assert_eq!(baseline["agent_revision"], u64::MAX.to_string());
+        assert_eq!(baseline["initial"], true);
+        assert!(baseline["agent"].is_null());
+        change.initial = false;
+        change.state.agent = Some((CLIAgent::OhMyPi, AgentStatus::Waiting));
+        let live = agent_update(change, "workspace", "Terminal");
+        assert_eq!(live["initial"], false);
+        assert_eq!(live["agent"]["status"], "waiting");
+    }
+
+    #[test]
+    fn agent_watch_frames_need_no_terminal_subscription_and_reject_stale_sessions() {
+        let mut service = test_service();
+        let (watcher, _receiver) = MobileAgentWatcher::new();
+        let mut peer = authenticated_peer();
+        peer.agent_watch = Some(watcher.clone());
+        assert!(peer.subscriptions.is_empty());
+        service.peers.insert("phone".into(), peer);
+        let frame = || AgentOutput {
+            client: "phone".into(), watcher: watcher.clone(),
+            value: agent_update(MobileAgentChange {
+                pane_id: 73, state: MobileAgentState::default(), initial: true,
+            }, "workspace", "Terminal"),
+        };
+        let mut outgoing = Vec::new();
+        service.agent_frame(frame(), &mut outgoing);
+        assert_eq!(outgoing.len(), 1);
+        let Message::Text(text) = &outgoing[0] else { panic!("expected encrypted frame"); };
+        let envelope: Value = serde_json::from_str(text).unwrap();
+        let encrypted: Value = serde_json::from_str(envelope["payload"].as_str().unwrap()).unwrap();
+        assert_eq!(encrypted["kind"], "encrypted");
+        outgoing.clear();
+        service.peers.remove("phone");
+        assert!(!watcher.active());
+        service.peers.insert("phone".into(), authenticated_peer());
+        service.agent_frame(frame(), &mut outgoing);
+        assert!(outgoing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn encrypted_agent_watch_is_refused_before_credential_approval() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut service = Service::new(
+            Err(io::Error::other("test")), Arc::new(NoOperations(calls.clone())),
+        );
+        for phase in [Phase::AwaitPair, Phase::Pending {
+            request_id: "pending".into(), name: "phone".into(),
+        }] {
+            let mut peer = Peer::new(phase);
+            peer.cipher = Some(Cipher::host(&[1; 32], &[2; 32], &[2; 32]));
+            assert!(service.peer_frame(
+                "phone", &mut peer,
+                &client_payload(json!({"type":"request", "id":1, "op":"watch_agents"})),
+                &mut Vec::new(),
+            ).await.is_err());
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn agent_watch_defers_new_pane_context_without_coalescing_transitions() {
+        struct ContextBackend(Arc<AtomicBool>, Arc<tokio::sync::Notify>);
+        impl Backend for ContextBackend {
+            fn request(&self, _: &Value) -> io::Result<Value> {
+                Err(io::Error::other("not an operation test"))
+            }
+            fn observe(&self, _: &str, _: u64) -> io::Result<Observation> {
+                Err(io::Error::other("not a terminal observation test"))
+            }
+            fn watch_agents(&self, _: &Arc<MobileAgentWatcher>) -> io::Result<()> {
+                Err(io::Error::other("stream supplied directly in this test"))
+            }
+            fn agent_context(&self, _: u64) -> io::Result<Option<(String, String)>> {
+                if self.0.load(Ordering::Acquire) {
+                    Ok(Some(("workspace".into(), "Terminal".into())))
+                } else {
+                    self.1.notify_one();
+                    Ok(None)
+                }
+            }
+        }
+        use crate::core::cli_agent::{AgentStatus, CLIAgent};
+        let ready = Arc::new(AtomicBool::new(false));
+        let deferred = Arc::new(tokio::sync::Notify::new());
+        let backend = Arc::new(ContextBackend(ready.clone(), deferred.clone()));
+        let (watcher, _unused) = MobileAgentWatcher::new();
+        let (send, receive) = mpsc::sync_channel(8);
+        let (output, mut outputs) = async_mpsc::channel(8);
+        let forwarding = watcher.clone();
+        let worker = std::thread::spawn(move || {
+            forward_agents(receive, forwarding, backend, output, "phone".into());
+        });
+        for (revision, status) in [AgentStatus::Idle, AgentStatus::Waiting, AgentStatus::Working]
+            .into_iter().enumerate()
+        {
+            send.send(MobileAgentChange {
+                pane_id: 73,
+                state: MobileAgentState {
+                    revision: revision as u64, agent: Some((CLIAgent::OhMyPi, status)),
+                },
+                initial: revision == 0,
+            }).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), deferred.notified()).await.unwrap();
+        assert!(outputs.try_recv().is_err());
+        ready.store(true, Ordering::Release);
+        for (revision, status) in ["idle", "waiting", "working"].into_iter().enumerate() {
+            let output = tokio::time::timeout(Duration::from_secs(2), outputs.recv())
+                .await.unwrap().unwrap();
+            assert_eq!(output.value["agent_revision"], revision.to_string());
+            assert_eq!(output.value["initial"], revision == 0);
+            assert_eq!(output.value["agent"]["status"], status);
+        }
+        watcher.active.store(false, Ordering::Release);
+        drop(send);
+        worker.join().unwrap();
+    }
+
 
     fn sink(output: async_mpsc::Sender<Output>, credit: Arc<OutputCredit>) -> MobileOutput {
         MobileOutput {
@@ -2306,6 +2557,14 @@ mod tests {
             Ok(Value::Null)
         }
         fn observe(&self, _: &str, _: u64) -> io::Result<Observation> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(io::Error::other("not available in this test"))
+        }
+        fn watch_agents(&self, _: &Arc<MobileAgentWatcher>) -> io::Result<()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Err(io::Error::other("not available in this test"))
+        }
+        fn agent_context(&self, _: u64) -> io::Result<Option<(String, String)>> {
             self.0.fetch_add(1, Ordering::Relaxed);
             Err(io::Error::other("not available in this test"))
         }

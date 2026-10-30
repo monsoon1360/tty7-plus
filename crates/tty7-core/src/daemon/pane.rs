@@ -856,6 +856,7 @@ struct PaneState {
     agent_argv: Option<Vec<String>>,
     agent_session: Option<crate::core::cli_agent::AgentSessionState>,
     agent_clock: AgentClock,
+    mobile_agent_watchers: Vec<Weak<MobileAgentWatcher>>,
     alive: bool,
     exit_code: Option<i32>,
     /// When a reattach last made the program on this pane repaint; see
@@ -886,6 +887,73 @@ pub(crate) struct MobileAgentState {
         crate::core::cli_agent::CLIAgent,
         crate::core::cli_agent::AgentStatus,
     )>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MobileAgentChange {
+    pub pane_id: u64,
+    pub state: MobileAgentState,
+    pub initial: bool,
+}
+
+/// A bounded, lossless-until-disconnect status stream, unrelated to PTY credit.
+pub(crate) struct MobileAgentWatcher {
+    sender: mpsc::SyncSender<MobileAgentChange>,
+    pub active: AtomicBool,
+    pub failed: AtomicBool,
+}
+
+impl MobileAgentWatcher {
+    pub(crate) fn new() -> (Arc<Self>, mpsc::Receiver<MobileAgentChange>) {
+        let (sender, receiver) = mpsc::sync_channel(256);
+        (Arc::new(Self {
+            sender,
+            active: std::sync::atomic::AtomicBool::new(true),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        }), receiver)
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        self.active.load(Ordering::Acquire) && !self.failed.load(Ordering::Acquire)
+    }
+
+    fn send(&self, change: MobileAgentChange) -> bool {
+        if !self.active() { return false; }
+        if self.sender.try_send(change).is_err() {
+            // Never silently coalesce a short Waiting -> Working transition.
+            self.failed.store(true, Ordering::Release);
+            return false;
+        }
+        true
+    }
+}
+
+fn watch_mobile_agent(st: &mut PaneState, watcher: &Arc<MobileAgentWatcher>) {
+    if watcher.send(MobileAgentChange {
+        pane_id: st.id,
+        state: MobileAgentState {
+            revision: st.agent_clock.generation,
+            agent: mobile_agent(st),
+        },
+        initial: true,
+    }) {
+        st.mobile_agent_watchers.push(Arc::downgrade(watcher));
+    }
+}
+
+fn publish_mobile_agent(st: &mut PaneState) {
+    if st.mobile_agent_watchers.is_empty() { return; }
+    let change = MobileAgentChange {
+        pane_id: st.id,
+        state: MobileAgentState {
+            revision: st.agent_clock.generation,
+            agent: mobile_agent(st),
+        },
+        initial: false,
+    };
+    st.mobile_agent_watchers.retain(|watcher| {
+        watcher.upgrade().is_some_and(|watcher| watcher.send(change))
+    });
 }
 
 /// How long after an interrupt key a real hook event still gets to speak
@@ -2009,6 +2077,7 @@ impl DaemonPane {
                 ring,
                 screen: Some(ScreenMirror::new(size, cfg!(windows))),
                 screen_observers: Vec::new(),
+                mobile_agent_watchers: Vec::new(),
                 subscriber: None,
                 subscriber_epoch: 0,
                 allow_remote_clipboard_write,
@@ -2285,6 +2354,7 @@ impl DaemonPane {
                 ring,
                 screen,
                 screen_observers: Vec::new(),
+                mobile_agent_watchers: Vec::new(),
                 subscriber: None,
                 subscriber_epoch: 0,
                 allow_remote_clipboard_write: false,
@@ -2362,6 +2432,7 @@ impl DaemonPane {
             ring: ReplayRing::new(size),
             screen: Some(ScreenMirror::new(size, false)),
             screen_observers: Vec::new(),
+            mobile_agent_watchers: Vec::new(),
             subscriber: None,
             subscriber_epoch: 0,
             allow_remote_clipboard_write,
@@ -3120,6 +3191,11 @@ impl DaemonPane {
             revision: state.agent_clock.generation,
             agent: mobile_agent(&state),
         }
+    }
+
+    pub(crate) fn watch_mobile_agent(&self, watcher: &Arc<MobileAgentWatcher>) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        watch_mobile_agent(&mut state, watcher);
     }
 
     pub(crate) fn mobile_seed(&self) -> crate::core::machine::PaneSeed {
@@ -4164,6 +4240,7 @@ fn settle_interrupt(st: &mut PaneState, armed_at: u64) {
     sess.note_transition(Some(before), unix_ms());
     st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     notify(st, DaemonMsg::AgentStatus(st.agent_session.clone()));
+    publish_mobile_agent(st);
 }
 
 /// Give up on a turn that has said nothing for [`AGENT_STALE_AFTER`]. Run by
@@ -4188,6 +4265,7 @@ fn expire_stale_agent(st: &mut PaneState, now: std::time::Instant) {
     }
     st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
     notify(st, DaemonMsg::AgentStatus(st.agent_session.clone()));
+    publish_mobile_agent(st);
 }
 
 fn apply_agent_signals(
@@ -4226,6 +4304,7 @@ fn apply_agent_signals(
         let was = sess.status;
         sess.apply_event(event);
         sess.note_transition(Some(was), now_ms);
+        publish_mobile_agent(st);
     }
 
     if let Some(body) = notification
@@ -4238,6 +4317,7 @@ fn apply_agent_signals(
         sess.status = AgentStatus::Waiting;
         sess.message = Some(body);
         st.agent_clock.generation = st.agent_clock.generation.wrapping_add(1);
+        publish_mobile_agent(st);
     }
 
     if let (Some(sess), Some(argv)) = (&mut st.agent_session, &st.agent_argv)
@@ -4464,6 +4544,7 @@ fn apply_agent(
     notify(st, DaemonMsg::Agent(agent));
     st.agent = agent;
     stamp_launch_argv(st, argv);
+    publish_mobile_agent(st);
 }
 
 fn stamp_launch_argv(st: &mut PaneState, argv: Option<Vec<String>>) {
@@ -6674,6 +6755,7 @@ mod tests {
                 &crate::core::config::Config::default(),
             )),
             screen_observers: Vec::new(),
+            mobile_agent_watchers: Vec::new(),
             subscriber: None,
             subscriber_epoch: 0,
             allow_remote_clipboard_write: false,
@@ -6834,6 +6916,79 @@ mod tests {
             state.agent_clock.generation > revision,
             "notification-only agents also advance"
         );
+    }
+
+    #[test]
+    fn mobile_agent_watch_preserves_short_transitions_inside_one_read() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent, parse_agent_event_body};
+        let mut state = test_state(true);
+        state.id = 73;
+        let (watcher, receiver) = MobileAgentWatcher::new();
+        watch_mobile_agent(&mut state, &watcher);
+        let baseline = receiver.try_recv().unwrap();
+        assert!(baseline.initial);
+        assert_eq!(baseline.pane_id, 73);
+        assert_eq!(baseline.state.agent, None);
+        apply_agent(&mut state, Some((CLIAgent::OhMyPi, vec!["omp".into()])));
+        let foreground = receiver.try_recv().unwrap();
+        assert!(!foreground.initial);
+        let events = ["permission-request", "tool-complete", "stop"].into_iter().map(|event| {
+            parse_agent_event_body(format!(
+                r#"{{"v":1,"agent":"omp","event":"{event}","session_id":"root"}}"#
+            ).as_bytes()).unwrap()
+        }).collect();
+        // No mobile terminal observer or output credits are installed.
+        apply_agent_signals(&mut state, events, None);
+        let mut revision = foreground.state.revision;
+        for expected in [AgentStatus::Waiting, AgentStatus::Working, AgentStatus::Done] {
+            let change = receiver.try_recv().unwrap();
+            assert!(!change.initial);
+            assert_eq!(change.state.agent, Some((CLIAgent::OhMyPi, expected)));
+            assert!(change.state.revision > revision);
+            revision = change.state.revision;
+        }
+        assert!(receiver.try_recv().is_err());
+        apply_agent(&mut state, None);
+        let removed = receiver.try_recv().unwrap();
+        assert_eq!(removed.state.agent, None);
+        assert!(removed.state.revision > revision);
+    }
+
+    #[test]
+    fn mobile_agent_watch_baseline_precedes_inferred_completion_and_cancels() {
+        use crate::core::cli_agent::{AgentStatus, CLIAgent};
+        let mut state = test_state(true);
+        state.agent = Some(CLIAgent::Codex);
+        state.agent_session = Some(working_session());
+        let (watcher, receiver) = MobileAgentWatcher::new();
+        watch_mobile_agent(&mut state, &watcher);
+        let baseline = receiver.try_recv().unwrap();
+        assert!(baseline.initial);
+        assert_eq!(baseline.state.agent.unwrap().1, AgentStatus::Working);
+        settle_interrupt(&mut state, baseline.state.revision);
+        let done = receiver.try_recv().unwrap();
+        assert!(!done.initial);
+        assert_eq!(done.state.agent.unwrap().1, AgentStatus::Done);
+        assert!(done.state.revision > baseline.state.revision);
+        watcher.active.store(false, Ordering::Release);
+        apply_agent(&mut state, None);
+        assert!(receiver.try_recv().is_err());
+        assert!(state.mobile_agent_watchers.is_empty());
+    }
+
+    #[test]
+    fn mobile_agent_watch_overflow_fails_instead_of_losing_transitions() {
+        let mut state = test_state(true);
+        let (watcher, receiver) = MobileAgentWatcher::new();
+        watch_mobile_agent(&mut state, &watcher);
+        for _ in 0..256 {
+            state.agent_clock.generation += 1;
+            publish_mobile_agent(&mut state);
+        }
+        assert!(watcher.failed.load(Ordering::Acquire));
+        assert!(!watcher.active());
+        assert!(state.mobile_agent_watchers.is_empty());
+        assert_eq!(receiver.try_iter().count(), 256);
     }
 
     #[test]

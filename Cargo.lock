@@ -7355,6 +7355,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc_exception"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11746,6 +11758,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async_zip 0.0.19",
+ "block2 0.6.2",
  "core-foundation 0.10.0",
  "encoding_rs",
  "globset",
@@ -11767,6 +11780,7 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications",
  "percent-encoding",
  "plist",
  "qrcode",

@@ -37,12 +37,9 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun MobileApp(
-    platform: MobilePlatform, pairingLinks: Flow<String>,
-    registerLifecycle: (((Boolean) -> Unit)?) -> Unit,
-    registerNetwork: (((Boolean) -> Unit)?) -> Unit,
+    platform: MobilePlatform, pairingLinks: Flow<String>, controller: RemoteController,
 ) {
     val scope = rememberCoroutineScope()
-    val controller = remember(platform) { RemoteController(platform, scope) }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val state by controller.state.collectAsState()
@@ -67,6 +64,14 @@ fun MobileApp(
         ?: selectedWorkspace ?: state.workspaces.firstOrNull()
     LaunchedEffect(state.terminalSelection?.first) { drawerWorkspaceId = state.terminalSelection?.first }
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    LaunchedEffect(state.notificationNavigation) {
+        if (state.notificationNavigation != 0L) {
+            scanning = false
+            showSettings = false
+            showPairing = false
+            drawer.close()
+        }
+    }
     LaunchedEffect(drawer.targetValue) {
         if (drawer.targetValue == DrawerValue.Open) {
             focusManager.clearFocus(force = true)
@@ -99,11 +104,6 @@ fun MobileApp(
             drawer.isOpen -> scope.launch { drawer.close() }
             state.terminalSelection != null -> scope.launch { drawer.open() }
         }
-    }
-    DisposableEffect(controller) {
-        registerNetwork(controller::networkChanged)
-        registerLifecycle(controller::setForeground)
-        onDispose { registerLifecycle(null); registerNetwork(null); controller.setForeground(false) }
     }
     val systemDark = isSystemInDarkTheme()
     var theme by remember(platform) { mutableStateOf(platform.loadTheme()) }
@@ -672,6 +672,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "Pairing rejected" -> "电脑已拒绝配对。"
     "Authentication failed" -> "身份验证失败，请检查电脑端的设备授权。"
     "Terminal not found" -> "找不到此终端，请从会话列表重新选择。"
+    "The notified terminal no longer exists." -> "通知对应的终端已关闭，请从会话列表重新选择。"
     "terminal observer disconnected unexpectedly" -> "终端输出订阅意外中断，请重试加载当前终端。"
     "Connection timed out. Reconnect or scan a new pairing QR." -> "连接超时，请重试连接。若尚未完成配对，请扫描电脑端的新二维码。"
     "Expected tty7://pair URI", "Missing pairing data", "Invalid pairing identity", "Invalid host identity", "Invalid base64url" -> "配对链接无效，请扫描电脑端的二维码或粘贴完整的 tty7://pair 链接。"
@@ -691,6 +692,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
             "subscribe" -> "打开终端"
             "unsubscribe" -> "返回会话列表"
             "list" -> "刷新会话"
+            "watch_agents" -> "订阅 Agent 通知"
             "input" -> "发送终端输入"
             "terminal_size" -> "调整终端尺寸"
             "create_workspace" -> "创建工作区"

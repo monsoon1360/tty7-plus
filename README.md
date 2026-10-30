@@ -73,6 +73,11 @@ and drives the desktop's panes and agents.
   whatever runs in it, exactly as the dialog says.
 - **Agent-aware UI** — repository grouping, branch and agent status, brand marks
   for supported agents, and live agent output in the session drawer.
+- **Agent notifications** — task completion and requests for human intervention
+  generate Android notifications for every terminal, not just the selected one.
+  A foreground connection service keeps receiving status changes in the background;
+  tapping a notification opens its terminal. Allow notification permission.
+  Delivery requires a live connection; this is not offline push.
 - **Chinese-first interface** with light and dark themes, a two-row key bar
   (Enter/CR, Ctrl-J/LF, Esc, Ctrl-C, arrows, and an overflow menu), and precise
   1:1 history scrolling.
