@@ -3148,7 +3148,6 @@ mod tests {
                 token,
                 status_a.head.clone(),
                 "generated a".into(),
-                false,
                 window,
                 cx,
             );
@@ -3171,7 +3170,6 @@ mod tests {
                 token,
                 status_a.head.clone(),
                 "late result".into(),
-                false,
                 window,
                 cx,
             );
@@ -3668,7 +3666,6 @@ mod render_idle_gpui_tests {
                 token,
                 head,
                 "Late replacement".into(),
-                false,
                 window,
                 cx,
             );

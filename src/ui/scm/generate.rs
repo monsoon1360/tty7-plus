@@ -250,7 +250,6 @@ impl Tty7App {
                     );
                     return;
                 }
-                let truncated = context.truncated;
                 let request = CommitMessageRequest {
                     ai,
                     settings,
@@ -296,7 +295,7 @@ impl Tty7App {
                                             }
                                         };
                                         app.scm_land_generation(
-                                            repo, token, head, message, truncated, window, cx,
+                                            repo, token, head, message, window, cx,
                                         );
                                     },
                                 );
@@ -351,7 +350,6 @@ impl Tty7App {
         token: u64,
         head: HeadState,
         message: String,
-        truncated: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -370,9 +368,6 @@ impl Tty7App {
                         let message = self.scm.draft(&repo).to_owned();
                         input.update(cx, |input, cx| input.set_value(message, window, cx));
                     }
-                }
-                if truncated {
-                    window.push_notification(t(L10nKey::ScmAiTruncated).to_string(), cx);
                 }
             }
             GenerationFinish::Changed => {

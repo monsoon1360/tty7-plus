@@ -59,10 +59,11 @@ otherwise tracked edits and non-ignored new files. The same selection applies
 when you click **Commit**: no manual staging is needed, including for a
 repository's first commit. An explicit staged selection is respected.
 Amend uses the current HEAD patch plus staged increments, not unstaged or new
-files. Resolve conflicts first. The context is capped at 24 KiB; a notification
-says when it was truncated. Remote changes are read through their host, but
-the selected provider is called on this computer. Use `.gitignore` to exclude
-private or generated files before requesting generation or committing all.
+files. Resolve conflicts first. The context is capped at 24 KiB; generation
+uses only the supplied changes without a truncation notification. Remote changes
+are read through their host, but the selected provider is called on this computer.
+Use `.gitignore` to exclude private or generated files before requesting generation
+or committing all.
 
 The default result is one concise subject, with a 72-character target and no
 body. Language can follow the application or be selected explicitly. Custom

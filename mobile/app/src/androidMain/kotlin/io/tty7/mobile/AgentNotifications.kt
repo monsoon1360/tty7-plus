@@ -23,7 +23,7 @@ internal object AgentNotifications {
 
     fun channels(context: Context) {
         manager(context).createNotificationChannels(listOf(
-            NotificationChannel(DONE, "Agent 任务完成", NotificationManager.IMPORTANCE_DEFAULT).apply { lockscreenVisibility = Notification.VISIBILITY_PRIVATE },
+            NotificationChannel(DONE, "Agent 任务完成", NotificationManager.IMPORTANCE_HIGH).apply { lockscreenVisibility = Notification.VISIBILITY_PRIVATE },
             NotificationChannel(WAITING, "Agent 需要人为干预", NotificationManager.IMPORTANCE_HIGH).apply { lockscreenVisibility = Notification.VISIBILITY_PRIVATE },
             NotificationChannel(MONITOR, "电脑连接", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) },
         ))

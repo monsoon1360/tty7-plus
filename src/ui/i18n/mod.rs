@@ -93,7 +93,7 @@ l10n_keys! {
     AiRequestTimeout, AiResponseTooLarge, AiUnauthorized, AiRateLimited, AiHttpError,
     AiInvalidResponse, AiEmptyResponse, AiCodexMissing, AiCodexFailed, AiCodexIoError,
     ScmAiGenerate, ScmAiGenerating, ScmAiReplaceQuestion, ScmAiReplace, ScmAiChanged,
-    ScmAiTruncated, ScmAiFailed, ScmAiBusy, ScmAiCommitting, ScmAiNoChanges,
+    ScmAiFailed, ScmAiBusy, ScmAiCommitting, ScmAiNoChanges,
     ScmAiConfigure, ScmAiMissingCodex, ScmAiOpenSettings, ScmAiConflicts, ScmAiReadFailed,
     AiCodexLoginRequired, AiCodexConfigurationError,
     ScmAiMissingHead,

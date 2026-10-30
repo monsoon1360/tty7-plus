@@ -86,7 +86,6 @@ pub fn translate_en(key: L10nKey) -> &'static str {
         L10nKey::ScmAiReplaceQuestion => "Replace existing commit message?",
         L10nKey::ScmAiReplace => "Replace",
         L10nKey::ScmAiChanged => "Commit state changed; draft was not overwritten.",
-        L10nKey::ScmAiTruncated => "Generated using truncated changes only.",
         L10nKey::ScmAiFailed => "Could not generate commit message.",
         L10nKey::ScmAiBusy => "A message is being generated for this repository.",
         L10nKey::ScmAiCommitting => "A commit is in progress.",

@@ -82,7 +82,6 @@ pub fn translate_zh(key: L10nKey) -> Option<&'static str> {
         L10nKey::ScmAiReplaceQuestion => "替换现有提交信息？",
         L10nKey::ScmAiReplace => "替换",
         L10nKey::ScmAiChanged => "提交状态已更改，未覆盖草稿。",
-        L10nKey::ScmAiTruncated => "仅根据截断的变更生成。",
         L10nKey::ScmAiFailed => "无法生成提交信息。",
         L10nKey::ScmAiBusy => "此仓库正在生成提交信息。",
         L10nKey::ScmAiCommitting => "正在提交。",

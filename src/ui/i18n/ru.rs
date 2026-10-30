@@ -90,7 +90,6 @@ pub fn translate_ru(key: L10nKey) -> Option<&'static str> {
         L10nKey::ScmAiReplaceQuestion => "Заменить существующее сообщение коммита?",
         L10nKey::ScmAiReplace => "Заменить",
         L10nKey::ScmAiChanged => "Состояние коммита изменилось; черновик не перезаписан.",
-        L10nKey::ScmAiTruncated => "Создано только на основе сокращённых изменений.",
         L10nKey::ScmAiFailed => "Не удалось создать сообщение коммита.",
         L10nKey::ScmAiBusy => "Для этого репозитория уже создаётся сообщение.",
         L10nKey::ScmAiCommitting => "Выполняется коммит.",

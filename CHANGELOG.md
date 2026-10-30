@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Quiet AI commit generation for large changes.** Generating a commit draft
+  from a truncated patch no longer shows a truncation notification. The 24 KiB
+  context limit and draft overwrite protections are unchanged.
+
 - **One file at a time in the editor, named by the editor itself.** The document
   region no longer shows a file-tab strip. The built-in editor shows one file
   and names it in the status bar at its foot; opening another file replaces it,

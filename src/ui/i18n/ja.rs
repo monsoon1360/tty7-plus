@@ -92,7 +92,6 @@ pub fn translate_ja(key: L10nKey) -> Option<&'static str> {
         L10nKey::ScmAiReplaceQuestion => "既存のコミットメッセージを置き換えますか？",
         L10nKey::ScmAiReplace => "置き換え",
         L10nKey::ScmAiChanged => "コミット状態が変わったため、下書きは上書きされませんでした。",
-        L10nKey::ScmAiTruncated => "切り詰めた変更のみに基づいて生成しました。",
         L10nKey::ScmAiFailed => "コミットメッセージを生成できませんでした。",
         L10nKey::ScmAiBusy => "このリポジトリのメッセージを生成中です。",
         L10nKey::ScmAiCommitting => "コミット処理中です。",
