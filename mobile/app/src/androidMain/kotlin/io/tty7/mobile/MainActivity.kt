@@ -84,8 +84,18 @@ actual fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit) {
 }
 
 @androidx.compose.runtime.Composable
+actual fun KeepScreenOn(enabled: Boolean) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(view, enabled) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = enabled
+        onDispose { view.keepScreenOn = previous }
+    }
+}
+
+@androidx.compose.runtime.Composable
 actual fun ApplySystemAppearance(dark: Boolean) {
-    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    val activity = androidx.activity.compose.LocalActivity.current
     androidx.compose.runtime.LaunchedEffect(activity, dark) {
         val style = if (dark) androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
             else androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)

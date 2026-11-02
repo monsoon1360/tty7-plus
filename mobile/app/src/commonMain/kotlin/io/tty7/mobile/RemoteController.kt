@@ -34,6 +34,7 @@ class RemoteController(
     private var loaded = false
     private val lifetime = ForegroundLifetime()
     private var foreground = false
+    private var terminalVisible = false
     // Background monitoring owns the transport, not a terminal renderer or size lease.
     private var backgroundMonitoring = false
     private data class NotificationTarget(val hostId: String, val workspaceId: String, val paneId: Long)
@@ -134,6 +135,7 @@ class RemoteController(
         backgroundMonitoring = enabled
         updateLifetime()
     }
+    fun setTerminalVisible(visible: Boolean) { terminalVisible = visible }
     private fun updateLifetime() {
         val active = foreground || backgroundMonitoring
         if (lifetime.active == active) return
@@ -490,10 +492,13 @@ class RemoteController(
             mutable.value.terminal?.takeIf { it.pane.id == paneId }?.let { it.updatePane(reading.apply(it.pane)) }
             mutable.value = mutable.value.copy(workspaces = workspaces, terminalSelection = selected)
         }
-        if (!message.getValue("initial").jsonPrimitive.boolean && reading.name != null &&
+        val workspaceId = message.text("workspace_id")
+        val viewingTarget = foreground && terminalVisible && mutable.value.computer?.hostId == computer.hostId &&
+            mutable.value.terminalSelection?.let { (workspace, pane) -> workspace == workspaceId && pane.id == paneId } == true
+        if (!viewingTarget && !message.getValue("initial").jsonPrimitive.boolean && reading.name != null &&
             (reading.status == "done" || reading.status == "waiting") &&
             (previous?.status != reading.status || previous?.name != reading.name)) {
-            platform.notifyAgent(AgentNotification(computer.hostId, message.text("workspace_id"), paneId,
+            platform.notifyAgent(AgentNotification(computer.hostId, workspaceId, paneId,
                 reading.name, message.text("title"), reading.status!!))
         }
     }

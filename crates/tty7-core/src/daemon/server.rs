@@ -172,6 +172,9 @@ impl MobileBackend {
                             .into_iter()
                             .filter_map(|id| {
                                 let pane = self.registry.get(id)?;
+                                if !mobile_shell_visible(pane.mobile_seed().shell.as_ref()) {
+                                    return None;
+                                }
                                 let info = pane.info();
                                 if !info.alive {
                                     return None;
@@ -333,6 +336,19 @@ struct MobileRepo {
     // Unknown preserves the GUI's last resolved group; known non-repo clears it.
     home: Option<Option<std::path::PathBuf>>,
     branch: Option<String>,
+}
+
+// Desktop file editors have their own backing PTY, but are not phone sessions.
+// Use the spawn program so an ordinary shell running `hx` stays accessible.
+fn mobile_shell_visible(shell: Option<&crate::daemon::protocol::ShellSpec>) -> bool {
+    !shell.is_some_and(|shell| {
+        matches!(
+            std::path::Path::new(&shell.program)
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("hx" | "helix" | "vim" | "nvim")
+        )
+    })
 }
 
 fn mobile_repo(cwd: &std::path::Path) -> MobileRepo {
@@ -1990,6 +2006,27 @@ pub(crate) fn spawn_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mobile_hides_desktop_editor_ptys_but_keeps_normal_shells() {
+        use crate::daemon::protocol::ShellSpec;
+        assert!(mobile_shell_visible(None));
+        for program in ["hx", "helix", "/opt/homebrew/bin/hx", "vim", "nvim"] {
+            let editor = ShellSpec {
+                program: program.into(),
+                args: vec!["file.rs".into()],
+                args_are_tty7_defaults: false,
+            };
+            assert!(!mobile_shell_visible(Some(&editor)), "{program}");
+        }
+        // A user launching Helix inside a regular shell still owns that shell.
+        let shell = ShellSpec {
+            program: "/bin/zsh".into(),
+            args: vec!["-c".into(), "hx file.rs".into()],
+            args_are_tty7_defaults: false,
+        };
+        assert!(mobile_shell_visible(Some(&shell)));
+    }
 
     #[test]
     fn mobile_agent_list_serializes_the_live_badge_and_its_revision() {

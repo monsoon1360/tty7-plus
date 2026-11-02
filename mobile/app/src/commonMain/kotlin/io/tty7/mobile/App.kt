@@ -64,6 +64,11 @@ fun MobileApp(
         ?: selectedWorkspace ?: state.workspaces.firstOrNull()
     LaunchedEffect(state.terminalSelection?.first) { drawerWorkspaceId = state.terminalSelection?.first }
     val drawer = rememberDrawerState(DrawerValue.Closed)
+    val terminalVisible = currentPane != null && !scanning && !showPairing && !showSettings &&
+        drawer.currentValue == DrawerValue.Closed && drawer.targetValue == DrawerValue.Closed && closing == null && forgetting == null
+    SideEffect { controller.setTerminalVisible(terminalVisible) }
+    DisposableEffect(controller) { onDispose { controller.setTerminalVisible(false) } }
+    KeepScreenOn(terminalVisible)
     LaunchedEffect(state.notificationNavigation) {
         if (state.notificationNavigation != 0L) {
             scanning = false
@@ -190,13 +195,13 @@ fun MobileApp(
                         keyboard?.hide()
                         showSettings = true
                     }, modifier = Modifier.testTag("open-settings").semantics { contentDescription = "设置" }) { LineIcon("settings") }
-                    if (!state.connected || state.status.startsWith("Terminal exited (")) Text(connectionStatus(state.status), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp).testTag("connection-status"))
+                    if ((currentPane == null || showPairing) && (!state.connected || state.status.startsWith("Terminal exited ("))) Text(connectionStatus(state.status), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 112.dp).testTag("connection-status"))
                 }
                 state.verificationCode?.takeIf { state.computer?.pending == true }?.let {
                     Text("验证码：$it", style = MaterialTheme.typography.headlineSmall, fontFamily = FontFamily.Monospace, modifier = Modifier.testTag("verification-code"))
                     Text("请在电脑端核对验证码后批准连接。重新连接会生成新的验证码。")
                 }
-                state.error?.let { error ->
+                state.error?.takeIf { currentPane == null || showPairing }?.let { error ->
                     Text(connectionError(error, state.terminalSelection != null && !state.connected || state.reconnecting), color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("connection-error"))
                     TextButton(onClick = controller::clearError) { Text("关闭提示") }
                 }

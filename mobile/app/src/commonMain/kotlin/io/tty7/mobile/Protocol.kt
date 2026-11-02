@@ -247,3 +247,4 @@ interface MobilePlatform {
 @Composable expect fun CameraScanner(onScan: (String) -> Unit, onClose: () -> Unit)
 @Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)
 @Composable expect fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit)
+@Composable expect fun KeepScreenOn(enabled: Boolean)

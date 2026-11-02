@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,30 +48,37 @@ internal class AndroidRemoteOwner private constructor(context: Context) {
                     if (active || foreground || serviceRunning) preferences.edit().putBoolean("automatic_connection", active).apply()
                     wasActive = active
                 }
-                if (active && foreground && !serviceRunning && !serviceRequested) {
-                    serviceRequested = true
-                    try {
-                        app.startForegroundService(Intent(app, AgentMonitorService::class.java))
-                        // Bridge Activity.onStop until Service.onCreate can assume ownership.
-                        controller.setBackgroundMonitoring(true)
-                    }
-                    catch (_: IllegalStateException) { serviceRequested = false }
-                    catch (_: SecurityException) { serviceRequested = false }
-                } else if (!active && (serviceRunning || serviceRequested)) {
-                    app.stopService(Intent(app, AgentMonitorService::class.java))
-                    serviceRequested = false
-                    controller.setBackgroundMonitoring(false)
-                }
+                updateService(active)
             }
         }
     }
 
     fun attachActivity() { activities++ }
 
+    private fun updateService(active: Boolean) {
+        if (active && foreground && !serviceRunning && !serviceRequested) {
+            serviceRequested = true
+            try {
+                app.startForegroundService(Intent(app, AgentMonitorService::class.java))
+                // Bridge Activity.onStop until Service.onCreate can assume ownership.
+                controller.setBackgroundMonitoring(true)
+            }
+            catch (_: IllegalStateException) { serviceRequested = false }
+            catch (_: SecurityException) { serviceRequested = false }
+        } else if (!active && (serviceRunning || serviceRequested)) {
+            app.stopService(Intent(app, AgentMonitorService::class.java))
+            serviceRequested = false
+            controller.setBackgroundMonitoring(false)
+        }
+    }
+
     fun setForeground(value: Boolean) {
         foreground = value
         if (value) monitorNetwork()
         controller.setForeground(value)
+        // A previous start may have been rejected while Android was pausing us.
+        // Retry on foreground entry even if the controller state hasn't changed.
+        if (value) updateService(controller.state.value.connectionRequested)
         if (!value && !serviceRunning && !serviceRequested) stopNetwork()
     }
 
@@ -145,13 +153,22 @@ internal class AndroidRemoteOwner private constructor(context: Context) {
 
 class AgentMonitorService : Service() {
     private lateinit var owner: AndroidRemoteOwner
+    private var wakeLock: PowerManager.WakeLock? = null
 
+    // Monitoring is continuous until disconnect; onDestroy releases the lock,
+    // and Android releases it if the service process is killed.
+    @android.annotation.SuppressLint("WakelockTimeout")
     override fun onCreate() {
         super.onCreate()
         val notification = AgentNotifications.monitor(this)
         if (Build.VERSION.SDK_INT >= 29) {
             startForeground(AgentNotifications.MONITOR_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else startForeground(AgentNotifications.MONITOR_ID, notification)
+        // A foreground service keeps the process important, but does not keep the
+        // CPU awake to read the notification WebSocket when the screen turns off.
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tty7:agent-monitor")
+            .apply { acquire() }
         owner = AndroidRemoteOwner.get(applicationContext)
         owner.serviceStarted()
     }
@@ -160,6 +177,8 @@ class AgentMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         owner.serviceStopped()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

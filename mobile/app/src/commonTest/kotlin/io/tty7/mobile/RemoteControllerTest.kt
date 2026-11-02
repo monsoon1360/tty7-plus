@@ -354,6 +354,7 @@ class RemoteControllerTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
         val feed = openTerminal(controller, platform.socket)
+        controller.setTerminalVisible(false)
         platform.socket.agentUpdate("working", 1, initial = true)
         platform.socket.agent("waiting", 2)
         platform.socket.agentUpdate("waiting", 2)
@@ -366,6 +367,42 @@ class RemoteControllerTest {
         runCurrent()
         assertEquals(listOf("waiting", "done"), platform.notifications.map { it.status })
         assertEquals("done", feed.pane.agentStatus)
+        controller.setForeground(false)
+    }
+
+    @Test fun visibleAgentSuppressesItsAlertsButStillUpdatesStatusAndNotifiesOtherAgents() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val feed = openTerminal(controller, platform.socket)
+        platform.socket.agentUpdate("working", 1, initial = true)
+        platform.socket.agentUpdate("waiting", 2)
+        platform.socket.agentUpdate("done", 3)
+        platform.socket.agentUpdate("working", 1, initial = true, paneId = 9)
+        platform.socket.agentUpdate("waiting", 2, paneId = 9)
+        runCurrent()
+        assertEquals("done", feed.pane.agentStatus)
+        assertEquals(listOf(9L), platform.notifications.map { it.paneId })
+
+        // Hiding a viewed transition must not replay it as a new alert.
+        controller.setTerminalVisible(false)
+        platform.socket.agentUpdate("done", 4)
+        platform.socket.agentUpdate("working", 5)
+        platform.socket.agentUpdate("waiting", 6)
+        runCurrent()
+        assertEquals(listOf(9L, pane.id), platform.notifications.map { it.paneId })
+        controller.setForeground(false)
+    }
+
+    @Test fun selectedAgentStillNotifiesWhenSettingsOrSessionDrawerHidesTerminal() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        openTerminal(controller, platform.socket)
+        controller.setTerminalVisible(false)
+        platform.socket.agentUpdate("working", 1, initial = true)
+        platform.socket.agentUpdate("waiting", 2)
+        platform.socket.agentUpdate("done", 3)
+        runCurrent()
+        assertEquals(listOf("waiting", "done"), platform.notifications.map { it.status })
         controller.setForeground(false)
     }
 
@@ -1493,6 +1530,7 @@ class RemoteControllerTest {
     }
     private suspend fun TestScope.openTerminal(controller: RemoteController, socket: ControlledSocket): TerminalFeed {
         controller.selectTerminal("workspace", pane)
+        controller.setTerminalVisible(true)
         runCurrent()
         socket.subscribed(2)
         renderEmpty(controller, socket)
