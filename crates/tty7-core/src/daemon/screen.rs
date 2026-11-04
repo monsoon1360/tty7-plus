@@ -53,6 +53,23 @@ pub(crate) struct ScreenSnapshot {
     pub cursor: ScreenCursor,
     pub modes: ScreenModes,
     pub lines: Vec<Arc<String>>,
+    pub wrapping: Vec<LineWrap>,
+}
+
+/// Reflow metadata, separate from ANSI so wrap-only changes can share cell data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LineWrap {
+    /// This physical row continues into the next row, not from the previous one.
+    pub wrapped: bool,
+    /// The last cell only reserves space for a wide glyph on the next row.
+    pub wrap_padding: bool,
+}
+
+impl LineWrap {
+    fn from_flags(flags: Flags) -> Self {
+        let wrapped = flags.contains(Flags::WRAPLINE);
+        Self { wrapped, wrap_padding: wrapped && flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -60,6 +77,8 @@ pub(crate) struct HistoryLine {
     pub text: String,
     pub ansi: String,
     pub cols: u16,
+    #[serde(flatten)]
+    pub wrapping: LineWrap,
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +264,10 @@ impl ScreenMirror {
         };
         let mut lines = self.cached.as_ref().filter(|_| !full)
             .map(|old| old.lines.clone()).unwrap_or_else(|| vec![Arc::new(String::new()); rows]);
+        // Read every last cell: wrapping can change without printable-cell damage.
+        let wrapping = (0..rows).map(|row| {
+            LineWrap::from_flags(term.grid()[Line(row as i32)][Column(term.columns() - 1)].flags)
+        }).collect();
         for row in damaged {
             let ansi = render_line(term, term.grid(), Line(row as i32), false).1;
             if lines[row].as_str() != ansi { lines[row] = Arc::new(ansi); }
@@ -279,6 +302,7 @@ impl ScreenMirror {
                 alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
             },
             lines,
+            wrapping,
         });
         self.cached = Some(snapshot.clone());
         snapshot
@@ -301,7 +325,8 @@ impl ScreenMirror {
             let len = text.len() + ansi.len();
             if lines.len() == HISTORY_ROWS || bytes + len > HISTORY_BYTES { truncated = true; break; }
             bytes += len;
-            lines.push(HistoryLine { text, ansi, cols: grid.columns() as u16 });
+            let wrapping = LineWrap::from_flags(grid[Line(index)][Column(grid.columns() - 1)].flags);
+            lines.push(HistoryLine { text, ansi, cols: grid.columns() as u16, wrapping });
         }
         lines.reverse();
         HistorySnapshot { lines, truncated }
@@ -318,7 +343,7 @@ fn render_line(term: &Term<Silent>, grid: &Grid<Cell>, row: Line, with_text: boo
         let cell = &grid[row][Column(col)];
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) { continue; }
         let _ = write!(ansi, "\x1b[{}G", col + 1);
-        if previous.is_none_or(|old| old.fg != cell.fg || old.bg != cell.bg || old.flags != cell.flags || old.underline_color() != cell.underline_color()) {
+        if previous.is_none_or(|old| old.fg != cell.fg || old.bg != cell.bg || (old.flags - Flags::WRAPLINE) != (cell.flags - Flags::WRAPLINE) || old.underline_color() != cell.underline_color()) {
             ansi.push_str("\x1b[0m");
             for (flag, code) in [(Flags::BOLD, "1"), (Flags::DIM, "2"), (Flags::ITALIC, "3"),
                 (Flags::INVERSE, "7"), (Flags::HIDDEN, "8"), (Flags::STRIKEOUT, "9")] {
@@ -376,6 +401,53 @@ mod tests {
     use super::*;
     fn size(cols: u16, rows: u16) -> WinSize { WinSize { cols, rows, cell_w: 0, cell_h: 0 } }
     fn text(mirror: &ScreenMirror, row: i32) -> String { render_line(&mirror.state.term, mirror.state.term.grid(), Line(row), true).0 }
+
+    #[test]
+    fn soft_wraps_point_to_the_next_row_and_survive_history_and_checkpoint() {
+        let mut mirror = ScreenMirror::with_config(size(4, 3), false, &crate::core::config::Config::default());
+        mirror.feed(b"abcd");
+        let before = mirror.snapshot();
+        assert!(before.wrapping.iter().all(|line| !line.wrapped));
+        mirror.feed(b"e\r\nhard");
+        let live = mirror.snapshot();
+        assert_eq!(live.wrapping.iter().map(|line| line.wrapped).collect::<Vec<_>>(), [true, false, false]);
+        assert!(Arc::ptr_eq(&before.lines[0], &live.lines[0]));
+        mirror.feed(b"\r\nend");
+        let history = mirror.history();
+        assert_eq!(history.lines.iter().map(|line| (line.text.as_str(), line.wrapping.wrapped)).collect::<Vec<_>>(),
+            vec![("abcd", true), ("e", false), ("hard", false), ("end", false)]);
+        let mut restored = ScreenMirror::restore(&mirror.checkpoint().unwrap()).unwrap();
+        assert_eq!(restored.snapshot().wrapping, mirror.snapshot().wrapping);
+        assert_eq!(serde_json::to_value(restored.history().lines).unwrap(),
+            serde_json::to_value(history.lines).unwrap());
+    }
+
+    #[test]
+    fn wide_glyph_wrap_padding_is_not_part_of_the_logical_output() {
+        let mut mirror = ScreenMirror::with_config(size(4, 2), false, &crate::core::config::Config::default());
+        mirror.feed("abc界".as_bytes());
+        let wrapping = mirror.snapshot().wrapping[0];
+        assert_eq!(wrapping, LineWrap { wrapped: true, wrap_padding: true });
+        mirror.feed(b"\r\nnext");
+        let history = mirror.history();
+        assert_eq!(history.lines[0].text, "abc");
+        assert_eq!(history.lines[0].wrapping, wrapping);
+        let mut restored = ScreenMirror::restore(&mirror.checkpoint().unwrap()).unwrap();
+        assert_eq!(restored.history().lines[0].wrapping, wrapping);
+    }
+
+    #[test]
+    fn wrap_metadata_is_sampled_even_without_printable_damage() {
+        let mut mirror = ScreenMirror::with_config(size(4, 2), false, &crate::core::config::Config::default());
+        mirror.feed(b"abcd");
+        let before = mirror.snapshot();
+        mirror.state.term.grid_mut()[Line(0)][Column(3)].flags.insert(Flags::WRAPLINE);
+        mirror.state.revision += 1;
+        let after = mirror.snapshot();
+        assert_eq!(after.wrapping.iter().map(|line| line.wrapped).collect::<Vec<_>>(), [true, false]);
+        assert!(Arc::ptr_eq(&before.lines[0], &after.lines[0]));
+        assert!(Arc::ptr_eq(&after, &mirror.snapshot()));
+    }
 
     #[test]
     fn split_utf8_and_escape_sequences_match_whole_stream() {

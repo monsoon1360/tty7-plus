@@ -42,8 +42,9 @@ data class AgentNotification(
     val hostId: String, val workspaceId: String, val paneId: Long,
     val agentName: String, val title: String, val status: String,
 )
-data class ScreenLine(val row: Int, val ansi: String) {
-    fun toJson() = obj("row" to JsonPrimitive(row), "ansi" to JsonPrimitive(ansi))
+data class ScreenLine(val row: Int, val ansi: String, val wrapped: Boolean = false, val wrapPadding: Boolean = false) {
+    fun toJson() = obj("row" to JsonPrimitive(row), "ansi" to JsonPrimitive(ansi),
+        "wrapped" to JsonPrimitive(wrapped), "wrap_padding" to JsonPrimitive(wrapPadding))
 }
 data class TerminalFrame(
     val revision: String, val baseRevision: String?, val epoch: String,
@@ -77,7 +78,9 @@ data class TerminalFrame(
             return TerminalFrame(revision("revision"), value.optionalText("base_revision")?.also { revision("base_revision") },
                 revision("epoch"), cols, rows, value.getValue("alternate").jsonPrimitive.boolean, cursor,
                 modes, value.getValue("lines").jsonArray.map {
-                    ScreenLine(it.jsonObject.getValue("row").jsonPrimitive.int, it.jsonObject.text("ansi"))
+                    ScreenLine(it.jsonObject.getValue("row").jsonPrimitive.int, it.jsonObject.text("ansi"),
+                        it.jsonObject["wrapped"]?.jsonPrimitive?.boolean ?: false,
+                        it.jsonObject["wrap_padding"]?.jsonPrimitive?.boolean ?: false)
                 }, value.text("subscription_id"), sequence.content.toULong(), value.getValue("part").jsonPrimitive.int,
                 value.getValue("last").jsonPrimitive.boolean)
         }
@@ -94,6 +97,8 @@ data class HistoryPage(val lines: JsonArray, val cursor: String?, val hasMore: B
                 require(it.jsonObject.getValue("cols").jsonPrimitive.int in 1..1000)
                 it.jsonObject.text("text")
                 it.jsonObject.text("ansi")
+                it.jsonObject["wrapped"]?.jsonPrimitive?.boolean
+                it.jsonObject["wrap_padding"]?.jsonPrimitive?.boolean
             }
             val cursor = value.optionalText("cursor")
             val more = value.getValue("has_more").jsonPrimitive.boolean
@@ -122,9 +127,6 @@ class TerminalFeed(
         private set
     internal var active = true
         private set
-    internal var sizeLeaseLost = false
-        private set
-    internal fun updateSizeLease(held: Boolean) { if (!held) sizeLeaseLost = true }
     private var receivedSequence = 0uL
     private var parsedSequence = 0uL
     private var revision: String? = null
@@ -245,6 +247,6 @@ interface MobilePlatform {
     fun notifyAgent(notification: AgentNotification)
 }
 @Composable expect fun CameraScanner(onScan: (String) -> Unit, onClose: () -> Unit)
-@Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)
+@Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)
 @Composable expect fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit)
 @Composable expect fun KeepScreenOn(enabled: Boolean)

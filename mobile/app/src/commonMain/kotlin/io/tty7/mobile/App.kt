@@ -253,7 +253,7 @@ fun MobileApp(
                     Column(Modifier.weight(1f).fillMaxWidth()) {
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface).testTag("terminal-surface")) {
                             Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
-                                TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
+                                TerminalSurface(feed, inputEnabled, controller::input,
                                     { message -> feed?.let { controller.terminalFailed(it, message) } }, shortcuts, agentKind)
                             }
                             if (selection == null) {
@@ -688,8 +688,6 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "TLS certificate pin is required", "Invalid TLS SHA256 fingerprint" -> "配对链接缺少有效的 TLS 证书指纹，请重新生成配对二维码。"
     "Invalid relay URL", "Relay must use wss", "Unencrypted WebSocket is only allowed for loopback in debug builds" -> "中继地址无效，远程连接必须使用安全的 WSS 地址。"
     UNPAIR_BEFORE_PAIRING -> "请先在「扫描与配对管理」中解除当前电脑的配对，再扫描或使用新的配对链接。"
-    "Desktop took back terminal size control. Reopen the terminal to use the phone grid." -> "电脑已接管终端尺寸。重新打开此会话可再次使用手机尺寸。"
-    "terminal size control was taken back" -> "电脑已接管终端尺寸。重新打开此会话可再次使用手机尺寸。"
     "Could not securely save paired computers" -> "无法安全保存电脑的连接凭据，请检查手机存储空间。"
     "Relay refused connection" -> "中继服务拒绝了连接，请检查电脑与网络后重试。"
     else -> if (error.contains(" timed out; the remote operation may still complete. Refresh to reconcile its outcome.")) {
@@ -699,7 +697,6 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
             "list" -> "刷新会话"
             "watch_agents" -> "订阅 Agent 通知"
             "input" -> "发送终端输入"
-            "terminal_size" -> "调整终端尺寸"
             "create_workspace" -> "创建工作区"
             "create_terminal" -> "创建终端"
             "close_terminal" -> "关闭终端"

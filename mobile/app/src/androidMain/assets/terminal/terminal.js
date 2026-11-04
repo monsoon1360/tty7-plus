@@ -11,8 +11,7 @@ const viewport = document.getElementById('viewport');
 const history = document.getElementById('history');
 const historyText = document.getElementById('history-text');
 const terminalFontFamily = getComputedStyle(document.documentElement).getPropertyValue('--terminal-font').trim();
-// Finish loading both weights and symbol fallbacks before reporting ready or
-// measuring the phone grid. The first fallback measurement otherwise persists.
+// Font readiness applies only to local rendering, never to the remote PTY size.
 const terminalFontsReady = Promise.all([
     ['14px "JetBrainsMono Nerd Font Mono"', 'M\ue0b0\uf07b\udb80\udc01'],
     ['bold 14px "JetBrainsMono Nerd Font Mono"', 'M\ue0b0'],
@@ -67,7 +66,7 @@ function applyAppearance() {
     terminal.options.theme = terminalTheme();
     // History is a styled DOM cache; recolour it without clearing its contents
     // or requesting remote history again when the user changes themes.
-    for (const span of historyText.querySelectorAll('span[data-fg]')) {
+    for (const span of document.querySelectorAll('#history-text span[data-fg], #live-text span[data-fg]')) {
         const bg = resolveColor(span.dataset.bg);
         span.style.color = readable(resolveColor(span.dataset.fg), bg);
         span.style.backgroundColor = bg;
@@ -88,6 +87,12 @@ terminal.open(document.getElementById('terminal'));
 const screen = terminal.element.querySelector('.xterm-screen');
 const scrollback = terminal.element.querySelector('.xterm-viewport');
 const input = terminal.element.querySelector('.xterm-helper-textarea');
+const liveText = document.createElement('div');
+liveText.id = 'live-text';
+terminal.element.appendChild(liveText);
+let liveRows = [];
+let liveWraps = [];
+let liveCursorRow = null;
 // Android can reopen the IME when a gesture lands on a still-focused textarea.
 // Keep it read-only until the gesture has ended as an intentional tap.
 input.readOnly = true;
@@ -214,9 +219,6 @@ terminal.onData(data => {
 
 let following = true;
 let inputReady = false;
-let fontsReady = false;
-let sizeTimer;
-let sentGrid = '';
 let applicationScreen = null;
 let applicationScrollDebt = 0;
 let applicationScrollTimer = 0;
@@ -224,51 +226,34 @@ let surfaceHeight = '';
 let surfaceWidth = '';
 let surfaceRows = 0;
 let surfaceCols = 0;
+let surfaceShell = null;
 let cellSize = {width:8, height:16};
 let scrollOrigin = {left:0, top:0};
 let scrollPoint = {x:0, y:0};
-function requestPhoneGrid() {
-    if (!fontsReady || sizeTimer) return;
-    sizeTimer = setTimeout(() => {
-        sizeTimer = 0;
-        if (!fontsReady || !screen.clientWidth || !screen.clientHeight) return;
-        const cellWidth = screen.clientWidth / terminal.cols;
-        const cellHeight = screen.clientHeight / terminal.rows;
-        // Leave room for the terminal's own vertical scrollbar and page padding.
-        const cols = Math.max(20, Math.min(1000, Math.floor((viewport.clientWidth - 20) / cellWidth)));
-        const rows = Math.max(5, Math.min(1000, Math.floor((viewport.clientHeight - 4) / cellHeight)));
-        const grid = `${cols}x${rows}`;
-        if (grid === sentGrid) return;
-        sentGrid = grid;
-        if (window.Tty7) window.Tty7.resize(cols, rows);
-    }, 120);
-}
 window.tty7Synced = function(gen) {
     if (gen !== generation) return;
     inputReady = true;
-    sentGrid = '';
-    requestPhoneGrid();
+    if (following) returnLive();
 };
 function sizeSurface() {
     // Grid changes come back in ordered PTY frames, never reflow ahead of output.
     const height = screen.style.height;
     const width = screen.style.width;
-    if (surfaceHeight === height && surfaceWidth === width && surfaceRows === terminal.rows && surfaceCols === terminal.cols) return;
+    const shell = document.getElementById('terminal').classList.contains('shell');
+    if (surfaceHeight === height && surfaceWidth === width && surfaceRows === terminal.rows && surfaceCols === terminal.cols && surfaceShell === shell) return;
     surfaceHeight = height;
     surfaceWidth = width;
     surfaceRows = terminal.rows;
     surfaceCols = terminal.cols;
+    surfaceShell = shell;
     // xterm already calculated these pixel dimensions. Reading inline styles
     // avoids forcing DOM layout in every remote gesture after a screen patch.
     cellSize = {width:parseFloat(width) / terminal.cols || 8, height:parseFloat(height) / terminal.rows || 16};
-    terminal.element.style.height = height;
-    requestPhoneGrid();
+    terminal.element.style.height = shell ? 'auto' : height;
     if (following) returnLive();
 }
 function isAtLive() {
     return !historyOpening && history.hidden &&
-        // DOM scrollTop changes immediately; xterm's viewportY catches up later.
-        scrollback.scrollTop >= scrollback.scrollHeight - scrollback.clientHeight - 1 &&
         viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - 1;
 }
 function returnLive() {
@@ -424,13 +409,24 @@ function readable(fg, bg) {
     if ((Math.max(f,b) + 0.05) / (Math.min(f,b) + 0.05) >= 4.5) return fg;
     return (b + 0.05) / 0.05 >= 4.5 ? '#000000' : '#ffffff';
 }
-function historyRow(line, rowIndex, source = historyParser) {
+function contentEnd(cells, cols) {
+    for (let col = cols - 1; col >= 0; --col) {
+        const cell = cells.getCell(col);
+        const chars = cell?.getChars();
+        if (cell?.getWidth() && chars && chars !== ' ') return Math.min(cols, col + cell.getWidth());
+    }
+    return 0;
+}
+function historyRow(line, rowIndex, source = historyParser, cursor = null) {
     const row = document.createElement('div');
-    row.style.minHeight = '1em';
-    row.dataset.bytes = String(new TextEncoder().encode(line.ansi + line.text).length);
+    row.className = 'output-row' + (line.wrapped ? ' wrapped' : '');
+    row.dataset.bytes = String(new TextEncoder().encode(line.ansi + (line.text ?? '')).length);
     const cells = source.buffer.active.getLine(rowIndex);
+    const cursorCol = cursor?.visible && cursor.row === rowIndex ? cursor.col : -1;
+    const end = line.wrapped ? line.cols - (line.wrap_padding ? 1 : 0) :
+        Math.min(line.cols, Math.max(contentEnd(cells, line.cols), cursorCol + 1));
     let run = null, previous = '';
-    for (let col = 0; col < line.cols; ++col) {
+    for (let col = 0; col < end; ++col) {
         const cell = cells.getCell(col);
         if (!cell || cell.getWidth() === 0) continue;
         let fgToken = cellColor(cell, true), bgToken = cellColor(cell, false);
@@ -439,12 +435,14 @@ function historyRow(line, rowIndex, source = historyParser) {
         const style = `color:${readable(fg,bg)};background:${bg};font-weight:${cell.isBold() ? 'bold' : 'normal'};font-style:${cell.isItalic() ? 'italic' : 'normal'};text-decoration:${cell.isUnderline() ? 'underline' : ''} ${cell.isStrikethrough() ? 'line-through' : ''}`;
         const chars = cell.isInvisible() ? ' '.repeat(cell.getWidth()) : cell.getChars() || ' ';
         const positioned = /[^\x20-\x7e]/.test(chars) || cell.getWidth() !== 1;
-        const runKey = `${fgToken}|${bgToken}|${style}`;
+        const isCursor = cursorCol >= col && cursorCol < col + cell.getWidth();
+        const runKey = `${fgToken}|${bgToken}|${style}|${isCursor}`;
         if (positioned || runKey !== previous || !run) {
             run = document.createElement('span');
             run.style.cssText = style;
             run.dataset.fg = fgToken;
             run.dataset.bg = bgToken;
+            if (isCursor) run.className = `shell-cursor ${cursor.shape}${cursor.blink ? ' blink' : ''}`;
             if (positioned) {
                 run.style.display = 'inline-block';
                 run.style.width = `${cell.getWidth()}ch`;
@@ -457,7 +455,34 @@ function historyRow(line, rowIndex, source = historyParser) {
         run.appendChild(document.createTextNode(chars));
         if (positioned) run = null;
     }
+    if (!line.wrapped) row.appendChild(document.createElement('br'));
     return row;
+}
+function renderLive(state) {
+    const full = state.base_revision === null || liveRows.length !== state.rows;
+    if (full) {
+        liveText.replaceChildren();
+        liveRows = Array(state.rows).fill(null);
+        liveWraps = Array(state.rows).fill(null);
+        liveCursorRow = null;
+    }
+    const dirty = new Set(state.lines.map(line => line.row));
+    if (liveCursorRow !== null) dirty.add(liveCursorRow);
+    dirty.add(state.cursor.row);
+    for (const line of state.lines) liveWraps[line.row] = {wrapped:line.wrapped === true, wrap_padding:line.wrap_padding === true};
+    if (full) for (let row = 0; row < state.rows; ++row) dirty.add(row);
+    for (const row of dirty) {
+        const node = historyRow({cols:state.cols, ansi:'', ...liveWraps[row]}, row, terminal, state.cursor);
+        if (liveRows[row]) liveRows[row].replaceWith(node);
+        liveRows[row] = node;
+    }
+    if (full) liveText.append(...liveRows);
+    // Empty grid padding is not output. Keep the prompt's cursor even when blank.
+    let last = state.rows - 1;
+    while (last > state.cursor.row && !contentEnd(terminal.buffer.active.getLine(last), state.cols)) last--;
+    for (let row = 0; row < state.rows; ++row) liveRows[row].hidden = row > last;
+    liveCursorRow = state.cursor.row;
+    if (following) returnLive();
 }
 window.tty7History = async function(gen, page) {
     if (gen !== generation || !historyLoading) return;
@@ -767,7 +792,6 @@ for (const type of ['mousedown','mouseup','mousemove','contextmenu']) {
 
 window.addEventListener('resize', () => {
     sizeSurface();
-    requestPhoneGrid();
     terminal.refresh(0, terminal.rows - 1);
     if (following) returnLive();
 });
@@ -779,7 +803,6 @@ window.tty7Begin = function(gen) {
     inputReady = false;
     applicationScreen = null;
     applicationScrollDebt = 0;
-    sentGrid = '';
     stopScrolling();
     touch = undefined;
     activePointers.clear();
@@ -791,13 +814,15 @@ window.tty7Begin = function(gen) {
     historyLoading = false;
     following = true;
     appliedRevision = appliedEpoch = null;
+    liveRows = []; liveWraps = []; liveCursorRow = null;
+    liveText.replaceChildren();
+    document.getElementById('terminal').classList.add('shell');
     // Drain at most the previous current-state write, never historical replay.
     terminalFontsReady.then(() => terminal.write('', () => {
         if (gen !== generation) return;
         terminal.reset();
         writing = false;
         sizeSurface();
-        requestPhoneGrid();
         if (window.Tty7) window.Tty7.begun(gen);
     })).catch(error => fail(error.message));
     return true;
@@ -811,6 +836,7 @@ window.tty7Screen = function(gen, state, sequence) {
         if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error('终端画面序号无效');
         if (state.base_revision === null) terminal.reset();
         if (terminal.cols !== state.cols || terminal.rows !== state.rows) terminal.resize(state.cols, state.rows);
+        document.getElementById('terminal').classList.toggle('shell', !state.alternate);
         liveWidths.prepare(state.lines, state.cols);
         let paint = '\x1b[?7l\x1b[?25l';
         for (const line of state.lines) paint += `\x1b[${line.row + 1};1H\x1b[2K${line.ansi}\x1b[0m`;
@@ -833,6 +859,7 @@ window.tty7Screen = function(gen, state, sequence) {
                     historyMore = true;
                 }
                 appliedRevision = state.revision; appliedEpoch = state.epoch;
+                if (!state.alternate) renderLive(state);
                 if (applicationScreen?.alternate !== state.alternate) stopScrolling();
                 applicationScreen = {alternate:state.alternate, modes:state.modes};
                 writing = false;
@@ -848,10 +875,6 @@ window.tty7Screen = function(gen, state, sequence) {
 };
 terminalFontsReady.then(() => {
     terminal.options.fontFamily = terminalFontFamily;
-    fontsReady = true;
     sizeSurface();
-    // The bundled font can have the fallback's exact metrics; readiness must
-    // still measure the initial phone grid when no geometry change was emitted.
-    requestPhoneGrid();
     if (window.Tty7) window.Tty7.ready();
 }).catch(error => fail(error.message));

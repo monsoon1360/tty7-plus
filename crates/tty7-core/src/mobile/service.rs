@@ -2,6 +2,7 @@ use super::crypto::{self, Cipher, Envelope};
 use super::store::{Credential, Store};
 use super::{AdminReply, AdminRequest, Device, Pairing, Pending, Status};
 use crate::daemon::pane::{DaemonPane, MobileAgentChange, MobileAgentState, MobileAgentWatcher};
+#[cfg(test)]
 use crate::daemon::protocol::WinSize;
 use crate::daemon::screen::{HistorySnapshot, ScreenSnapshot};
 use futures_util::{SinkExt, StreamExt};
@@ -161,7 +162,6 @@ struct Subscription {
     id: String,
     workspace: String,
     observer: Option<(Arc<DaemonPane>, u64)>,
-    lease_started: bool,
     credit: Arc<OutputCredit>,
     resync: Arc<AtomicBool>,
     history: Arc<Mutex<HistoryStore>>,
@@ -291,7 +291,13 @@ fn history_view(subscription: String, mut snapshot: HistorySnapshot) -> HistoryV
     let mut sizes = Vec::new();
     let mut bytes = 0;
     for line in snapshot.lines.iter().rev().take(MAX_HISTORY_ROWS) {
-        let size = json_string_bytes(&line.text) + json_string_bytes(&line.ansi) + 48;
+        // Charge every HistoryLine field and its array separator, without
+        // allocating a serialized copy of the row just to measure it.
+        let size = json_string_bytes(&line.text) + json_string_bytes(&line.ansi)
+            + br#"{"text":,"ansi":,"cols":,"wrapped":,"wrap_padding":},"#.len()
+            + line.cols.checked_ilog10().unwrap_or(0) as usize + 1
+            + if line.wrapping.wrapped { 4 } else { 5 }
+            + if line.wrapping.wrap_padding { 4 } else { 5 };
         if size > MAX_HISTORY_PAGE_BYTES - 1024 || bytes + size > MAX_HISTORY_BYTES {
             break;
         }
@@ -1156,11 +1162,6 @@ impl Service {
             "subscribe" => {
                 let workspace = field(&request, "workspace_id")?.to_string();
                 let pane = number(&request, "pane_id")?;
-                let target = if request.get("cols").is_some() || request.get("rows").is_some() {
-                    Some(terminal_size(&request)?)
-                } else {
-                    None
-                };
                 if peer.subscriptions.len() >= MAX_SUBSCRIPTIONS
                     && !peer.subscriptions.contains_key(&pane)
                 {
@@ -1175,9 +1176,6 @@ impl Service {
                         .await
                         .map_err(|_| io::Error::other("observer failed"))??;
                 peer.subscriptions.remove(&pane);
-                if let Some(size) = target {
-                    observation.pane.mobile_observer_resize(observation.observer_id, size, true)?;
-                }
                 let size = observation.pane.mobile_size();
                 let id = uuid::Uuid::new_v4().to_string();
                 let credit = Arc::new(OutputCredit::new());
@@ -1186,7 +1184,6 @@ impl Service {
                     id: id.clone(),
                     workspace,
                     observer: Some((observation.pane.clone(), observation.observer_id)),
-                    lease_started: target.is_some(),
                     credit: credit.clone(),
                     resync: resync.clone(),
                     history: self.history.clone(),
@@ -1208,27 +1205,6 @@ impl Service {
                 peer.subscriptions.insert(pane, subscription);
                 // The actor sends this response before it can dequeue output.
                 Ok(json!({"subscription_id":id, "cols":size.cols, "rows":size.rows}))
-            }
-            "terminal_size" => {
-                let size = terminal_size(&request)?;
-                let pane_id = number(&request, "pane_id")?;
-                let subscription_id = field(&request, "subscription_id")?;
-                let workspace = field(&request, "workspace_id")?;
-                let subscription = peer.subscriptions.get_mut(&pane_id).filter(|subscription| {
-                    subscription.id == subscription_id
-                        && subscription.workspace == workspace
-                        && subscription.credit.active()
-                }).ok_or_else(|| io::Error::other("terminal subscription is no longer active"))?;
-                let (pane, observer_id) = subscription.observer.as_ref()
-                    .ok_or_else(|| io::Error::other("terminal observer is unavailable"))?;
-                let pane = pane.clone();
-                let observer_id = *observer_id;
-                let initial = !subscription.lease_started;
-                tokio::task::spawn_blocking(move || pane.mobile_observer_resize(observer_id, size, initial))
-                    .await
-                    .map_err(|_| io::Error::other("terminal resize failed"))??;
-                subscription.lease_started = true;
-                Ok(Value::Null)
             }
             "resync" => {
                 let subscription = active_subscription(peer, &request)?;
@@ -1392,7 +1368,8 @@ impl MobileOutput {
             if !self.wait_credit(status) { return false; }
             let Some(sequence) = self.sequence() else { return false; };
             let lines: Vec<_> = rows.iter().map(|&row| json!({
-                "row":row, "ansi":screen.lines[row].as_str()
+                "row":row, "ansi":screen.lines[row].as_str(),
+                "wrapped":screen.wrapping[row].wrapped, "wrap_padding":screen.wrapping[row].wrap_padding
             })).collect();
             if !self.send(json!({
                 "type":"screen", "pane_id":self.pane, "subscription_id":self.id,
@@ -1436,7 +1413,7 @@ fn json_string_bytes(text: &str) -> usize {
 }
 
 fn screen_parts(screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>) -> io::Result<Vec<Vec<usize>>> {
-    if screen.lines.len() != usize::from(screen.rows) {
+    if screen.lines.len() != usize::from(screen.rows) || screen.wrapping.len() != screen.lines.len() {
         return Err(io::Error::other("screen snapshot has an invalid row count"));
     }
     let previous = previous.filter(|old| same_screen_epoch(old, screen));
@@ -1450,7 +1427,8 @@ fn screen_parts(screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>) -> i
         if state_bytes > MAX_SCREEN_STATE_BYTES || bytes > MAX_SCREEN_FRAME_BYTES - 2048 {
             return Err(io::Error::other("screen state exceeds mobile staging limits"));
         }
-        if previous.is_some_and(|old| old.lines.get(row) == Some(line)) { continue; }
+        if previous.is_some_and(|old| old.lines.get(row) == Some(line)
+            && old.wrapping.get(row) == screen.wrapping.get(row)) { continue; }
         if part_bytes + bytes > MAX_SCREEN_FRAME_BYTES {
             parts.push(Vec::new());
             part_bytes = 2048;
@@ -1463,18 +1441,11 @@ fn screen_parts(screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>) -> i
 
 fn forward_output(observation: Observation, sink: MobileOutput, resync: Arc<AtomicBool>) {
     let mut last_agent = None;
-    let mut last_lease = None;
     let status = || {
         let state = observation.pane.mobile_agent();
         if last_agent != Some(state) {
             last_agent = Some(state);
             if !sink.agent(state) { return false; }
-        }
-        let held = observation.pane.mobile_lease_held(observation.observer_id);
-        if last_lease != Some(held) {
-            last_lease = Some(held);
-            if !sink.send(json!({"type":"terminal_lease", "pane_id":sink.pane,
-                "subscription_id":sink.id, "held":held}), None, false) { return false; }
         }
         if let Some(code) = observation.pane.mobile_exit() {
             sink.send(json!({"type":"exited", "pane_id":sink.pane,
@@ -1559,22 +1530,6 @@ fn number(value: &Value, key: &str) -> io::Result<u64> {
                 format!("missing or invalid {key}"),
             )
         })
-}
-fn terminal_size(request: &Value) -> io::Result<WinSize> {
-    let cols = number(request, "cols")?;
-    let rows = number(request, "rows")?;
-    if !(20..=1000).contains(&cols) || !(5..=1000).contains(&rows) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "terminal size must be 20..1000 columns and 5..1000 rows",
-        ));
-    }
-    Ok(WinSize {
-        cols: cols as u16,
-        rows: rows as u16,
-        cell_w: 0,
-        cell_h: 0,
-    })
 }
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -1824,28 +1779,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedCertificate {
 mod tests {
     use super::*;
 
-    #[test]
-    fn phone_grid_bounds_reject_nonintegers_and_do_not_truncate() {
-        for (cols, rows) in [(20, 5), (1000, 1000), (42, 28)] {
-            assert_eq!(terminal_size(&json!({"cols":cols, "rows":rows})).unwrap(), size(cols, rows));
-        }
-        for request in [
-            json!({"cols":19, "rows":5}),
-            json!({"cols":20, "rows":4}),
-            json!({"cols":1001, "rows":5}),
-            json!({"cols":20, "rows":1001}),
-            json!({"cols":65556, "rows":5}),
-            json!({"cols":-20, "rows":5}),
-            json!({"cols":20.5, "rows":5}),
-            json!({"cols":"20", "rows":5}),
-            json!({"cols":20}),
-        ] {
-            assert_eq!(terminal_size(&request).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-        }
-    }
-
     #[tokio::test]
-    async fn phone_resize_requires_current_subscription_workspace_and_active_credit() {
+    async fn phone_resize_operation_is_not_supported() {
         let mut service = test_service();
         let credit = add_subscription(&mut service, "phone", 7, "current");
         let mut peer = service.peers.remove("phone").unwrap();
@@ -1858,8 +1793,7 @@ mod tests {
                 "op":"terminal_size", "pane_id":pane, "subscription_id":subscription,
                 "workspace_id":workspace, "cols":42, "rows":28,
             })).await.unwrap_err();
-            assert_eq!(error.to_string(), "terminal subscription is no longer active");
-            assert!(!peer.subscriptions[&7].lease_started);
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert!(credit.active());
         }
         credit.cancel();
@@ -1867,7 +1801,51 @@ mod tests {
             "op":"terminal_size", "pane_id":7, "subscription_id":"current",
             "workspace_id":"workspace", "cols":42, "rows":28,
         })).await.unwrap_err();
-        assert_eq!(error.to_string(), "terminal subscription is no longer active");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subscribing_and_input_leave_the_shared_pty_size_unchanged() {
+        struct LivePane(Arc<DaemonPane>);
+        impl Backend for LivePane {
+            fn request(&self, request: &Value) -> io::Result<Value> {
+                assert_eq!(request["op"], "input");
+                self.0.write_input(b"echo viewer\r");
+                Ok(Value::Null)
+            }
+            fn observe(&self, _: &str, _: u64) -> io::Result<Observation> {
+                let (wake, receiver) = mpsc::sync_channel(1);
+                let observer_id = self.0.mobile_screen_observe(wake)?;
+                Ok(Observation { pane: self.0.clone(), observer_id, receiver })
+            }
+            fn watch_agents(&self, _: &Arc<MobileAgentWatcher>) -> io::Result<()> {
+                Err(io::Error::other("not used"))
+            }
+            fn agent_context(&self, _: u64) -> io::Result<Option<(String, String)>> { Ok(None) }
+        }
+        let pane = DaemonPane::spawn(
+            7, Some("/".into()), size(80, 24),
+            Some(crate::daemon::protocol::ShellSpec {
+                program: "sh".into(), args: vec!["-c".into(), "exec cat".into()],
+                args_are_tty7_defaults: false,
+            }), None, None, None, false, || {},
+        ).unwrap();
+        let mut service = Service::new(Err(io::Error::other("test")), Arc::new(LivePane(pane.clone())));
+        let mut peer = authenticated_peer();
+        let subscribed = service.operation("phone", &mut peer, json!({
+            "op":"subscribe", "workspace_id":"workspace", "pane_id":7, "cols":20, "rows":5,
+        })).await.unwrap();
+        assert_eq!((subscribed["cols"].as_u64(), subscribed["rows"].as_u64()), (Some(80), Some(24)));
+        service.schedule("phone", &mut peer, json!({"op":"input", "pane_id":7}), 1).unwrap();
+        let (_, reply) = service.reply_receiver.recv().await.unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(pane.mobile_size(), size(80, 24));
+        let screen = pane.mobile_screen().unwrap();
+        assert_eq!((screen.cols, screen.rows), (80, 24));
+        drop(peer);
+        assert_eq!(pane.mobile_size(), size(80, 24));
+        pane.kill();
     }
 
     fn size(cols: u16, rows: u16) -> WinSize {
@@ -1912,7 +1890,6 @@ mod tests {
                     id: id.into(),
                     workspace: "workspace".into(),
                     observer: None,
-                    lease_started: false,
                     credit: credit.clone(),
                     resync: Arc::new(AtomicBool::new(false)),
                     history: service.history.clone(),
@@ -2060,21 +2037,35 @@ mod tests {
     }
 
     fn screen_fixture(rows: u16, width: usize) -> ScreenSnapshot {
-        use crate::daemon::screen::{ScreenCursor, ScreenModes};
+        use crate::daemon::screen::{LineWrap, ScreenCursor, ScreenModes};
         ScreenSnapshot {
             revision: 1, epoch: 1, cols: 80, rows, alternate: false,
             cursor: ScreenCursor { row: 0, col: 0, shape: "block".into(), visible: true, blink: true },
             modes: ScreenModes { app_cursor: false, app_keypad: false, bracketed_paste: true,
                 mouse: false, sgr_mouse: false, alternate_scroll: true },
             lines: (0..rows).map(|row| Arc::new(format!("\x1b[0;31m{row}界e\u{301}{}\x1b[0m", "x".repeat(width)))).collect(),
+            wrapping: vec![LineWrap::default(); usize::from(rows)],
         }
+    }
+
+    #[test]
+    fn wrap_only_delta_preserves_shared_ansi_and_transmits_the_changed_row() {
+        let before = screen_fixture(3, 4);
+        let mut after = before.clone();
+        after.revision += 1;
+        after.wrapping[1].wrapped = true;
+        assert!(Arc::ptr_eq(&before.lines[1], &after.lines[1]));
+        assert_eq!(screen_parts(&after, Some(&before)).unwrap(), vec![vec![1]]);
+        let mut padded = after.clone();
+        padded.wrapping[1].wrap_padding = true;
+        assert_eq!(screen_parts(&padded, Some(&after)).unwrap(), vec![vec![1]]);
     }
 
     fn history_fixture(rows: usize) -> HistorySnapshot {
         use crate::daemon::screen::HistoryLine;
         HistorySnapshot {
             lines: (0..rows).map(|row| HistoryLine {
-                text: format!("row {row}"), ansi: format!("\x1b[0mrow {row}"), cols: 80,
+                text: format!("row {row}"), ansi: format!("\x1b[0mrow {row}"), cols: 80, wrapping: Default::default(),
             }).collect(),
             truncated: false,
         }
@@ -2226,6 +2217,7 @@ mod tests {
         assert!(screen_parts(&screen, None).is_err());
         screen.rows = 1;
         screen.lines.truncate(1);
+        screen.wrapping.truncate(1);
         screen.lines[0] = Arc::new("\x1b".repeat(24 * 1024));
         assert!(screen_parts(&screen, None).is_err());
         for text in ["界e\u{301}", "\x1b[0m\"\\\n\r\t\u{08}\u{0c}"] {
@@ -2303,7 +2295,9 @@ mod tests {
     async fn multipart_screen_obeys_credit_and_preserves_atomic_state_metadata() {
         let mut service = test_service();
         let credit = add_subscription(&mut service, "phone", 7, "feed");
-        let screen = screen_fixture(14, 64 * 1024);
+        let mut screen = screen_fixture(14, 64 * 1024);
+        screen.wrapping[0].wrapped = true;
+        screen.wrapping[0].wrap_padding = true;
         let expected: Vec<_> = screen.lines.iter().map(|line| line.as_str().to_owned()).collect();
         let output = sink(service.output.clone(), credit.clone());
         let producer = std::thread::spawn(move || output.screen(&screen, None, &mut || true));
@@ -2330,6 +2324,8 @@ mod tests {
             assert!(serde_json::to_vec(&frame.value).unwrap().len() < MAX_SCREEN_FRAME_BYTES);
             for line in frame.value["lines"].as_array().unwrap() {
                 assert_eq!(line["row"], staged.len());
+                assert_eq!(line["wrapped"], staged.is_empty());
+                assert_eq!(line["wrap_padding"], staged.is_empty());
                 staged.push(line["ansi"].as_str().unwrap().to_string());
             }
             service.output_frame(frame, &mut Vec::new());
@@ -2409,6 +2405,35 @@ mod tests {
         store.lock().remove("feed");
         assert!(store.lock().take("feed", second["cursor"].as_str().unwrap()).is_err());
         assert_eq!(credit.state.lock().reserved, 0);
+    }
+
+    #[test]
+    fn wide_history_pages_fit_the_phone_limit_without_gaps() {
+        use crate::daemon::screen::ScreenMirror;
+        for cols in [20, 37, 80, 120, 240] {
+            let mut mirror = ScreenMirror::with_config(size(cols, 30), false, &crate::core::config::Config::default());
+            let output = (0..260).map(|index| {
+                format!("HISTORY_{index:04} {}\r\n", "long phone-readable output ".repeat(5))
+            }).collect::<String>();
+            mirror.feed(output.as_bytes());
+            let snapshot = mirror.history();
+            let expected: Vec<_> = snapshot.lines.iter().map(|line| line.text.clone()).collect();
+            let store = Mutex::new(HistoryStore::default());
+            let credit = OutputCredit::new();
+            let mut view = history_view("wide-reader".into(), snapshot);
+            let mut pages = Vec::new();
+            loop {
+                let page = history_page(view, &store, &credit).unwrap();
+                let bytes = serde_json::to_vec(&page).unwrap().len();
+                assert!(bytes <= MAX_HISTORY_PAGE_BYTES, "phone rejects {bytes}-byte history page at {cols} columns");
+                pages.push(page["lines"].as_array().unwrap().iter()
+                    .map(|line| line["text"].as_str().unwrap().to_owned()).collect::<Vec<_>>());
+                if !page["has_more"].as_bool().unwrap() { break; }
+                view = store.lock().take("wide-reader", page["cursor"].as_str().unwrap()).unwrap();
+            }
+            let actual: Vec<_> = pages.into_iter().rev().flatten().collect();
+            assert_eq!(actual, expected, "byte-limited pages must retain every physical row in order");
+        }
     }
 
     #[test]

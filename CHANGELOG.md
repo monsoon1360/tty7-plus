@@ -135,14 +135,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   management; confirmed unpairing is required before scanning a different computer.
   Existing multi-computer stores retain the last approved computer, or the latest
   pending pairing when none is approved.
-- **Phone-sized terminals with direct input.** The shared PTY follows the phone's
-  measured terminal grid, including soft-keyboard viewport changes. Touch the
-  terminal to type at its cursor. Desktop
-  takeback stops further phone resizing until the terminal is explicitly reopened,
-  and releasing the phone's size lease restores the desktop grid.
+- **Phone-local Shell layout without shared PTY resizing.** Android subscriptions
+  no longer send phone geometry, acquire size leases or resize the Shell when the
+  phone rotates or the keyboard opens. Live output and paged history reflow locally
+  using authoritative soft-wrap metadata, preserving hard line breaks, indentation,
+  colours, wide glyphs and combining marks. Both surfaces always wrap automatically;
+  there is no layout toggle. Existing IME editing, completion, history keys and
+  submit continue through the Shell input channel. Update app and daemon together;
+  the relay and saved pairing remain unchanged.
 - **Android keyboard focus stays within the viewport.** The invisible terminal
-  input target is fixed onscreen while waiting for the shared PTY's new grid,
-  rather than leaving the IME focused at an offscreen old cursor position.
+  input target remains fixed onscreen independently of the remote cursor position.
 
 - **Android precise scrolling without widening the terminal.** Local drags track
   finger travel 1:1 and preserve movement while the first history page loads.
@@ -155,6 +157,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Android history pages stay within the phone's 128 KiB limit.** Page byte
+  accounting includes soft-wrap metadata, numeric fields and row separators
+  without allocating serialized row copies. Long retained output no longer
+  produces oversized pages rejected by the phone.
 - **Reopen windows on their remembered monitor.** Save a stable display UUID
   with window geometry and explicitly select that display before restoring normal,
   maximized or fullscreen windows. Closing a window into the tray also preserves

@@ -122,6 +122,10 @@ class TerminalFeedTest {
         assertEquals("<script>界</script>", valid.lines.first().jsonObject.text("text"))
         assertFailsWith<IllegalArgumentException> { HistoryPage.fromJson(page(JsonArray(List(201) { line }))) }
         assertFailsWith<IllegalArgumentException> { HistoryPage.fromJson(page(JsonArray(emptyList()), more = true)) }
+        for (wrapped in listOf(JsonPrimitive("invalid"), JsonPrimitive(1), JsonNull)) {
+            val invalid = JsonObject(line + ("wrapped" to wrapped))
+            assertFails { HistoryPage.fromJson(page(JsonArray(listOf(invalid)))) }
+        }
         val huge = obj("cols" to JsonPrimitive(20), "text" to JsonPrimitive("x".repeat(128 * 1024)), "ansi" to JsonPrimitive(""))
         assertFailsWith<IllegalArgumentException> { HistoryPage.fromJson(page(JsonArray(listOf(huge)))) }
         assertFalse(HistoryPage.fromJson(page(JsonArray(emptyList()))).hasMore)

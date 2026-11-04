@@ -35,7 +35,6 @@ private sealed interface TerminalRenderEvent {
 }
 private class TerminalBridge(
     private val onInput: (Long, String) -> Unit,
-    private val onResize: (Int, Int) -> Unit,
     private val onFocusInput: (Long) -> Unit,
     private val onReady: () -> Unit,
     private val onHistory: (Long, String?) -> Unit,
@@ -45,7 +44,6 @@ private class TerminalBridge(
     @Volatile private var disposed = false
     private fun post(block: () -> Unit) { if (!disposed) main.post { if (!disposed) block() } }
     @JavascriptInterface fun input(generation: Long, text: String) { if (text.length <= 65_536) post { onInput(generation, text) } }
-    @JavascriptInterface fun resize(cols: Int, rows: Int) { if (cols in 20..1000 && rows in 5..1000) post { onResize(cols, rows) } }
     @JavascriptInterface fun focusInput(generation: Long) = post { onFocusInput(generation) }
     @JavascriptInterface fun ready() = post(onReady)
     @JavascriptInterface fun history(generation: Long, cursor: String) { if (cursor.length <= 1024) post { onHistory(generation, cursor.takeIf { it.isNotEmpty() }) } }
@@ -59,24 +57,23 @@ private fun WebView.addTerminalBridge(bridge: TerminalBridge) {
 }
 
 @Composable
-actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit,
+actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onFailure: (String) -> Unit,
     shortcuts: Flow<String>, agentKind: String?) {
     var rendererVersion by remember { mutableIntStateOf(0) }
     key(rendererVersion) {
-        AndroidTerminalSurface(feed, synced, onInput, onResize, onFailure, shortcuts, agentKind) { rendererVersion++ }
+        AndroidTerminalSurface(feed, synced, onInput, onFailure, shortcuts, agentKind) { rendererVersion++ }
     }
 }
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit,
-    onResize: (Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: Flow<String>, agentKind: String?, onRendererGone: () -> Unit) {
+    onFailure: (String) -> Unit, shortcuts: Flow<String>, agentKind: String?, onRendererGone: () -> Unit) {
     val context = LocalContext.current
     val dark = LocalMobileDarkTheme.current
     val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     val currentFeed by rememberUpdatedState(feed)
     val currentInput by rememberUpdatedState(onInput)
-    val currentResize by rememberUpdatedState(onResize)
     val currentFailure by rememberUpdatedState(onFailure)
     val events = remember { Channel<TerminalRenderEvent>(64) }
     var error by remember(feed) { mutableStateOf<String?>(null) }
@@ -89,7 +86,6 @@ private fun AndroidTerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput
     val bridge: TerminalBridge = remember {
         TerminalBridge(
             { gen, text -> if (gen == generation && currentFeed?.synced == true) currentInput(text) },
-            { cols, rows -> currentResize(cols, rows) },
             { gen -> if (gen == generation && currentFeed?.synced == true) focusRequest++ },
             { pageReady = true },
             { gen, cursor ->

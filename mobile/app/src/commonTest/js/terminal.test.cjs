@@ -79,9 +79,7 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await wait('typeof window.tty7Begin === "function"');
   await evaluate(`window.calls={focus:0,history:0,input:[],grids:[],rendered:0,begun:false}; window.Tty7={ready(){},resize(cols,rows){calls.grids.push([cols,rows])},begun(){calls.begun=true},rendered(){calls.rendered++},failed(g,m){throw new Error(m)},history(){calls.history++},focusInput(){calls.focus++},input(g,t){calls.input.push(t)}}; window.tty7Begin(1)`);
   await wait('calls.begun');
-  await wait('calls.grids.length > 0');
-  assert.equal(await evaluate('inputReady'), false, 'Initial phone grid is measured before subscription sync');
-  assert.ok(await evaluate('calls.grids.every(([cols,rows]) => cols >= 20 && cols <= 1000 && rows >= 5 && rows <= 1000)'));
+  assert.equal(await evaluate('inputReady'), false, 'Input waits for subscription sync');
   assert.match(await evaluate('terminal.options.fontFamily'), /JetBrainsMono Nerd Font Mono/);
   assert.deepEqual(await evaluate(`Array.from(document.fonts).map(font => font.status)`), Array(5).fill('loaded'));
   // Check real canvas glyphs, not only CSS font declarations. Compare prompt
@@ -261,10 +259,11 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   assert.equal(await evaluate('history.hidden'),true);
   t.diagnostic('PASS: retained history and error recovery keep the current screen available');
 
-  // Use a shared desktop grid taller than the phone, so leaving history must
-  // also restore the outer live viewport to its actual lower boundary.
+  // Use real output taller than the phone, not empty terminal-grid padding.
   state.revision = '3';
   state.rows = 70;
+  state.lines = Array.from({length:70}, (_,row) => ({row,ansi:paint(`Live output ${row}`),wrapped:false}));
+  state.cursor.row = 69;
   await evaluate(`window.tty7Screen(1,${JSON.stringify(state)},3)`);
   await wait('calls.rendered === 3');
   await evaluate('viewport.scrollTop = 20; scrollLocally(0.6)');
@@ -607,6 +606,66 @@ test('terminal keeps one-screen contents and distinguishes taps from history dra
   await evaluate('window.lateHistory');
   assert.equal(await evaluate('historyText.childElementCount'),0);
   assert.equal(await evaluate('history.hidden'),true);
+
+  await wait('!writing');
+  const paintAt = (text, cols) => Array.from(text.padEnd(cols)).map((c,i)=>`\x1b[${i+1}G${c}`).join('');
+  const readingState = {cols:120,rows:24,epoch:'phone-reading',revision:'phone-reading-1',base_revision:null,alternate:false,
+    cursor:{row:2,col:8,shape:'bar',visible:true,blink:false},
+    modes:{app_cursor:false,app_keypad:false,bracketed_paste:false},
+    lines:[{row:0,ansi:paintAt('A desktop-width paragraph reflows only on the phone. '.repeat(2),120),wrapped:false},
+      {row:1,ansi:paintAt('    indentation remains',120),wrapped:false},{row:2,ansi:paintAt('shell $ ',120),wrapped:false}]};
+  let beforeReading = await evaluate('calls.rendered');
+  await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(readingState)},${++appSequence})`);
+  await wait(`calls.rendered === ${beforeReading + 1}`);
+  await evaluate(`window.tty7Synced(${appGeneration})`);
+  assert.equal(await evaluate('viewport.scrollWidth <= viewport.clientWidth'),true, 'Desktop-width prose fits the phone without shrinking its font');
+  const narrowHeight = await evaluate('liveText.getBoundingClientRect().height');
+  for (const [width,height] of [[700,390],[390,320],[390,700]]) {
+    await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    assert.deepEqual(await evaluate('[terminal.cols,terminal.rows]'),[120,24], 'Rotation and keyboard viewport changes leave the shared geometry intact');
+    assert.equal(await evaluate('viewport.scrollWidth <= viewport.clientWidth'),true);
+    if (width === 700) assert.ok(await evaluate('liveText.getBoundingClientRect().height') < narrowHeight, 'A wider phone viewport locally unwraps the same output');
+  }
+  assert.deepEqual(await evaluate('calls.grids'),[], 'Opening, syncing, rotating and keyboard resizing never request a PTY resize');
+  assert.equal(await evaluate('liveText.querySelectorAll(".shell-cursor").length'),1);
+  const wrappedState = {...readingState,cols:20,rows:6,epoch:'logical-lines',revision:'logical-lines-1',
+    cursor:{row:4,col:8,shape:'bar',visible:true,blink:false},
+    lines:[{row:0,ansi:paintAt('abcdefghijklmnopqrs ',20),wrapped:true,wrap_padding:true},
+      {row:1,ansi:'\x1b[1G中\x1b[3Gu\x1b[4Gv\x1b[5Gw\x1b[6Gx\x1b[7Gy' + Array.from({length:13},(_,i)=>`\x1b[${i+8}G `).join(''),wrapped:false},
+      {row:2,ansi:paintAt('    hard line',20),wrapped:false},
+      {row:3,ansi:'\x1b[1G中\x1b[3Ge\u0301' + Array.from({length:17},(_,i)=>`\x1b[${i+4}G `).join(''),wrapped:false},
+      {row:4,ansi:paintAt('shell $ ',20),wrapped:false}]};
+  beforeReading = await evaluate('calls.rendered');
+  await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(wrappedState)},${++appSequence})`);
+  await wait(`calls.rendered === ${beforeReading + 1}`);
+  assert.deepEqual(await evaluate('liveRows.slice(0,5).map(row=>row.textContent)'),['abcdefghijklmnopqrs','中uvwxy','    hard line','中é','shell $  '], 'A wide glyph crossing a desktop wrap never gains an artificial padding space');
+  const rowTops = await evaluate('liveRows.slice(0,5).map(row=>row.getBoundingClientRect().top)');
+  assert.equal(rowTops[0],rowTops[1], 'Soft-wrapped physical rows join into one logical line on a wider phone');
+  assert.ok(rowTops[2] > rowTops[1], 'A real newline remains a paragraph boundary');
+  assert.equal(await evaluate('liveText.querySelector("span[style*=inline-block]").textContent'),'中', 'Wide glyphs and combining accents survive independent layout');
+  const wrapPatch = {...wrappedState,base_revision:wrappedState.revision,revision:'logical-lines-2',
+    cursor:{...wrappedState.cursor,row:1,col:2},
+    lines:[{...wrappedState.lines[0],wrapped:false}]};
+  beforeReading = await evaluate('calls.rendered');
+  await evaluate(`window.tty7Screen(${appGeneration},${JSON.stringify(wrapPatch)},${++appSequence})`);
+  await wait(`calls.rendered === ${beforeReading + 1}`);
+  assert.equal(await evaluate('liveRows[1].getBoundingClientRect().top > liveRows[0].getBoundingClientRect().top'),true, 'Wrap-only patches restore a real break');
+  assert.equal(await evaluate('liveRows[4].querySelector(".shell-cursor")'),null, 'Cursor-only movement removes the old prompt cursor');
+  assert.equal(await evaluate('liveRows[1].querySelector(".shell-cursor").textContent'),'u');
+  await evaluate('calls.input=[]');
+  for (const key of ['\t','\x1b[A','\x7f','\r']) await evaluate(`window.tty7Key(${appGeneration},${JSON.stringify(key)})`);
+  assert.deepEqual(await evaluate('calls.input'),['\t','\x1b[A','\x7f','\r'], 'Completion, history, deletion and submit stay on the Shell input channel');
+  await evaluate('resetHistory(); showHistory()');
+  const tail = {...wrappedState.lines[1],cols:20,text:'中uvwxy'};
+  const prefix = {...wrappedState.lines[0],cols:20,text:'abcdefghijklmnopqrs'};
+  await evaluate(`window.tty7History(${appGeneration},{lines:[${JSON.stringify(tail)}],cursor:'older-soft-wrap',has_more:true,truncated:false})`);
+  await evaluate('requestHistory()');
+  await evaluate(`window.tty7History(${appGeneration},{lines:[${JSON.stringify(prefix)}],cursor:null,has_more:false,truncated:false})`);
+  assert.deepEqual(await evaluate('Array.from(historyText.children,row=>row.getBoundingClientRect().top)'),
+    Array(2).fill(await evaluate('historyText.firstElementChild.getBoundingClientRect().top')), 'A logical line remains joined across history page boundaries');
+  assert.equal(await evaluate('historyText.textContent'),'abcdefghijklmnopqrs中uvwxy', 'History page joins omit the wide-glyph reservation cell too');
+  t.diagnostic('PASS: phone-only reflow preserves logical lines, Unicode, cursor patches and Shell input without requesting remote geometry changes');
   await call('Page.navigate', {url:url + '?theme=dark'});
   await wait('typeof window.tty7Appearance === "function" && document.documentElement.dataset.theme === "dark"');
   assert.equal(await evaluate('terminal.options.theme.background'), '#1e1e20', 'Saved native theme applies on initial page load');

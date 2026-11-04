@@ -65,9 +65,10 @@ and drives the desktop's panes and agents.
   same terminal engine the desktop uses. The phone receives a current-screen
   snapshot and revision-based row patches, then loads older history in bounded
   pages. It does not replay historical ANSI output.
-- **A phone-sized PTY** — the shared terminal follows the phone's measured grid,
-  including soft-keyboard viewport changes. Desktop take-back restores the
-  desktop grid without ending the process.
+- **Phone-local Shell layout** — opening the terminal, rotating the phone and
+  showing the keyboard never resize the shared PTY. Live output and history always
+  wrap at the phone's width, without a layout toggle. Colours, indentation and
+  Shell input remain intact.
 - **Session management** — create and switch workspaces, create terminals, and
   close terminals after confirmation. Closing a terminal ends its shell and
   whatever runs in it, exactly as the dialog says.
@@ -344,8 +345,8 @@ development only.
    scan the code.
 6. Compare the verification code on the phone with the request shown on the
    desktop, then approve that device on the desktop.
-7. Open the session drawer and choose a terminal. The terminal syncs to the
-   phone's grid; tap it to type at the cursor.
+7. Open the session drawer and choose a terminal. Shell output wraps locally on
+   the phone without resizing the shared PTY; tap it to type at the Shell cursor.
 
 To withdraw access, revoke the device on the desktop. Disabling mobile access
 disconnects live phones and stops relay access. Unpairing on the phone removes

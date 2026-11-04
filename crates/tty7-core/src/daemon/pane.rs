@@ -783,7 +783,6 @@ fn wake_screens(st: &mut PaneState) {
 
 fn has_observer(st: &PaneState, id: u64) -> bool {
     st.observers.iter().any(|observer| observer.id == id)
-        || st.screen_observers.iter().any(|observer| observer.id == id)
 }
 
 /// An observer showing the pane at its own size — a phone, typically, while
@@ -1148,33 +1147,6 @@ fn lease_take(st: &mut PaneState, observer: u64, size: WinSize, by: String) -> O
     Some(size)
 }
 
-/// A mobile subscription may take once, then only update its own lease.
-/// Checking ownership and taking under the same lock prevents queued viewport
-/// changes from stealing the pane back after the desktop ends the lease.
-fn mobile_lease_resize(
-    st: &mut PaneState,
-    observer: u64,
-    size: WinSize,
-    initial: bool,
-) -> std::io::Result<WinSize> {
-    if !has_observer(st, observer) {
-        return Err(std::io::Error::other(
-            "terminal subscription is no longer active",
-        ));
-    }
-    if !initial
-        && !st
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.observer == observer)
-    {
-        return Err(std::io::Error::other(
-            "terminal size control was taken back",
-        ));
-    }
-    lease_take(st, observer, size, "phone".into())
-        .ok_or_else(|| std::io::Error::other("terminal subscription is no longer active"))
-}
 
 /// Ends the lease, whoever holds it, and puts the pane back at the size the
 /// desk last asked for. Returns that size for the pty, or `None` if there was
@@ -2945,14 +2917,6 @@ impl DaemonPane {
             .ok_or_else(|| std::io::Error::other(crate::daemon::screen::UNAVAILABLE))
     }
 
-    pub(crate) fn mobile_lease_held(&self, id: u64) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.observer == id)
-    }
 
     pub(crate) fn mobile_exit(&self) -> Option<Option<i32>> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -2993,19 +2957,6 @@ impl DaemonPane {
         }
     }
 
-    pub(crate) fn mobile_observer_resize(
-        &self,
-        observer_id: u64,
-        size: WinSize,
-        initial: bool,
-    ) -> std::io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let size = mobile_lease_resize(&mut state, observer_id, size, initial)?;
-        // Keep lease ownership locked through the ioctl: desktop takeback
-        // must restore after this resize, never have its restore overwritten.
-        self.resize_pty(size);
-        Ok(())
-    }
 
     /// The controller's [`LeaseRequest`]: hear about leases, or end one.
     pub fn controller_lease(&self, request: LeaseRequest) {
@@ -6783,7 +6734,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_observers_coalesce_and_participate_in_size_leases() {
+    fn screen_observers_coalesce_without_participating_in_size_leases() {
         let mut state = test_state(true);
         let (wake, receiver) = mpsc::sync_channel(1);
         state.screen_observers.push(ScreenObserver { id: 1, wake });
@@ -6795,20 +6746,42 @@ mod tests {
             state.observers.is_empty(),
             "screen observation never creates raw replay subscribers"
         );
-        mobile_lease_resize(&mut state, 1, ws(40, 10), true).unwrap();
-        let screen = state.screen.as_mut().unwrap().snapshot();
-        assert_eq!((screen.cols, screen.rows), (40, 10));
-        assert_eq!(receiver.try_iter().count(), 1);
-        lease_end(&mut state);
-        assert!(mobile_lease_resize(&mut state, 1, ws(50, 12), false).is_err());
+        assert_eq!(lease_take(&mut state, 1, ws(40, 10), "phone".into()), None);
+        assert!(state.lease.is_none());
+        assert_eq!(state.ring.size(), ws(80, 24));
+        state.screen.as_mut().unwrap().feed(b"command output\r\n");
         let screen = state.screen.as_mut().unwrap().snapshot();
         assert_eq!((screen.cols, screen.rows), (80, 24));
-        receiver.try_iter().for_each(drop);
         notify(&mut state, DaemonMsg::Exited { code: Some(7) });
         assert_eq!(receiver.try_iter().count(), 1);
         drop(receiver);
         wake_screens(&mut state);
         assert!(state.screen_observers.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mobile_observation_and_keyboard_input_do_not_resize_the_pty() {
+        let pane = DaemonPane::spawn(
+            7, Some("/".into()), ws(80, 24),
+            Some(ShellSpec {
+                program: "sh".into(), args: vec!["-c".into(), "exec cat".into()],
+                args_are_tty7_defaults: false,
+            }), None, None, None, false, || {},
+        ).unwrap();
+        let master = pane.pty().expect("PTY backend").master.clone();
+        let before = master.lock().unwrap().as_ref().unwrap().get_size().unwrap();
+        let (wake, _receiver) = mpsc::sync_channel(1);
+        let observer = pane.mobile_screen_observe(wake).unwrap();
+        pane.mobile_screen().unwrap();
+        pane.mobile_history().unwrap();
+        pane.write_input(b"viewer input\r");
+        pane.unobserve(observer);
+        let after = master.lock().unwrap().as_ref().unwrap().get_size().unwrap();
+        assert_eq!((after.cols, after.rows), (before.cols, before.rows));
+        assert_eq!(pane.mobile_size(), ws(80, 24));
+        assert!(pane.state.lock().unwrap().lease.is_none());
+        pane.kill();
     }
 
     #[cfg(unix)]
@@ -8149,35 +8122,9 @@ mod tests {
     }
 
     #[test]
-    fn mobile_grid_updates_cannot_retake_a_revoked_or_cancelled_subscription() {
+    fn releasing_legacy_lease_restores_last_desktop_grid_without_affecting_other_observers() {
         let (mut st, controller_rx, phone, observer_rx) = leased_rig();
-        assert_eq!(
-            mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap(),
-            ws(42, 28)
-        );
-        assert_eq!(
-            mobile_lease_resize(&mut st, phone, ws(45, 18), false).unwrap(),
-            ws(45, 18)
-        );
-        assert_eq!(controller_resize(&mut st, ws(120, 40)), None);
-        drain(&controller_rx);
-        drain(&observer_rx);
-        assert_eq!(lease_end(&mut st), Some(ws(120, 40)));
-        assert!(mobile_lease_resize(&mut st, phone, ws(45, 18), false).is_err());
-        assert_eq!(st.ring.size(), ws(120, 40));
-        assert_eq!(
-            drain(&observer_rx),
-            vec![DaemonMsg::Lease(None), DaemonMsg::Size(ws(120, 40))]
-        );
-        st.observers.retain(|observer| observer.id != phone);
-        assert!(mobile_lease_resize(&mut st, phone, ws(42, 28), true).is_err());
-        assert_eq!(st.ring.size(), ws(120, 40));
-    }
-
-    #[test]
-    fn cancelling_mobile_lease_restores_last_desktop_grid_without_affecting_other_observers() {
-        let (mut st, controller_rx, phone, observer_rx) = leased_rig();
-        mobile_lease_resize(&mut st, phone, ws(42, 28), true).unwrap();
+        assert_eq!(lease_take(&mut st, phone, ws(42, 28), "legacy".into()), Some(ws(42, 28)));
         let (other_tx, other_rx) = mpsc::channel();
         let (other, _) = observe_subscriber(&mut st, other_tx, Arc::new(OutputGate::new()), false);
         assert_eq!(lease_release(&mut st, other), None);

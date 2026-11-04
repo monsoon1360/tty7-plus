@@ -174,8 +174,9 @@ app is in the background through a foreground connection service.
    Opening the workspace drawer clears
    input focus and dismisses the keyboard. Create workspaces and terminals,
    switch between them, or close a terminal after confirming.
-   The shared PTY uses the phone's measured grid and adapts when the keyboard changes
-   the available height; it is not a horizontally clipped desktop-width terminal.
+   Shell output wraps locally at the phone's width. Opening the terminal,
+   rotating the phone and showing the keyboard do not resize the shared PTY.
+   Live output and history always wrap automatically; there is no layout toggle.
 5. Each phone saves exactly one computer. **扫描与配对管理** opens its pairing
    management screen. Confirm **解除配对** before scanning or opening a pairing link
    for another computer; canceling keeps the current pairing. Migration from an
@@ -210,8 +211,8 @@ The app uses separate channels for **Agent 任务完成** and **Agent 需要人�
 
 While connected, **tty7 正在接收 Agent 通知** is the ongoing foreground-service
 indicator. Moving the app into the background releases the terminal renderer
-subscription and its phone-size lease, but keeps the encrypted Agent stream and
-network monitoring alive. Unpairing stops the connection and service.
+subscription, but keeps the encrypted Agent stream and network monitoring alive.
+Unpairing stops the connection and service.
 
 Update both the desktop daemon and Android app for this feature; it extends
 protocol 3 with the authenticated `watch_agents` subscription. The relay needs
@@ -231,13 +232,18 @@ This is terminal cell state, not a screenshot image, video, or raw historical AN
 The phone paints safe synthesized row instructions; it never resumes the
 application's original escape stream from a screen-only reconstruction.
 
-The prewarmed WebView is reused across selections and reconnects. Its measured
-geometry is included in the initial subscription, so a phone-sized snapshot can
-be produced without first replaying a desktop-width terminal. While its size
-lease is held, the phone controls the shared PTY grid; release restores the
-desktop grid. Desktop takeback prevents later phone resize requests from
-reclaiming control until the terminal is explicitly reopened. Selection and
-normal-buffer history positions remain client-local. Alternate-screen applications
+The prewarmed WebView is reused across selections and reconnects. Subscriptions
+observe the desktop's grid without sending phone geometry or taking a size lease.
+Shell output has a separate phone-width layout: each row's authoritative `wrapped`
+flag joins soft wraps into a logical line, while real newlines, indentation,
+colours, wide glyphs and combining marks are preserved. Older history uses the
+same layout, including soft wraps crossing page boundaries. Both surfaces always
+wrap automatically; there is no format-preservation mode or layout toggle.
+The input parser retains the remote grid and cursor,
+so IME editing, completion, history keys and submit still reach the existing Shell
+without translating display coordinates. Update both app and daemon for soft-wrap
+metadata; pairing credentials and the relay do not change.
+Selection and normal-buffer history positions remain client-local. Alternate-screen applications
 such as Codex own their transcript: vertical gestures send mouse-wheel reports,
 or cursor keys when the application requests alternate scrolling without mouse
 tracking. Terminal-query responses remain the desktop's responsibility.
@@ -303,14 +309,14 @@ History is a separate, read-only surface opened by upward scrolling:
   separately timed live screen is never spliced onto that view. New output and
   resize/reflow cannot move those cursors. With no retained rows, history remains
   empty. Update both the Android app and desktop daemon for this behavior.
-  Each page is at most 200 rows / 128 KiB; the host retains at most 16 views /
-  32 MiB and permits two history workers. An active view does not expire merely
+  Each page is at most 200 rows / 128 KiB, including serialized row metadata and
+  separators. The host retains at most 16 views / 32 MiB and permits two history
+  workers. An active view does not expire merely
   because the reader pauses. Subscription teardown releases it; the global
   view-count and byte limits still evict the oldest windows under pressure.
-- History preserves the shared terminal's current grid width. Soft-wrapped rows
-  are not joined into desktop-width lines: the phone does not expand its terminal
-  or history width to make old desktop tables fit. Applications receive the
-  phone's measured PTY size and own any content reformatting after that resize.
+- History carries the original grid width and each physical row's soft-wrap flag.
+  The phone always joins continuations and reflows them locally without
+  resizing the application.
 - Android retains a continuous window of at most 2,000 rows / 2 MiB of UTF-8 row
   content. A bounded page is parsed in one batch without creating another visible
   terminal renderer. Prepending older rows preserves the reading anchor. If newer
@@ -443,6 +449,9 @@ also recovered to the final target. Cold process restart restored the approved
 computer and its grouped session drawer without scanning again. The updated
 desktop daemon was handed off without changing any of the four existing pane
 IDs or their immediately preceding terminal/Agent process IDs.
+
+The phone-sized-PTY measurements below describe earlier builds. They are not
+verification of the current phone-local Shell layout.
 
 The phone-sized terminal update was verified on a physical Honor phone without
 the emulator. Direct terminal input reported `stty size` as 36 rows × 37 columns,

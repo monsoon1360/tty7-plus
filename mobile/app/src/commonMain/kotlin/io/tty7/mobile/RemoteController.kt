@@ -323,17 +323,6 @@ class RemoteController(
                                 }
                             }
                         }
-                        "terminal_lease" -> {
-                            require(authenticated) { "Terminal lease before authentication" }
-                            val feed = mutable.value.terminal
-                            if (feed != null && feed.matches(message.getValue("pane_id").jsonPrimitive.long, message.text("subscription_id"))) {
-                                val held = message.getValue("held").jsonPrimitive.boolean
-                                feed.updateSizeLease(held)
-                                if (!held) mutable.value = mutable.value.copy(
-                                    error = "Desktop took back terminal size control. Reopen the terminal to use the phone grid.",
-                                )
-                            }
-                        }
                         "agent_update" -> {
                             require(authenticated) { "Agent notification before authentication" }
                             receiveAgentUpdate(computer, message)
@@ -411,7 +400,7 @@ class RemoteController(
     private suspend fun sendInner(inner: JsonObject) {
         (socket ?: error("Not connected")).send(obj("type" to JsonPrimitive("data"), "payload" to JsonPrimitive(inner.toString())).toString())
     }
-    private suspend fun sendEncrypted(message: JsonObject, feed: TerminalFeed? = null, input: Boolean = false, sizing: Boolean = false) {
+    private suspend fun sendEncrypted(message: JsonObject, feed: TerminalFeed? = null, input: Boolean = false) {
         val generation = lifetime.generation
         val session = crypto ?: error("Not authenticated")
         val remote = socket ?: error("Not connected")
@@ -419,8 +408,7 @@ class RemoteController(
             currentCoroutineContext().ensureActive()
             if (!lifetime.accepts(generation) || crypto !== session || socket !== remote ||
                 (feed != null && (mutable.value.terminal !== feed || !feed.active)) ||
-                (input && (!mutable.value.connected || !mutable.value.terminalSynced)) ||
-                (sizing && (!mutable.value.connected || !mutable.value.terminalSynced || feed?.synced != true || feed?.sizeLeaseLost == true))) {
+                (input && (!mutable.value.connected || !mutable.value.terminalSynced))) {
                 throw CancellationException("Encrypted send is no longer current")
             }
             commitEncrypted(message, session, remote)
@@ -452,7 +440,7 @@ class RemoteController(
     }
     private suspend fun request(
         op: String, vararg fields: Pair<String, JsonElement>, subscribing: TerminalFeed? = null, input: TerminalFeed? = null,
-        sizing: TerminalFeed? = null, target: TerminalFeed? = null, id: Long = nextRequest++,
+        target: TerminalFeed? = null, id: Long = nextRequest++,
     ): JsonElement {
         check(mutable.value.connected) { "Connect to a computer first" }
         val generation = lifetime.generation
@@ -461,7 +449,7 @@ class RemoteController(
         if (subscribing != null) pendingSubscriptions[id] = subscribing
         try {
             sendEncrypted(obj("type" to JsonPrimitive("request"), "id" to JsonPrimitive(id), "op" to JsonPrimitive(op), *fields),
-                feed = subscribing ?: input ?: sizing ?: target, input = input != null, sizing = sizing != null)
+                feed = subscribing ?: input ?: target, input = input != null)
             val response = withTimeout(requestTimeout) { result.await() }
             if (!lifetime.accepts(generation)) throw CancellationException("Connection changed")
             return response
@@ -627,12 +615,8 @@ class RemoteController(
                 subscribedPane = pane.id
                 mutable.value = mutable.value.copy(terminal = feed, terminalSynced = false)
                 try {
-                    // A cold renderer may still be loading its bundled fonts.
-                    // Subscribe at a valid grid, then apply its measured size.
-                    val size = phoneGrid ?: (currentPane.cols.coerceIn(20, 1000) to currentPane.rows.coerceIn(5, 1000))
                     request("subscribe", "workspace_id" to JsonPrimitive(workspace), "pane_id" to JsonPrimitive(pane.id),
-                        "cols" to JsonPrimitive(size.first),
-                        "rows" to JsonPrimitive(size.second), subscribing = feed)
+                        subscribing = feed)
                     currentCoroutineContext().ensureActive()
                     if (!isCurrent()) feed.cancel()
                 } catch (e: Exception) {
@@ -663,29 +647,6 @@ class RemoteController(
                 request("unsubscribe", "pane_id" to JsonPrimitive(previous))
                 currentCoroutineContext().ensureActive()
                 if (intent == selectionIntent) subscribedPane = null
-            }
-        }
-    }
-    private var phoneGrid: Pair<Int, Int>? = null
-    fun measuredPhoneGrid(cols: Int, rows: Int) {
-        if (cols !in 20..1000 || rows !in 5..1000) return
-        phoneGrid = cols to rows
-        mutable.value.terminal?.let { resizeTerminal(it, cols, rows) }
-    }
-    fun resizeTerminal(feed: TerminalFeed, cols: Int, rows: Int): Job? {
-        if (mutable.value.terminal !== feed || !feed.active || !feed.synced ||
-            !mutable.value.connected || !mutable.value.terminalSynced || feed.sizeLeaseLost) return null
-        val subscriptionId = feed.subscriptionId ?: return null
-        return action {
-            if (mutable.value.terminal !== feed || !feed.active || !feed.synced || feed.sizeLeaseLost) return@action
-            require(cols in 20..1000 && rows in 5..1000) { "Terminal size must be 20..1000 columns and 5..1000 rows" }
-            try {
-                request("terminal_size", "workspace_id" to JsonPrimitive(feed.workspace),
-                    "pane_id" to JsonPrimitive(feed.pane.id), "subscription_id" to JsonPrimitive(subscriptionId),
-                    "cols" to JsonPrimitive(cols), "rows" to JsonPrimitive(rows), sizing = feed)
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                if (mutable.value.terminal === feed && feed.active) fail(error)
             }
         }
     }
