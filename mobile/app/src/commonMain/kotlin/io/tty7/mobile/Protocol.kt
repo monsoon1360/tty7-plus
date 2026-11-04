@@ -42,10 +42,7 @@ data class AgentNotification(
     val hostId: String, val workspaceId: String, val paneId: Long,
     val agentName: String, val title: String, val status: String,
 )
-data class ScreenLine(val row: Int, val ansi: String, val wrapped: Boolean = false, val wrapPadding: Boolean = false) {
-    fun toJson() = obj("row" to JsonPrimitive(row), "ansi" to JsonPrimitive(ansi),
-        "wrapped" to JsonPrimitive(wrapped), "wrap_padding" to JsonPrimitive(wrapPadding))
-}
+data class ScreenLine(val row: Int, val ansi: String, val wrapped: Boolean = false, val wrapPadding: Boolean = false)
 data class TerminalFrame(
     val revision: String, val baseRevision: String?, val epoch: String,
     val cols: Int, val rows: Int, val alternate: Boolean,
@@ -53,10 +50,6 @@ data class TerminalFrame(
     val subscriptionId: String, val sequence: ULong, val part: Int, val last: Boolean,
 ) {
     internal val presentationBytes: Int by lazy(LazyThreadSafetyMode.NONE) { lines.sumOf { it.ansi.encodeToByteArray().size } }
-    fun presentation() = obj("revision" to JsonPrimitive(revision),
-        "base_revision" to (baseRevision?.let(::JsonPrimitive) ?: JsonNull), "epoch" to JsonPrimitive(epoch),
-        "cols" to JsonPrimitive(cols), "rows" to JsonPrimitive(rows), "alternate" to JsonPrimitive(alternate),
-        "cursor" to cursor, "modes" to modes, "lines" to JsonArray(lines.map(ScreenLine::toJson)))
     companion object {
         fun fromJson(value: JsonObject): TerminalFrame {
             fun revision(key: String): String = value.getValue(key).jsonPrimitive.let {
@@ -87,8 +80,6 @@ data class TerminalFrame(
     }
 }
 data class HistoryPage(val lines: JsonArray, val cursor: String?, val hasMore: Boolean, val truncated: Boolean) {
-    fun toJson() = obj("lines" to lines, "cursor" to (cursor?.let(::JsonPrimitive) ?: JsonNull),
-        "has_more" to JsonPrimitive(hasMore), "truncated" to JsonPrimitive(truncated))
     companion object {
         fun fromJson(value: JsonObject): HistoryPage {
             val lines = value.getValue("lines").jsonArray

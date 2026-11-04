@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Native Android terminal rendering.** Replace the terminal WebView, xterm.js
+  and JavaScript bridge with a Canvas view of the desktop's canonical cells.
+  Decode changed rows off the UI thread, reuse unchanged layout and acknowledge
+  applied screen state without waiting for a browser render callback. Native IME,
+  hardware keys, selection/copy/paste, local history and full-screen application
+  scrolling retain the shared desktop grid. Nerd Font/Powerline colours are no
+  longer replaced with black or white by text-contrast correction.
+  Native background drawing stays inside its embedded view, preserving the
+  Compose application bar and surrounding controls.
+
 - **Quiet AI commit generation for large changes.** Generating a commit draft
   from a truncated patch no longer shows a truncation notification. The 24 KiB
   context limit and draft overwrite protections are unchanged.

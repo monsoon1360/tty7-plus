@@ -44,6 +44,10 @@ kotlin {
             implementation(kotlin("test-junit"))
             implementation("junit:junit:4.13.2")
         }
+        androidInstrumentedTest.dependencies {
+            implementation(kotlin("test-junit"))
+            implementation("androidx.test:runner:1.6.2")
+        }
         androidMain.dependencies {
             implementation("androidx.activity:activity-compose:1.10.1")
             implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
@@ -52,7 +56,6 @@ kotlin {
             implementation("androidx.camera:camera-view:1.4.2")
             implementation("com.google.mlkit:barcode-scanning:17.3.0")
             implementation("com.squareup.okhttp3:okhttp:4.12.0")
-            implementation("androidx.webkit:webkit:1.13.0")
         }
     }
 }
@@ -65,6 +68,7 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "1.0.2"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     sourceSets["main"].manifest.srcFile("src/androidMain/AndroidManifest.xml")
     sourceSets["main"].assets.srcDirs("src/androidMain/assets")
