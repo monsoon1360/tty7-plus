@@ -748,8 +748,6 @@ class RemoteControllerTest {
         platform.socket.encrypted(obj("type" to JsonPrimitive("response"), "id" to JsonPrimitive(2),
             "ok" to JsonPrimitive(false), "error" to JsonPrimitive("Terminal observer could not start")))
         runCurrent()
-        platform.socket.response(3, JsonNull)
-        runCurrent()
         assertTrue(controller.state.value.connected)
         assertEquals("workspace" to pane, controller.state.value.terminalSelection)
         assertEquals("Terminal observer could not start", controller.state.value.terminalError)
@@ -760,7 +758,7 @@ class RemoteControllerTest {
         assertEquals("Terminal observer could not start", controller.state.value.terminalError)
         controller.retryTerminal()
         runCurrent()
-        platform.socket.subscribed(4, "retry-after-rejected-subscribe")
+        platform.socket.subscribed(3, "retry-after-rejected-subscribe")
         renderEmpty(controller, platform.socket)
         runCurrent()
         controller.terminalFailed(rejected, "Late callback from rejected feed")
@@ -1192,11 +1190,15 @@ class RemoteControllerTest {
         runCurrent()
         assertNull(controller.state.value.terminalSelection)
         assertNull(controller.state.value.terminal)
-        assertEquals(listOf("subscribe", "unsubscribe"), platform.socket.encryptedMessages
-            .mapNotNull { it.optionalText("op") }.takeLast(2))
+        assertEquals("subscribe", platform.socket.encryptedMessages.last().optionalText("op"))
+        assertTrue(platform.socket.encryptedMessages.none { it.optionalText("op") == "unsubscribe" },
+            "Cancellation must wait for the returned subscription identity")
         platform.afterEncrypt = {}
         platform.socket.subscribed(2, "canceled-during-encryption")
         renderEmpty(controller, platform.socket)
+        val unsubscribe = platform.socket.encryptedMessages.last { it.optionalText("op") == "unsubscribe" }
+        assertEquals("workspace", unsubscribe.text("workspace_id"))
+        assertEquals("canceled-during-encryption", unsubscribe.text("subscription_id"))
         platform.socket.response(3, JsonNull)
         runCurrent()
         assertNull(controller.state.value.terminalSelection)
@@ -1340,64 +1342,142 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
-    @Test fun openingReopeningAndParsedSnapshotsNeverRequestTerminalSizeControl() = runTest {
+    @Test fun phoneMeasurementsSubscribeResizeAndReopenButCannotReacquireLostLease() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
         val socket = platform.socket
-        fun assertViewerRequests() {
-            assertTrue(socket.encryptedMessages.none { it.optionalText("op") == "terminal_size" })
-            socket.encryptedMessages.filter { it.optionalText("op") == "subscribe" }.forEach {
-                assertFalse("cols" in it)
-                assertFalse("rows" in it)
-            }
-        }
-        repeat(2) { opening ->
-            controller.selectTerminal("workspace", pane)
-            controller.setTerminalVisible(true)
-            runCurrent()
-            val request = socket.encryptedMessages.last { it.optionalText("op") == "subscribe" }
-            assertEquals("workspace", request.text("workspace_id"))
-            assertEquals(pane.id, request.getValue("pane_id").jsonPrimitive.long)
-            assertViewerRequests()
-            socket.subscribed(request.getValue("id").jsonPrimitive.long, "viewer-$opening")
-            socket.output("initial", snapshot = true)
-            runCurrent()
-            val feed = assertNotNull(controller.state.value.terminal)
-            assertFalse(controller.state.value.terminalSynced)
-            assertViewerRequests()
-            feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive())))
-            runCurrent()
-            assertTrue(controller.state.value.terminalSynced)
-            assertViewerRequests()
+        val original = openTerminal(controller, socket)
+        val subscribe = socket.encryptedMessages.single { it.optionalText("op") == "subscribe" }
+        assertEquals(40, subscribe.getValue("cols").jsonPrimitive.int)
+        assertEquals(20, subscribe.getValue("rows").jsonPrimitive.int)
+        controller.measuredPhoneGrid(original, 42, 10)
+        runCurrent()
+        val resize = socket.encryptedMessages.single { it.optionalText("op") == "terminal_size" }
+        assertEquals("workspace", resize.text("workspace_id"))
+        assertEquals(pane.id, resize.getValue("pane_id").jsonPrimitive.long)
+        assertEquals(original.subscriptionId, resize.text("subscription_id"))
+        assertEquals(42, resize.getValue("cols").jsonPrimitive.int)
+        assertEquals(10, resize.getValue("rows").jsonPrimitive.int)
+        socket.response(resize.getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        controller.measuredPhoneGrid(original, 42, 10)
+        runCurrent()
+        assertEquals(1, socket.encryptedMessages.count { it.optionalText("op") == "terminal_size" })
+        socket.lease(false)
+        runCurrent()
+        assertTrue(original.sizeLeaseLost)
+        assertEquals("Desktop took back terminal size control. Reopen the terminal to use the phone grid.", controller.state.value.error)
+        socket.lease(true)
+        runCurrent()
+        assertTrue(original.sizeLeaseLost, "Only a new subscription may regain the lease")
+        controller.measuredPhoneGrid(original, 60, 14)
+        assertNull(controller.resizeTerminal(original, 61, 15))
+        runCurrent()
+        assertEquals(1, socket.encryptedMessages.count { it.optionalText("op") == "terminal_size" })
+        controller.selectTerminal("workspace", pane)
+        runCurrent()
+        val unsubscribe = socket.encryptedMessages.last { it.optionalText("op") == "unsubscribe" }
+        assertEquals(original.subscriptionId, unsubscribe.text("subscription_id"))
+        socket.response(unsubscribe.getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        val reopened = socket.encryptedMessages.last { it.optionalText("op") == "subscribe" }
+        assertEquals(60, reopened.getValue("cols").jsonPrimitive.int)
+        assertEquals(14, reopened.getValue("rows").jsonPrimitive.int)
+        socket.subscribed(reopened.getValue("id").jsonPrimitive.long, "new-phone-lease")
+        renderEmpty(controller, socket)
+        runCurrent()
+        val current = assertNotNull(controller.state.value.terminal)
+        socket.lease(false, original.subscriptionId!!)
+        controller.measuredPhoneGrid(original, 100, 50)
+        assertNull(controller.resizeTerminal(original, 100, 50))
+        runCurrent()
+        assertFalse(current.sizeLeaseLost)
+        controller.measuredPhoneGrid(current, 43, 12)
+        runCurrent()
+        val currentResize = socket.encryptedMessages.last { it.optionalText("op") == "terminal_size" }
+        assertEquals("new-phone-lease", currentResize.text("subscription_id"))
+        assertEquals(43, currentResize.getValue("cols").jsonPrimitive.int)
+        controller.setForeground(false)
+    }
 
-            // Desktop geometry remains authoritative even after the phone has parsed it.
-            socket.output("desktop resized", snapshot = true)
-            runCurrent()
-            feed.acknowledgeParsed(assertNotNull(feed.stage(feed.frames.receive().copy(cols = 120))))
-            runCurrent()
-            assertTrue(controller.state.value.connected)
-            assertTrue(controller.state.value.terminalSynced)
-            assertNull(controller.state.value.error)
-            assertNull(controller.state.value.terminalError)
-            assertViewerRequests()
+    @Test fun queuedSizeIsDroppedAfterLeaseLossBeforeEncryption() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val socket = platform.socket
+        val feed = openTerminal(controller, socket)
+        val gate = CompletableDeferred<Unit>()
+        socket.sendRelease = gate
+        controller.input("x")
+        runCurrent()
+        controller.measuredPhoneGrid(feed, 45, 11)
+        runCurrent()
+        socket.lease(false)
+        runCurrent()
+        gate.complete(Unit)
+        socket.sendRelease = null
+        runCurrent()
+        assertTrue(feed.sizeLeaseLost)
+        assertTrue(socket.encryptedMessages.none { it.optionalText("op") == "terminal_size" })
+        controller.setForeground(false)
+    }
 
-            val input = "界\t\u001b[A\r"
-            controller.input(input)
-            runCurrent()
-            val inputRequest = socket.encryptedMessages.last { it.optionalText("op") == "input" }
-            assertEquals(input, inputRequest.text("data"))
-            assertEquals(feed.subscriptionId, socket.acknowledgments.last().text("subscription_id"))
-            socket.response(inputRequest.getValue("id").jsonPrimitive.long, JsonNull)
-            runCurrent()
-            controller.leaveTerminal()
-            runCurrent()
-            val unsubscribe = socket.encryptedMessages.last { it.optionalText("op") == "unsubscribe" }
-            socket.response(unsubscribe.getValue("id").jsonPrimitive.long, JsonNull)
-            runCurrent()
-            assertViewerRequests()
-        }
-        assertEquals(2, socket.encryptedMessages.count { it.optionalText("op") == "subscribe" })
-        assertNull(controller.state.value.error)
+    @Test fun queuedOldFeedSizesAndMeasurementsCannotAffectNewSubscription() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = authenticatedController(platform)
+        val socket = platform.socket
+        val old = openTerminal(controller, socket)
+        val gate = CompletableDeferred<Unit>()
+        socket.sendRelease = gate
+        controller.input("x")
+        runCurrent()
+        controller.measuredPhoneGrid(old, 45, 11)
+        runCurrent()
+        controller.selectTerminal("workspace", pane)
+        runCurrent()
+        gate.complete(Unit)
+        socket.sendRelease = null
+        runCurrent()
+        val unsubscribe = socket.encryptedMessages.last { it.optionalText("op") == "unsubscribe" }
+        socket.response(unsubscribe.getValue("id").jsonPrimitive.long, JsonNull)
+        runCurrent()
+        val subscribe = socket.encryptedMessages.last { it.optionalText("op") == "subscribe" }
+        socket.subscribed(subscribe.getValue("id").jsonPrimitive.long, "replacement")
+        renderEmpty(controller, socket)
+        runCurrent()
+        controller.measuredPhoneGrid(old, 120, 40)
+        assertNull(controller.resizeTerminal(old, 120, 40))
+        runCurrent()
+        assertTrue(socket.encryptedMessages.none { it.optionalText("op") == "terminal_size" })
+        assertEquals("replacement", controller.state.value.terminal?.subscriptionId)
+        controller.setForeground(false)
+    }
+
+    @Test fun firstSubscriptionWaitsForActualRendererMeasurementAndUsesLatestPendingGrid() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        platform.socket.authenticate()
+        val controller = RemoteController(platform, backgroundScope, StandardTestDispatcher(testScheduler),
+            handshakeTimeout = 1_000, requestTimeout = 1_000)
+        controller.setForeground(true)
+        runCurrent()
+        platform.socket.response(1, listing())
+        runCurrent()
+        controller.selectTerminal("workspace", pane)
+        runCurrent()
+        assertTrue(platform.socket.encryptedMessages.none { it.optionalText("op") == "subscribe" })
+        val feed = assertNotNull(controller.state.value.terminal)
+        controller.measuredPhoneGrid(feed, 39, 18)
+        runCurrent()
+        val subscribe = platform.socket.encryptedMessages.single { it.optionalText("op") == "subscribe" }
+        assertEquals(39, subscribe.getValue("cols").jsonPrimitive.int)
+        assertEquals(18, subscribe.getValue("rows").jsonPrimitive.int)
+        controller.measuredPhoneGrid(feed, 39, 9)
+        runCurrent()
+        assertTrue(platform.socket.encryptedMessages.none { it.optionalText("op") == "terminal_size" })
+        platform.socket.subscribed(subscribe.getValue("id").jsonPrimitive.long)
+        renderEmpty(controller, platform.socket)
+        runCurrent()
+        val resize = platform.socket.encryptedMessages.single { it.optionalText("op") == "terminal_size" }
+        assertEquals(9, resize.getValue("rows").jsonPrimitive.int)
         controller.setForeground(false)
     }
 
@@ -1467,7 +1547,7 @@ class RemoteControllerTest {
 
     private fun TestScope.controller(platform: ControlledPlatform) = RemoteController(
         platform, backgroundScope, StandardTestDispatcher(testScheduler), handshakeTimeout = 1_000, requestTimeout = 1_000,
-    )
+    ).also { it.measuredPhoneGrid(null, 40, 20) }
     private fun TestScope.authenticatedController(platform: ControlledPlatform): RemoteController {
         platform.socket.authenticate()
         val controller = controller(platform)
@@ -1553,6 +1633,7 @@ class RemoteControllerTest {
             get() = encryptedMessages.filter { it.optionalText("type") == "output_ack" }.drop(ackBaseline)
         fun observeAcknowledgments() { ackBaseline = encryptedMessages.count { it.optionalText("type") == "output_ack" } }
         var closed = false
+        var sendRelease: CompletableDeferred<Unit>? = null
         override suspend fun send(message: String) {
             check(!closed)
             val outer = wireJson.parseToJsonElement(message).jsonObject
@@ -1565,6 +1646,7 @@ class RemoteControllerTest {
                 }
             }
             sent.add(outer)
+            sendRelease?.await()
         }
         override suspend fun receive() = incoming.receive()
         override fun close() { closed = true; incoming.close() }
@@ -1588,6 +1670,9 @@ class RemoteControllerTest {
             nextSequence = 1
             response(id, obj("subscription_id" to JsonPrimitive(subscriptionId), "cols" to JsonPrimitive(80), "rows" to JsonPrimitive(24)))
         }
+        fun lease(held: Boolean, subscription: String = subscriptionId) = encrypted(obj(
+            "type" to JsonPrimitive("terminal_lease"), "pane_id" to JsonPrimitive(1),
+            "subscription_id" to JsonPrimitive(subscription), "held" to JsonPrimitive(held)))
         fun agent(status: String?, revision: Long, subscription: String = subscriptionId) = encrypted(obj(
             "type" to JsonPrimitive("agent"), "pane_id" to JsonPrimitive(1),
             "subscription_id" to JsonPrimitive(subscription), "agent_revision" to JsonPrimitive(revision),

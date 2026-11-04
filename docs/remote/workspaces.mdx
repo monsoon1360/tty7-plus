@@ -174,9 +174,10 @@ app is in the background through a foreground connection service.
    Opening the workspace drawer clears
    input focus and dismisses the keyboard. Create workspaces and terminals,
    switch between them, or close a terminal after confirming.
-   Shell output wraps locally at the phone's width. Opening the terminal,
-   rotating the phone and showing the keyboard do not resize the shared PTY.
-   Live output and history always wrap automatically; there is no layout toggle.
+   Opening a terminal acquires a shared PTY size lease using the phone's measured
+   grid. Rotation and keyboard changes update that grid so the application can
+   redraw for the available space. Live output and history preserve terminal cell
+   positions rather than being forcibly rewrapped on the phone.
 5. Each phone saves exactly one computer. **扫描与配对管理** opens its pairing
    management screen. Confirm **解除配对** before scanning or opening a pairing link
    for another computer; canceling keeps the current pairing. Migration from an
@@ -211,8 +212,8 @@ The app uses separate channels for **Agent 任务完成** and **Agent 需要人�
 
 While connected, **tty7 正在接收 Agent 通知** is the ongoing foreground-service
 indicator. Moving the app into the background releases the terminal renderer
-subscription, but keeps the encrypted Agent stream and network monitoring alive.
-Unpairing stops the connection and service.
+subscription and its size lease, but keeps the encrypted Agent stream and network
+monitoring alive. Unpairing stops the connection and service.
 
 Update both the desktop daemon and Android app for this feature; it extends
 protocol 3 with the authenticated `watch_agents` subscription. The relay needs
@@ -234,20 +235,27 @@ application's original escape stream from a screen-only reconstruction.
 
 Android uses a native Canvas terminal view, not a WebView or xterm.js. The view
 is reused across selections and reconnects. Canonical row instructions are decoded
-off the UI thread; unchanged row geometry is cached and only visible rows are drawn.
-Subscriptions observe the desktop's grid without sending phone geometry or taking
-a size lease.
-Shell output has a separate phone-width layout: each row's authoritative `wrapped`
-flag joins soft wraps into a logical line, while real newlines, indentation,
-colours, wide glyphs and combining marks are preserved. Older history uses the
-same layout, including soft wraps crossing page boundaries. Both surfaces always
-wrap automatically; there is no format-preservation mode or layout toggle.
+off the UI thread; decoded rows are retained and only visible cells are drawn.
+Subscriptions wait for the first measured native viewport before acquiring a
+size lease for the shared PTY. Later rotation and keyboard changes update only
+that subscription's existing lease. The desktop window keeps its own geometry,
+but the application's output uses the phone-sized PTY while the lease is held.
+The desktop can take back its size; subsequent phone viewport changes cannot
+reclaim control until the terminal is explicitly reopened. Subscription teardown
+restores the desktop's latest requested size. Resize and unsubscribe requests are
+bound to workspace, pane and subscription so stale work cannot affect a new one.
+
+The application, not the phone renderer, owns layout. Both normal and alternate
+screens preserve canonical cell positions: normal-buffer TUIs such as OMP are
+not treated as freely reflowable text. History retains each captured row's grid
+width, including older wide content that can be viewed by horizontal panning.
+Changing the PTY size does not promise to reformat already retained history.
 The native input connection sends committed text, never unfinished IME candidates,
 to the existing remote cursor. Completion, history keys, hardware modifiers and
 bracketed paste retain the application's input modes; display coordinates do not
 move the Shell cursor. Old input connections cannot type into a newly selected pane.
-Update both app and daemon for soft-wrap metadata; pairing credentials and the relay
-do not change.
+Update both app and daemon for phone-sized takeover; pairing credentials and the
+relay do not change.
 Selection and normal-buffer history positions remain client-local. Alternate-screen applications
 such as Codex own their transcript: vertical gestures send mouse-wheel reports,
 or cursor keys when the application requests alternate scrolling without mouse
@@ -321,8 +329,8 @@ History is a separate, read-only surface opened by upward scrolling:
   because the reader pauses. Subscription teardown releases it; the global
   view-count and byte limits still evict the oldest windows under pressure.
 - History carries the original grid width and each physical row's soft-wrap flag.
-  The phone always joins continuations and reflows them locally without
-  resizing the application.
+  The phone preserves its cell positions without joining and rewrapping rows.
+  Older wide content remains horizontally scrollable even after a phone takeover.
 - Android retains a continuous window of at most 2,000 rows / 2 MiB of UTF-8 row
   content. A bounded page is parsed in one batch without creating another visible
   terminal renderer. Prepending older rows preserves the reading anchor. If newer
@@ -445,6 +453,22 @@ matching-code approval, workspace/terminal creation and closing, live ANSI
 output and command input, Keystore-persisted reconnect after process restart,
 idle viewport changes, operation with the desktop GUI closed, and live
 revocation followed by authentication refusal.
+
+#### Restored phone-sized takeover verification
+
+The restored path passed 47 mobile and 17 lease-focused Rust tests, 84 Android
+JVM tests and seven native-view instrumentation tests on the physical Honor
+phone. An isolated daemon and encrypted mobile protocol client exercised a
+real PTY: `stty size` confirmed subscription takeover, keyboard-sized updates,
+remembered desktop resizing, desktop takeback, rejection of revoked or stale
+updates, reopening, and restoration on unsubscribe and disconnect.
+
+A separate temporary Android application mounted the real native terminal view.
+Phone screenshots verified intact normal-screen and alternate-screen borders,
+keyboard-driven viewport measurements, and horizontal panning of wide live
+and historical grids without forced row wrapping. The temporary host did not
+connect to the user's Agents. These checks did not upgrade the production daemon
+or the existing phone app, and do not claim a deployed OMP/Codex session regression.
 
 #### Native renderer verification
 

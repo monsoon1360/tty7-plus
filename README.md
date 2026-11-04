@@ -65,10 +65,12 @@ and drives the desktop's panes and agents.
   same terminal engine the desktop uses. The phone receives a current-screen
   snapshot and revision-based row patches, then loads older history in bounded
   pages. It does not replay historical ANSI output.
-- **Phone-local Shell layout** — opening the terminal, rotating the phone and
-  showing the keyboard never resize the shared PTY. Live output and history always
-  wrap at the phone's width, without a layout toggle. Colours, indentation and
-  Shell input remain intact.
+- **Phone-sized terminal takeover** — opening a terminal leases the shared PTY
+  at the phone's measured grid; rotation and keyboard changes update that size.
+  Applications lay themselves out for the phone. The desktop can take back its
+  size, and leaving the subscription restores it. Live output and history retain
+  terminal cell positions instead of being forcibly rewrapped; older wide content
+  remains horizontally scrollable.
 - **Session management** — create and switch workspaces, create terminals, and
   close terminals after confirmation. Closing a terminal ends its shell and
   whatever runs in it, exactly as the dialog says.

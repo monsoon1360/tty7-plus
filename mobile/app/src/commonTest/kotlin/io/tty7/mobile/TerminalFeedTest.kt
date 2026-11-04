@@ -16,6 +16,22 @@ class TerminalFeedTest {
         TerminalFrame(revision, base, epoch, 20, 2, false, cursor, modes, lines, "subscription", sequence, part, last)
     private suspend fun TerminalFeed.receive(frame: TerminalFrame): TerminalFrame? { enqueue(frame); return stage(frames.receive()) }
 
+    @Test fun sizeLeaseLossIsStickyForOneSubscriptionOnly() {
+        val first = TerminalFeed("workspace", pane, {}) { _, _ -> }
+        first.bindSubscription("first")
+        first.updateSizeLease(true)
+        assertFalse(first.sizeLeaseLost)
+        first.updateSizeLease(false)
+        first.updateSizeLease(true)
+        assertTrue(first.sizeLeaseLost)
+        first.cancel()
+        val replacement = TerminalFeed("workspace", pane, {}) { _, _ -> }
+        replacement.bindSubscription("replacement")
+        assertFalse(replacement.sizeLeaseLost)
+        assertFalse(first.matches(pane.id, "first"))
+        assertTrue(replacement.matches(pane.id, "replacement"))
+    }
+
     @Test fun multipartStagesCreditsButOnlyFinalAppliedStateRevealsFeed() = runTest {
         val acks = mutableListOf<ULong>()
         var reveals = 0

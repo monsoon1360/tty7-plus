@@ -38,7 +38,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import java.util.IdentityHashMap
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -49,6 +48,7 @@ import kotlin.math.min
 class NativeTerminalView(context: Context) : View(context) {
     var onInput: (String) -> Unit = {}
     var onHistory: (String?) -> Unit = {}
+    var onResize: (Int, Int) -> Unit = { _, _ -> }
 
     private var colors = NativeTerminalColors(true)
     private var darkAppearance = true
@@ -80,18 +80,16 @@ class NativeTerminalView(context: Context) : View(context) {
     private var baseline = 1f
     private var inset = 0f
     private var chromeHeight = 0f
-    private var phoneColumns = 1
+    private var reportedGrid: Pair<Int, Int>? = null
     private var inputEnabled = false
     private var disposed = false
     private var agentKind: String? = null
     private var frame: TerminalFrame? = null
     private var grid = mutableListOf<NativeTerminalRow>()
-    private var liveLayout = emptyList<VisualRow>()
-    private var historyLayout = emptyList<VisualRow>()
     private var liveSource = emptyList<NativeTerminalRow>()
     private val historySource = ArrayList<NativeTerminalRow>()
     private val historySizes = ArrayList<Int>()
-    private val rowCache = IdentityHashMap<NativeTerminalRow, MutableMap<LayoutKey, RowGeometry>>()
+    private var historyColumns = 0
     private var scrollYpx = 0f
     private var panX = 0f
     private var following = true
@@ -135,18 +133,10 @@ class NativeTerminalView(context: Context) : View(context) {
     private var accessibilityRevision: String? = null
 
     private data class SourcePoint(val row: NativeTerminalRow, val column: Int)
-    private data class PositionedCell(val cell: NativeTerminalCell, val column: Int, val source: NativeTerminalRow)
-    private class VisualRow {
-        val cells = ArrayList<PositionedCell>()
-        val ranges = ArrayList<SourceRange>()
-    }
-    private data class SourceRange(val source: NativeTerminalRow, val first: Int, val end: Int, val column: Int)
-    private data class LayoutKey(val columns: Int, val start: Int, val end: Int)
-    private data class RowGeometry(val visual: List<VisualRow>, val lastColumn: Int)
     private data class VisualPoint(val row: Int, val column: Int) : Comparable<VisualPoint> {
         override fun compareTo(other: VisualPoint): Int = if (row != other.row) row.compareTo(other.row) else column.compareTo(other.column)
     }
-    private data class Anchor(val source: NativeTerminalRow?, val column: Int, val offset: Float, val fallback: Float)
+    private data class Anchor(val source: NativeTerminalRow?, val offset: Float, val fallback: Float)
 
     init {
         isFocusable = true
@@ -158,6 +148,7 @@ class NativeTerminalView(context: Context) : View(context) {
     }
 
     fun reset() {
+        reportedGrid = null
         stopMotion()
         finishSelection()
         connection?.resetBuffer()
@@ -165,8 +156,6 @@ class NativeTerminalView(context: Context) : View(context) {
         frame = null
         grid = mutableListOf()
         liveSource = emptyList()
-        liveLayout = emptyList()
-        rowCache.clear()
         clearHistory()
         scrollYpx = 0f
         panX = 0f
@@ -222,11 +211,9 @@ class NativeTerminalView(context: Context) : View(context) {
         val old = this.frame
         val anchor = captureAnchor()
         val full = frame.baseRevision == null || grid.size != frame.rows || old?.cols != frame.cols
-        if (full) grid.forEach { rowCache.remove(it) }
         val next = if (full) MutableList(frame.rows) { NativeTerminalRow(frame.cols, emptyList()) } else grid
         for ((index, row) in decoded) {
             require(index in next.indices) { "Canonical row outside screen" }
-            rowCache.remove(next[index])
             next[index] = row
         }
         grid = next
@@ -238,7 +225,7 @@ class NativeTerminalView(context: Context) : View(context) {
         }
         rebuildLive()
         if (!historyVisible) {
-            if (following) scrollYpx = maxScroll(liveLayout)
+            if (following) scrollYpx = maxScroll(liveSource)
             else restoreAnchor(anchor)
             clampScroll()
         }
@@ -265,7 +252,7 @@ class NativeTerminalView(context: Context) : View(context) {
         historyBytes += sourceByteSizes.sum()
         while (historySource.size > 2000 || historyBytes > 2 * 1024 * 1024) {
             historyBytes -= historySizes.removeAt(historySizes.lastIndex)
-            rowCache.remove(historySource.removeAt(historySource.lastIndex))
+            historySource.removeAt(historySource.lastIndex)
             newerBoundary = true
         }
         historyCursor = page.cursor
@@ -275,7 +262,7 @@ class NativeTerminalView(context: Context) : View(context) {
         historyLoading = false
         historyOpening = false
         historyError = null
-        historyLayout = buildLayout(historySource, phoneColumns, null)
+        historyColumns = historySource.maxOfOrNull { it.cols } ?: 0
         if (opening && historySource.isNotEmpty()) {
             savedLiveScroll = scrollYpx
             savedLivePan = panX
@@ -283,7 +270,7 @@ class NativeTerminalView(context: Context) : View(context) {
             panX = 0f
         }
         if (historyVisible) {
-            if (wasEmpty) scrollYpx = max(0f, maxScroll(historyLayout) + pendingHistoryScroll)
+            if (wasEmpty) scrollYpx = max(0f, maxScroll(historySource) + pendingHistoryScroll)
             else restoreAnchor(anchor)
             clampScroll()
         }
@@ -305,7 +292,7 @@ class NativeTerminalView(context: Context) : View(context) {
             savedLiveScroll = scrollYpx
             savedLivePan = panX
             historyVisible = true
-            scrollYpx = maxScroll(historyLayout)
+            scrollYpx = maxScroll(historySource)
         }
         invalidate()
         announceForAccessibility("历史加载失败：$message。可重新加载或返回实时。")
@@ -317,15 +304,15 @@ class NativeTerminalView(context: Context) : View(context) {
         disposed = true
         onInput = {}
         onHistory = {}
+        onResize = { _, _ -> }
         connection = null
     }
 
     private val inputMethodManager get() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-    private val activeLayout get() = if (historyVisible) historyLayout else liveLayout
     private val activeSource get() = if (historyVisible) historySource else liveSource
     private val viewportHeight get() = max(0f, height - chromeHeight)
     private val contentTop get() = chromeHeight + if (!historyVisible && frame?.alternate != true)
-        max(0f, viewportHeight - liveLayout.size * cellHeight) else 0f
+        max(0f, viewportHeight - liveSource.size * cellHeight) else 0f
     private val showReturnLive get() = agentKind != "codex" && (historyVisible || historyOpening || !following)
 
     @android.annotation.TargetApi(29)
@@ -377,30 +364,38 @@ class NativeTerminalView(context: Context) : View(context) {
         chromeHeight = 36f * density
         chromePaint.textSize = 12f * scaledDensity
         chromePaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        phoneColumns = max(1, floor((width - inset * 2) / cellWidth).toInt())
         decorationPaint.strokeWidth = max(1f, density)
+    }
+
+    /** Compose has already removed system/IME insets; only our own chrome and padding remain. */
+    fun reportGridSize() {
+        if (disposed || width <= 0 || height <= chromeHeight) return
+        val cols = floor((width - inset * 2) / cellWidth).toInt().coerceIn(20, 1000)
+        val rows = floor(viewportHeight / cellHeight).toInt().coerceIn(5, 1000)
+        val size = cols to rows
+        if (reportedGrid == size) return
+        reportedGrid = size
+        onResize(cols, rows)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         val anchor = captureAnchor()
         updateMetrics()
-        rowCache.clear()
         rebuildLive()
-        historyLayout = buildLayout(historySource, phoneColumns, null)
-        if (following && !historyVisible) scrollYpx = maxScroll(liveLayout) else restoreAnchor(anchor)
+        if (following && !historyVisible) scrollYpx = maxScroll(liveSource) else restoreAnchor(anchor)
         clampScroll()
         invalidate()
+        reportGridSize()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         val anchor = captureAnchor()
         updateMetrics()
-        rowCache.clear()
         rebuildLive()
-        historyLayout = buildLayout(historySource, phoneColumns, null)
-        if (following && !historyVisible) scrollYpx = maxScroll(liveLayout) else restoreAnchor(anchor)
+        if (following && !historyVisible) scrollYpx = maxScroll(liveSource) else restoreAnchor(anchor)
         clampScroll()
+        reportGridSize()
     }
 
     private fun rebuildLive() {
@@ -411,99 +406,21 @@ class NativeTerminalView(context: Context) : View(context) {
             while (last > remoteCursorRow && grid[last].cells.isEmpty()) last--
         }
         liveSource = if (last < 0) emptyList() else grid.subList(0, last + 1)
-        liveLayout = buildLayout(liveSource, if (state.alternate) state.cols else phoneColumns, state)
         cursorRow = -1
         cursorColumn = -1
         val source = grid.getOrNull(remoteCursorRow)
         if (source != null) {
-            locate(SourcePoint(source, state.cursor.number("col")), liveLayout)?.let {
+            locate(SourcePoint(source, state.cursor.number("col")), liveSource)?.let {
                 cursorRow = it.row
                 cursorColumn = it.column
             }
         }
     }
 
-    /** Cached geometry is keyed by canonical row identity and its incoming reflow column. */
-    private fun geometry(source: NativeTerminalRow, columns: Int, start: Int, end: Int): RowGeometry {
-        val key = LayoutKey(columns, start, end)
-        val cache = rowCache.getOrPut(source) { HashMap() }
-        cache[key]?.let { return it }
-        var outputRow = 0
-        var outputColumn = start
-        var sourceColumn = 0
-        val visual = ArrayList<VisualRow>()
-        visual.add(VisualRow())
-        var rangeStart = 0
-        var rangeColumn = start
-        fun newline() {
-            visual[outputRow].ranges.add(SourceRange(source, rangeStart, sourceColumn, rangeColumn))
-            visual.add(VisualRow())
-            outputRow++
-            outputColumn = 0
-            rangeStart = sourceColumn
-            rangeColumn = 0
-        }
-        fun gap(until: Int) {
-            while (sourceColumn < until) {
-                if (outputColumn >= columns) newline()
-                val amount = min(until - sourceColumn, columns - outputColumn)
-                sourceColumn += amount
-                outputColumn += amount
-            }
-        }
-        for (cell in source.cells) {
-            if (cell.column >= end) break
-            gap(min(end, cell.column))
-            if (outputColumn >= columns || outputColumn > 0 && outputColumn + cell.width > columns) newline()
-            visual[outputRow].cells.add(PositionedCell(cell, outputColumn, source))
-            outputColumn += cell.width
-            sourceColumn = cell.column + cell.width
-        }
-        gap(end)
-        visual[outputRow].ranges.add(SourceRange(source, rangeStart, end, rangeColumn))
-        val result = RowGeometry(visual, outputColumn)
-        // Cursor extension creates at most a handful of variants for an otherwise unchanged row.
-        if (cache.size >= 8) cache.clear()
-        cache[key] = result
-        return result
-    }
-
-    private fun buildLayout(source: List<NativeTerminalRow>, columns: Int, state: TerminalFrame?): List<VisualRow> {
-        if (source.isEmpty()) return emptyList()
-        val output = ArrayList<VisualRow>()
-        var joining = false
-        var carriedColumn = 0
-        val alternate = state?.alternate == true
-        for ((sourceIndex, row) in source.withIndex()) {
-            val contentEnd = row.cells.lastOrNull()?.let { it.column + it.width } ?: 0
-            val cursorEnd = if (state != null && state.cursor.number("row") == sourceIndex) state.cursor.number("col") + 1 else 0
-            val end = when {
-                alternate -> row.cols
-                row.wrapped -> row.cols - if (row.wrapPadding) 1 else 0
-                else -> max(contentEnd, cursorEnd)
-            }.coerceIn(0, row.cols)
-            val layout = geometry(row, columns.coerceAtLeast(1), carriedColumn, end)
-            if (!joining) output.addAll(layout.visual)
-            else {
-                val last = output.last()
-                val incoming = layout.visual.first()
-                val merged = VisualRow()
-                merged.cells.addAll(last.cells)
-                merged.cells.addAll(incoming.cells)
-                merged.ranges.addAll(last.ranges)
-                merged.ranges.addAll(incoming.ranges)
-                output[output.lastIndex] = merged
-                for (index in 1 until layout.visual.size) output.add(layout.visual[index])
-            }
-            joining = !alternate && row.wrapped
-            carriedColumn = if (joining) layout.lastColumn else 0
-        }
-        return output
-    }
 
 
-    private fun maxScroll(layout: List<VisualRow> = activeLayout) = max(0f, layout.size * cellHeight - viewportHeight)
-    private fun maxPan() = if (!historyVisible && frame?.alternate == true) max(0f, (frame?.cols ?: 0) * cellWidth + inset * 2 - width) else 0f
+    private fun maxScroll(source: List<NativeTerminalRow> = activeSource) = max(0f, source.size * cellHeight - viewportHeight)
+    private fun maxPan() = max(0f, (if (historyVisible) historyColumns else frame?.cols ?: 0) * cellWidth + inset * 2 - width)
     private fun clampScroll() {
         scrollYpx = scrollYpx.coerceIn(0f, maxScroll())
         panX = panX.coerceIn(0f, maxPan())
@@ -511,25 +428,18 @@ class NativeTerminalView(context: Context) : View(context) {
 
     private fun captureAnchor(): Anchor {
         val index = floor(scrollYpx / cellHeight).toInt().coerceAtLeast(0)
-        val range = activeLayout.getOrNull(index)?.ranges?.firstOrNull()
-        return Anchor(range?.source, range?.first ?: 0, scrollYpx - index * cellHeight, scrollYpx)
+        return Anchor(activeSource.getOrNull(index), scrollYpx - index * cellHeight, scrollYpx)
     }
 
     private fun restoreAnchor(anchor: Anchor) {
         val row = anchor.source
-        val position = if (row == null) null else locate(SourcePoint(row, anchor.column), activeLayout)
+        val position = if (row == null) null else locate(SourcePoint(row, 0))
         scrollYpx = if (position != null) position.row * cellHeight + anchor.offset else anchor.fallback
     }
 
-    private fun locate(point: SourcePoint, layout: List<VisualRow> = activeLayout): VisualPoint? {
-        var endPoint: VisualPoint? = null
-        for ((rowIndex, row) in layout.withIndex()) {
-            for (range in row.ranges) if (range.source === point.row) {
-                if (point.column >= range.first && point.column < range.end) return VisualPoint(rowIndex, range.column + point.column - range.first)
-                if (point.column == range.end) endPoint = VisualPoint(rowIndex, range.column + range.end - range.first)
-            }
-        }
-        return endPoint
+    private fun locate(point: SourcePoint, source: List<NativeTerminalRow> = activeSource): VisualPoint? {
+        val index = source.indexOfFirst { it === point.row }
+        return if (index < 0) null else VisualPoint(index, point.column.coerceIn(0, point.row.cols))
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -537,34 +447,33 @@ class NativeTerminalView(context: Context) : View(context) {
         fillPaint.color = colors.background
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), fillPaint)
         drawChrome(canvas)
-        if (activeLayout.isEmpty() || viewportHeight <= 0) return
+        if (activeSource.isEmpty() || viewportHeight <= 0) return
         canvas.save()
         canvas.clipRect(0f, chromeHeight, width.toFloat(), height.toFloat())
         canvas.getClipBounds(clip)
         val first = max(0, floor(scrollYpx / cellHeight).toInt())
-        val last = min(activeLayout.lastIndex, ceil((scrollYpx + viewportHeight) / cellHeight).toInt())
+        val last = min(activeSource.lastIndex, ceil((scrollYpx + viewportHeight) / cellHeight).toInt())
         val start = selectionStart?.let { locate(it) }
         val end = selectionEnd?.let { locate(it) }
         val low = if (start != null && end != null) minOf(start, end) else null
         val high = if (start != null && end != null) maxOf(start, end) else null
         for (index in first..last) {
-            val row = activeLayout[index]
+            val row = activeSource[index]
             val top = contentTop + index * cellHeight - scrollYpx
             // Paint the entire row's backgrounds before glyphs: adjacent Powerline cells share edges.
-            for (placed in row.cells) {
-                val cell = placed.cell
-                val x = inset + placed.column * cellWidth - panX
+            for (cell in row.cells) {
+                val x = inset + cell.column * cellWidth - panX
                 if (x + cell.width * cellWidth < 0 || x > width) continue
                 fillPaint.color = background(cell.style)
                 canvas.drawRect(x, top, x + cell.width * cellWidth, top + cellHeight, fillPaint)
             }
             if (low != null && high != null && index in low.row..high.row) {
                 val firstCol = if (index == low.row) low.column else 0
-                val lastCol = if (index == high.row) high.column else if (!historyVisible && frame?.alternate == true) frame?.cols ?: phoneColumns else phoneColumns
+                val lastCol = if (index == high.row) high.column else row.cols
                 fillPaint.color = 0x665b9dff
                 canvas.drawRect(inset + firstCol * cellWidth - panX, top, inset + lastCol * cellWidth - panX, top + cellHeight, fillPaint)
             }
-            for (placed in row.cells) drawCell(canvas, placed, top)
+            for (cell in row.cells) drawCell(canvas, cell, top)
             if (!historyVisible && cursorRow == index && frame?.flagCursor("visible") == true && (!frame!!.flagCursor("blink") || cursorOn || !hasFocus())) drawCursor(canvas, row, top)
         }
         drawSelectionHandle(canvas, start)
@@ -575,10 +484,9 @@ class NativeTerminalView(context: Context) : View(context) {
     private fun foreground(style: NativeTerminalStyle) = colors.resolve(if (style.inverse) style.background else style.foreground)
     private fun background(style: NativeTerminalStyle) = colors.resolve(if (style.inverse) style.foreground else style.background)
 
-    private fun drawCell(canvas: Canvas, placed: PositionedCell, top: Float) {
-        val cell = placed.cell
+    private fun drawCell(canvas: Canvas, cell: NativeTerminalCell, top: Float) {
         val style = cell.style
-        val x = inset + placed.column * cellWidth - panX
+        val x = inset + cell.column * cellWidth - panX
         val cellPixels = cell.width * cellWidth
         if (style.hidden || x + cellPixels < 0 || x > width) return
         val fg = foreground(style)
@@ -668,7 +576,7 @@ class NativeTerminalView(context: Context) : View(context) {
         return true
     }
 
-    private fun drawCursor(canvas: Canvas, row: VisualRow, top: Float) {
+    private fun drawCursor(canvas: Canvas, row: NativeTerminalRow, top: Float) {
         val x = inset + cursorColumn * cellWidth - panX
         val style = frame?.cursor?.get("shape")?.jsonPrimitive?.content ?: "block"
         fillPaint.color = colors.foreground
@@ -678,18 +586,18 @@ class NativeTerminalView(context: Context) : View(context) {
             "bar" -> canvas.drawRect(x, top, x + stroke, top + cellHeight, fillPaint)
             "underline" -> canvas.drawRect(x, top + cellHeight - stroke, x + cellWidth, top + cellHeight, fillPaint)
             else -> {
-                val cell = row.cells.firstOrNull { cursorColumn >= it.column && cursorColumn < it.column + it.cell.width }
-                val cursorWidth = (cell?.cell?.width ?: 1) * cellWidth
+                val cell = row.cells.firstOrNull { cursorColumn >= it.column && cursorColumn < it.column + it.width }
+                val cursorWidth = (cell?.width ?: 1) * cellWidth
                 val cursorX = if (cell == null) x else inset + cell.column * cellWidth - panX
                 canvas.drawRect(cursorX, top, cursorX + cursorWidth, top + cellHeight, fillPaint)
-                if (cell != null && !cell.cell.style.hidden) {
+                if (cell != null && !cell.style.hidden) {
                     canvas.save()
                     canvas.clipRect(cursorX, top, cursorX + cursorWidth, top + cellHeight)
                     textPaint.color = colors.background
                     textPaint.alpha = 255
-                    textPaint.typeface = fontFor(cell.cell.text, cell.cell.style.bold)
-                    textPaint.textSkewX = if (cell.cell.style.italic) -.2f else 0f
-                    canvas.drawText(cell.cell.text, cursorX, top + baseline, textPaint)
+                    textPaint.typeface = fontFor(cell.text, cell.style.bold)
+                    textPaint.textSkewX = if (cell.style.italic) -.2f else 0f
+                    canvas.drawText(cell.text, cursorX, top + baseline, textPaint)
                     canvas.restore()
                 }
             }
@@ -754,10 +662,9 @@ class NativeTerminalView(context: Context) : View(context) {
 
     private fun clearHistory() {
         accessibilityRevision = null
-        historySource.forEach { rowCache.remove(it) }
         historySource.clear()
         historySizes.clear()
-        historyLayout = emptyList()
+        historyColumns = 0
         historyBytes = 0
         historyVisible = false
         historyOpening = false
@@ -789,7 +696,7 @@ class NativeTerminalView(context: Context) : View(context) {
             savedLivePan = panX
             historyVisible = true
             panX = 0f
-            scrollYpx = maxScroll(historyLayout)
+            scrollYpx = maxScroll(historySource)
         } else {
             historyOpening = true
             requestHistory()
@@ -814,7 +721,7 @@ class NativeTerminalView(context: Context) : View(context) {
         historyOpening = false
         pendingHistoryScroll = 0f
         panX = savedLivePan.coerceIn(0f, maxPan())
-        scrollYpx = maxScroll(liveLayout)
+        scrollYpx = maxScroll(liveSource)
         following = true
         accessibilityRevision = null
         invalidate()
@@ -1034,11 +941,10 @@ class NativeTerminalView(context: Context) : View(context) {
     }
 
     private fun pointAt(x: Float, y: Float): SourcePoint? {
-        val row = activeLayout.getOrNull(floor((y - contentTop + scrollYpx) / cellHeight).toInt().coerceIn(0, max(0, activeLayout.lastIndex))) ?: return null
+        val row = activeSource.getOrNull(floor((y - contentTop + scrollYpx) / cellHeight).toInt().coerceIn(0, max(0, activeSource.lastIndex))) ?: return null
         val column = floor((x + panX - inset) / cellWidth).toInt().coerceAtLeast(0)
-        for (placed in row.cells) if (column >= placed.column && column < placed.column + placed.cell.width) return SourcePoint(placed.source, placed.cell.column)
-        val range = row.ranges.firstOrNull { column >= it.column && column < it.column + it.end - it.first } ?: row.ranges.lastOrNull() ?: return null
-        return SourcePoint(range.source, (range.first + column - range.column).coerceIn(range.first, range.end))
+        val cell = row.cells.firstOrNull { column >= it.column && column < it.column + it.width }
+        return SourcePoint(row, cell?.column ?: column.coerceAtMost(row.cols))
     }
 
     private fun updateSelection(x: Float, y: Float) {
@@ -1495,7 +1401,7 @@ class NativeTerminalView(context: Context) : View(context) {
     private fun emit(text: String, returnToBottom: Boolean = true, resetMotion: Boolean = true) {
         if (!inputEnabled || disposed || text.isEmpty()) return
         if (resetMotion) stopMotion()
-        if (returnToBottom && !historyVisible && !historyOpening && following) scrollYpx = maxScroll(liveLayout)
+        if (returnToBottom && !historyVisible && !historyOpening && following) scrollYpx = maxScroll(liveSource)
         var first = 0
         var index = 0
         var bytes = 0
@@ -1549,15 +1455,15 @@ class NativeTerminalView(context: Context) : View(context) {
         val revision = (if (historyVisible) "history:${historySource.size}:$historyCursor" else frame?.revision.orEmpty()) + ":${scrollYpx.toInt()}:$historyVisible"
         if (accessibilityRevision == revision) return accessibilitySnapshot
         val first = max(0, floor(scrollYpx / cellHeight).toInt())
-        val last = min(activeLayout.lastIndex, ceil((scrollYpx + viewportHeight) / cellHeight).toInt())
+        val last = min(activeSource.lastIndex, ceil((scrollYpx + viewportHeight) / cellHeight).toInt())
         accessibilitySnapshot = buildString {
             if (historyVisible) append("主屏历史，只读。") else if (frame?.alternate == true) append("应用屏幕。")
             for (index in first..last) {
                 var column = 0
-                for (placed in activeLayout[index].cells) {
-                    while (column < placed.column) { append(' '); column++ }
-                    if (!placed.cell.style.hidden) append(placed.cell.text)
-                    column = placed.column + placed.cell.width
+                for (cell in activeSource[index].cells) {
+                    while (column < cell.column) { append(' '); column++ }
+                    if (!cell.style.hidden) append(cell.text)
+                    column = cell.column + cell.width
                 }
                 append('\n')
             }

@@ -253,7 +253,7 @@ fun MobileApp(
                     Column(Modifier.weight(1f).fillMaxWidth()) {
                         Box(Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surface).testTag("terminal-surface")) {
                             Box(Modifier.fillMaxSize().then(if (syncing) Modifier.clearAndSetSemantics {} else Modifier)) {
-                                TerminalSurface(feed, inputEnabled, controller::input,
+                                TerminalSurface(feed, inputEnabled, controller::input, controller::measuredPhoneGrid,
                                     { message -> feed?.let { controller.terminalFailed(it, message) } }, shortcuts, agentKind)
                             }
                             if (selection == null) {
@@ -684,6 +684,9 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
     "Pairing URI too large" -> "配对链接过长，请使用电脑端生成的链接。"
     "Unsupported pairing version" -> "不支持此配对版本，请更新手机与电脑上的 tty7。"
     "Unsupported mobile protocol. Update phone and computer." -> "远程协议版本不匹配，请同时更新手机 APP 和电脑端 tty7。"
+    "Desktop took back terminal size control. Reopen the terminal to use the phone grid.",
+    "terminal size control was taken back" -> "电脑已收回终端尺寸控制权。重新打开终端可再次使用手机尺寸。"
+    "Terminal size must be 20..1000 columns and 5..1000 rows" -> "终端尺寸必须为 20..1000 列、5..1000 行。"
     "Verification code mismatch" -> "验证码不匹配，请重新配对，并在电脑端仔细核对验证码。"
     "TLS certificate pin is required", "Invalid TLS SHA256 fingerprint" -> "配对链接缺少有效的 TLS 证书指纹，请重新生成配对二维码。"
     "Invalid relay URL", "Relay must use wss", "Unencrypted WebSocket is only allowed for loopback in debug builds" -> "中继地址无效，远程连接必须使用安全的 WSS 地址。"
@@ -697,6 +700,7 @@ private fun connectionError(error: String, automaticReconnect: Boolean = false):
             "list" -> "刷新会话"
             "watch_agents" -> "订阅 Agent 通知"
             "input" -> "发送终端输入"
+            "terminal_size" -> "调整终端尺寸"
             "create_workspace" -> "创建工作区"
             "create_terminal" -> "创建终端"
             "close_terminal" -> "关闭终端"

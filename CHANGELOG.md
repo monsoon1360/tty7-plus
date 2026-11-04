@@ -145,23 +145,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   management; confirmed unpairing is required before scanning a different computer.
   Existing multi-computer stores retain the last approved computer, or the latest
   pending pairing when none is approved.
-- **Phone-local Shell layout without shared PTY resizing.** Android subscriptions
-  no longer send phone geometry, acquire size leases or resize the Shell when the
-  phone rotates or the keyboard opens. Live output and paged history reflow locally
-  using authoritative soft-wrap metadata, preserving hard line breaks, indentation,
-  colours, wide glyphs and combining marks. Both surfaces always wrap automatically;
-  there is no layout toggle. Existing IME editing, completion, history keys and
-  submit continue through the Shell input channel. Update app and daemon together;
-  the relay and saved pairing remain unchanged.
+- **Restore phone-sized PTY takeover.** Android subscriptions again acquire a
+  shared PTY size lease and update it from the native terminal's measured columns
+  and rows, including rotation and keyboard changes. Applications own narrow-screen
+  layout; live output and history preserve their canonical cells instead of locally
+  rewrapping OMP borders, status bars or Codex screens. Older wide rows remain
+  horizontally scrollable. Desktop takeback blocks further size changes from that
+  subscription until reopened; unsubscribe and disconnect restore the latest
+  desktop size. Stale resize and unsubscribe requests cannot affect a newer
+  subscription. Native Canvas rendering, soft-wrap metadata and bounded history
+  pagination are retained. Update app and daemon together; pairing and relay are
+  unchanged.
 - **Android keyboard focus stays within the viewport.** The invisible terminal
   input target remains fixed onscreen independently of the remote cursor position.
 
-- **Android precise scrolling without widening the terminal.** Local drags track
+- **Android precise scrolling with retained terminal geometry.** Local drags track
   finger travel 1:1 and preserve movement while the first history page loads.
   Live output remains visible until the complete page is ready; returning to the
   bottom cancels its pending reveal and inertia. The history toolbar retains its
-  height when its return button changes visibility. History keeps the phone's
-  terminal column width instead of joining soft wraps into desktop-width lines.
+  height when its return button changes visibility. History retains each source
+  row's grid width and cell positions; wider rows can be panned horizontally.
   Fractional touch rounding cannot route a downward drag into history; only an
   upward movement that reaches the live viewport's top can open it.
 

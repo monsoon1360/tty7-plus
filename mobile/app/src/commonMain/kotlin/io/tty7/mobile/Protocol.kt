@@ -118,6 +118,13 @@ class TerminalFeed(
         private set
     internal var active = true
         private set
+    internal var sizeLeaseLost = false
+        private set
+    internal fun updateSizeLease(held: Boolean) { if (!held) sizeLeaseLost = true }
+    internal var measuredGrid: Pair<Int, Int>? = null
+    internal var requestedGrid: Pair<Int, Int>? = null
+    internal val subscriptionResult = kotlinx.coroutines.CompletableDeferred<String?>()
+    internal var subscriptionRequested = false
     private var receivedSequence = 0uL
     private var parsedSequence = 0uL
     private var revision: String? = null
@@ -238,6 +245,6 @@ interface MobilePlatform {
     fun notifyAgent(notification: AgentNotification)
 }
 @Composable expect fun CameraScanner(onScan: (String) -> Unit, onClose: () -> Unit)
-@Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)
+@Composable expect fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (TerminalFeed?, Int, Int) -> Unit, onFailure: (String) -> Unit, shortcuts: kotlinx.coroutines.flow.Flow<String>, agentKind: String?)
 @Composable expect fun NavigationBackHandler(enabled: Boolean, onBack: () -> Unit)
 @Composable expect fun KeepScreenOn(enabled: Boolean)

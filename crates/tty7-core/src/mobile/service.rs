@@ -2,7 +2,6 @@ use super::crypto::{self, Cipher, Envelope};
 use super::store::{Credential, Store};
 use super::{AdminReply, AdminRequest, Device, Pairing, Pending, Status};
 use crate::daemon::pane::{DaemonPane, MobileAgentChange, MobileAgentState, MobileAgentWatcher};
-#[cfg(test)]
 use crate::daemon::protocol::WinSize;
 use crate::daemon::screen::{HistorySnapshot, ScreenSnapshot};
 use futures_util::{SinkExt, StreamExt};
@@ -162,6 +161,7 @@ struct Subscription {
     id: String,
     workspace: String,
     observer: Option<(Arc<DaemonPane>, u64)>,
+    lease_started: bool,
     credit: Arc<OutputCredit>,
     resync: Arc<AtomicBool>,
     history: Arc<Mutex<HistoryStore>>,
@@ -170,6 +170,9 @@ struct Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         self.credit.cancel();
+        if let Some((pane, observer_id)) = &self.observer {
+            pane.unobserve(*observer_id);
+        }
         self.history.lock().remove(&self.id);
     }
 }
@@ -1162,6 +1165,11 @@ impl Service {
             "subscribe" => {
                 let workspace = field(&request, "workspace_id")?.to_string();
                 let pane = number(&request, "pane_id")?;
+                let target = if request.get("cols").is_some() || request.get("rows").is_some() {
+                    Some(terminal_size(&request)?)
+                } else {
+                    None
+                };
                 if peer.subscriptions.len() >= MAX_SUBSCRIPTIONS
                     && !peer.subscriptions.contains_key(&pane)
                 {
@@ -1176,6 +1184,9 @@ impl Service {
                         .await
                         .map_err(|_| io::Error::other("observer failed"))??;
                 peer.subscriptions.remove(&pane);
+                if let Some(size) = target {
+                    observation.pane.mobile_observer_resize(observation.observer_id, size, true)?;
+                }
                 let size = observation.pane.mobile_size();
                 let id = uuid::Uuid::new_v4().to_string();
                 let credit = Arc::new(OutputCredit::new());
@@ -1184,6 +1195,7 @@ impl Service {
                     id: id.clone(),
                     workspace,
                     observer: Some((observation.pane.clone(), observation.observer_id)),
+                    lease_started: target.is_some(),
                     credit: credit.clone(),
                     resync: resync.clone(),
                     history: self.history.clone(),
@@ -1206,6 +1218,22 @@ impl Service {
                 // The actor sends this response before it can dequeue output.
                 Ok(json!({"subscription_id":id, "cols":size.cols, "rows":size.rows}))
             }
+            "terminal_size" => {
+                let size = terminal_size(&request)?;
+                active_subscription(peer, &request)?;
+                let subscription = peer.subscriptions.get_mut(&number(&request, "pane_id")?)
+                    .expect("validated active subscription");
+                let (pane, observer_id) = subscription.observer.as_ref()
+                    .ok_or_else(|| io::Error::other("terminal observer is unavailable"))?;
+                let pane = pane.clone();
+                let observer_id = *observer_id;
+                let initial = !subscription.lease_started;
+                tokio::task::spawn_blocking(move || pane.mobile_observer_resize(observer_id, size, initial))
+                    .await
+                    .map_err(|_| io::Error::other("terminal resize failed"))??;
+                subscription.lease_started = true;
+                Ok(Value::Null)
+            }
             "resync" => {
                 let subscription = active_subscription(peer, &request)?;
                 subscription.resync.store(true, Ordering::Release);
@@ -1213,6 +1241,7 @@ impl Service {
                 Ok(Value::Null)
             }
             "unsubscribe" => {
+                active_subscription(peer, &request)?;
                 peer.subscriptions.remove(&number(&request, "pane_id")?);
                 Ok(Value::Null)
             }
@@ -1441,11 +1470,18 @@ fn screen_parts(screen: &ScreenSnapshot, previous: Option<&ScreenSnapshot>) -> i
 
 fn forward_output(observation: Observation, sink: MobileOutput, resync: Arc<AtomicBool>) {
     let mut last_agent = None;
+    let mut last_lease = None;
     let status = || {
         let state = observation.pane.mobile_agent();
         if last_agent != Some(state) {
             last_agent = Some(state);
             if !sink.agent(state) { return false; }
+        }
+        let held = observation.pane.mobile_lease_held(observation.observer_id);
+        if last_lease != Some(held) {
+            last_lease = Some(held);
+            if !sink.send(json!({"type":"terminal_lease", "pane_id":sink.pane,
+                "subscription_id":sink.id, "held":held}), None, false) { return false; }
         }
         if let Some(code) = observation.pane.mobile_exit() {
             sink.send(json!({"type":"exited", "pane_id":sink.pane,
@@ -1530,6 +1566,22 @@ fn number(value: &Value, key: &str) -> io::Result<u64> {
                 format!("missing or invalid {key}"),
             )
         })
+}
+fn terminal_size(request: &Value) -> io::Result<WinSize> {
+    let cols = number(request, "cols")?;
+    let rows = number(request, "rows")?;
+    if !(20..=1000).contains(&cols) || !(5..=1000).contains(&rows) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "terminal size must be 20..1000 columns and 5..1000 rows",
+        ));
+    }
+    Ok(WinSize {
+        cols: cols as u16,
+        rows: rows as u16,
+        cell_w: 0,
+        cell_h: 0,
+    })
 }
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -1779,8 +1831,28 @@ impl rustls::client::danger::ServerCertVerifier for PinnedCertificate {
 mod tests {
     use super::*;
 
+    #[test]
+    fn phone_grid_bounds_reject_nonintegers_and_do_not_truncate() {
+        for (cols, rows) in [(20, 5), (1000, 1000), (42, 28)] {
+            assert_eq!(terminal_size(&json!({"cols":cols, "rows":rows})).unwrap(), size(cols, rows));
+        }
+        for request in [
+            json!({"cols":19, "rows":5}),
+            json!({"cols":20, "rows":4}),
+            json!({"cols":1001, "rows":5}),
+            json!({"cols":20, "rows":1001}),
+            json!({"cols":65556, "rows":5}),
+            json!({"cols":-20, "rows":5}),
+            json!({"cols":20.5, "rows":5}),
+            json!({"cols":"20", "rows":5}),
+            json!({"cols":20}),
+        ] {
+            assert_eq!(terminal_size(&request).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
     #[tokio::test]
-    async fn phone_resize_operation_is_not_supported() {
+    async fn phone_resize_requires_current_subscription_workspace_and_active_credit() {
         let mut service = test_service();
         let credit = add_subscription(&mut service, "phone", 7, "current");
         let mut peer = service.peers.remove("phone").unwrap();
@@ -1793,7 +1865,8 @@ mod tests {
                 "op":"terminal_size", "pane_id":pane, "subscription_id":subscription,
                 "workspace_id":workspace, "cols":42, "rows":28,
             })).await.unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(error.to_string(), "terminal subscription is no longer active");
+            assert!(!peer.subscriptions[&7].lease_started);
             assert!(credit.active());
         }
         credit.cancel();
@@ -1801,12 +1874,12 @@ mod tests {
             "op":"terminal_size", "pane_id":7, "subscription_id":"current",
             "workspace_id":"workspace", "cols":42, "rows":28,
         })).await.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.to_string(), "terminal subscription is no longer active");
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn subscribing_and_input_leave_the_shared_pty_size_unchanged() {
+    async fn mobile_subscription_size_lifecycle_is_bound_to_its_generation() {
         struct LivePane(Arc<DaemonPane>);
         impl Backend for LivePane {
             fn request(&self, request: &Value) -> io::Result<Value> {
@@ -1836,15 +1909,77 @@ mod tests {
         let subscribed = service.operation("phone", &mut peer, json!({
             "op":"subscribe", "workspace_id":"workspace", "pane_id":7, "cols":20, "rows":5,
         })).await.unwrap();
-        assert_eq!((subscribed["cols"].as_u64(), subscribed["rows"].as_u64()), (Some(80), Some(24)));
+        assert_eq!((subscribed["cols"].as_u64(), subscribed["rows"].as_u64()), (Some(20), Some(5)));
         service.schedule("phone", &mut peer, json!({"op":"input", "pane_id":7}), 1).unwrap();
         let (_, reply) = service.reply_receiver.recv().await.unwrap();
         assert_eq!(reply["ok"], true);
-        assert_eq!(pane.mobile_size(), size(80, 24));
+        assert_eq!(pane.mobile_size(), size(20, 5));
         let screen = pane.mobile_screen().unwrap();
-        assert_eq!((screen.cols, screen.rows), (80, 24));
+        assert_eq!((screen.cols, screen.rows), (20, 5));
+        let retired = subscribed["subscription_id"].as_str().unwrap();
+        loop {
+            let frame = receive_output(&mut service).await;
+            if frame.value["type"] == "terminal_lease" {
+                assert_eq!(frame.value, json!({
+                    "type":"terminal_lease", "pane_id":7, "subscription_id":retired, "held":true,
+                }));
+                assert!(frame.sequence.is_none());
+                break;
+            }
+        }
+        let resize = |id: &str, cols: u16, rows: u16| json!({
+            "op":"terminal_size", "workspace_id":"workspace", "pane_id":7,
+            "subscription_id":id, "cols":cols, "rows":rows,
+        });
+        service.operation("phone", &mut peer, resize(retired, 42, 18)).await.unwrap();
+        assert_eq!(pane.mobile_size(), size(42, 18));
+        pane.resize(size(120, 40));
+        assert_eq!(pane.mobile_size(), size(42, 18));
+        pane.controller_lease(crate::daemon::protocol::LeaseRequest::TakeBack);
+        assert_eq!(pane.mobile_size(), size(120, 40));
+        assert!(service.operation("phone", &mut peer, resize(retired, 45, 20)).await.is_err());
+        assert_eq!(pane.mobile_size(), size(120, 40));
+        loop {
+            let frame = receive_output(&mut service).await;
+            if frame.value["type"] == "terminal_lease" {
+                assert_eq!(frame.value["subscription_id"], retired);
+                assert_eq!(frame.value["held"], false);
+                assert!(frame.sequence.is_none());
+                break;
+            }
+        }
+        let reopened = service.operation("phone", &mut peer, json!({
+            "op":"subscribe", "workspace_id":"workspace", "pane_id":7, "cols":45, "rows":20,
+        })).await.unwrap();
+        let current = reopened["subscription_id"].as_str().unwrap();
+        assert_ne!(current, retired);
+        assert_eq!(pane.mobile_size(), size(45, 20));
+        assert!(service.operation("phone", &mut peer, resize(retired, 30, 10)).await.is_err());
+        assert_eq!(pane.mobile_size(), size(45, 20));
+        assert!(service.operation("phone", &mut peer, json!({
+            "op":"unsubscribe", "workspace_id":"workspace", "pane_id":7, "subscription_id":retired,
+        })).await.is_err());
+        assert_eq!(peer.subscriptions[&7].id, current);
+        assert_eq!(pane.mobile_size(), size(45, 20));
+        assert!(service.operation("phone", &mut peer, json!({
+            "op":"unsubscribe", "pane_id":7,
+        })).await.is_err());
+        assert_eq!(peer.subscriptions[&7].id, current);
+        assert_eq!(pane.mobile_size(), size(45, 20));
+        pane.resize(size(130, 45));
+        service.operation("phone", &mut peer, json!({
+            "op":"unsubscribe", "workspace_id":"workspace", "pane_id":7, "subscription_id":current,
+        })).await.unwrap();
+        assert_eq!(pane.mobile_size(), size(130, 45));
+        let pending_size = service.operation("phone", &mut peer, json!({
+            "op":"subscribe", "workspace_id":"workspace", "pane_id":7,
+        })).await.unwrap();
+        assert_eq!(pane.mobile_size(), size(130, 45));
+        service.operation("phone", &mut peer,
+            resize(pending_size["subscription_id"].as_str().unwrap(), 40, 15)).await.unwrap();
+        assert_eq!(pane.mobile_size(), size(40, 15));
         drop(peer);
-        assert_eq!(pane.mobile_size(), size(80, 24));
+        assert_eq!(pane.mobile_size(), size(130, 45));
         pane.kill();
     }
 
@@ -1890,6 +2025,7 @@ mod tests {
                     id: id.into(),
                     workspace: "workspace".into(),
                     observer: None,
+                    lease_started: false,
                     credit: credit.clone(),
                     resync: Arc::new(AtomicBool::new(false)),
                     history: service.history.clone(),

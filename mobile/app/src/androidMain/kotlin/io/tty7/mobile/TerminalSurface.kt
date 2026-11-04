@@ -21,7 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Composable
-actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onFailure: (String) -> Unit,
+actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (String) -> Unit, onResize: (TerminalFeed?, Int, Int) -> Unit, onFailure: (String) -> Unit,
     shortcuts: Flow<String>, agentKind: String?) {
     val context = LocalContext.current
     val dark = LocalMobileDarkTheme.current
@@ -30,6 +30,7 @@ actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (Strin
     val currentInput by rememberUpdatedState(onInput)
     val currentSynced by rememberUpdatedState(synced)
     val currentFailure by rememberUpdatedState(onFailure)
+    val currentResize by rememberUpdatedState(onResize)
     val view = remember(context) { NativeTerminalView(context) }
     var generation by remember { mutableLongStateOf(0) }
     var historyJob by remember { mutableStateOf<Job?>(null) }
@@ -37,6 +38,12 @@ actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (Strin
 
     SideEffect {
         view.onInput = { text -> if (currentFeed?.synced == true) currentInput(text) }
+        val target = feed
+        val gen = generation
+        view.onResize = { cols, rows ->
+            if (gen == generation && currentFeed === target && target?.active != false) currentResize(target, cols, rows)
+        }
+        view.reportGridSize()
         view.onHistory = { cursor ->
             val target = currentFeed
             val gen = generation
@@ -77,6 +84,11 @@ actual fun TerminalSurface(feed: TerminalFeed?, synced: Boolean, onInput: (Strin
         historyJob?.cancel()
         historyJob = null
         view.reset()
+        val gen = generation
+        view.onResize = { cols, rows ->
+            if (gen == generation && currentFeed === feed && feed?.active != false) currentResize(feed, cols, rows)
+        }
+        view.reportGridSize()
         if (feed == null) return@LaunchedEffect
         try {
             for (incoming in feed.frames) {
