@@ -38,6 +38,7 @@ class RemoteController(
     // Background monitoring owns the transport, not a terminal renderer or size lease.
     private var backgroundMonitoring = false
     private data class NotificationTarget(val hostId: String, val workspaceId: String, val paneId: Long)
+    private data class ConnectionAttempt(val approved: Computer? = null, val authenticated: Boolean = false)
     private var notificationTarget: NotificationTarget? = null
     private val actions = mutableSetOf<Job>()
     private val retiredRequests = RetiredRequestIds()
@@ -198,23 +199,28 @@ class RemoteController(
             var retryDelay = 1_000L
             while (lifetime.accepts(generation)) {
                 mutable.value = mutable.value.copy(computer = target, status = "Connecting", reconnecting = true)
-                val approved = runConnection(target, generation)
+                val attempt = runConnection(target, generation)
                 currentCoroutineContext().ensureActive()
                 if (!lifetime.accepts(generation)) break
-                if (approved != null) {
-                    target = approved
+                if (attempt.approved != null) {
+                    target = attempt.approved
                     continue
                 }
                 if (target.pending) break
+                // A completed authentication is a healthy connection, however long it
+                // subsequently lived. Do not carry failures from before it into the next
+                // outage; otherwise a single drop can inherit the 30-second backoff.
+                if (attempt.authenticated) retryDelay = 1_000L
                 mutable.value = mutable.value.copy(status = "Reconnecting", reconnecting = true)
                 delay(retryDelay)
                 retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
             }
         }
     }
-    private suspend fun runConnection(computer: Computer, generation: Long): Computer? {
+    private suspend fun runConnection(computer: Computer, generation: Long): ConnectionAttempt {
             var polling: Job? = null
             var approved: Computer? = null
+            var authenticated = false
             try {
                 ensureLoaded()
                 currentCoroutineContext().ensureActive()
@@ -241,7 +247,6 @@ class RemoteController(
                 crypto = withContext(worker) { platform.deriveSession(computer.secret, clientNonce, challenge.text("nonce")) }
                 mutable.value = mutable.value.copy(verificationCode = crypto!!.verificationCode, status = if (computer.pending) "Waiting for desktop approval" else "Authenticating")
                 sendEncrypted(if (computer.pending) obj("type" to JsonPrimitive("pair"), "device_name" to JsonPrimitive(platform.deviceName)) else obj("type" to JsonPrimitive("auth")))
-                var authenticated = false
                 while (currentCoroutineContext().isActive) {
                     val envelope = if (authenticated) receiveInner(remote) else withTimeout(if (computer.pending) 310_000L else 15_000L) { receiveInner(remote) }
                     val session = crypto ?: error("Encryption session missing")
@@ -411,7 +416,7 @@ class RemoteController(
                 mutable.value = mutable.value.copy(connected = false, terminal = null, terminalSynced = false,
                     status = if (waitingForNetwork) "Reconnecting" else "Disconnected", reconnecting = waitingForNetwork)
             }
-            return approved
+            return ConnectionAttempt(approved, authenticated)
     }
     private suspend fun receiveInner(remote: RemoteSocket): JsonObject {
         val outer = wireJson.parseToJsonElement(remote.receive()).jsonObject

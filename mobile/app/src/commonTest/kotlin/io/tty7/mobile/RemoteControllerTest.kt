@@ -210,6 +210,34 @@ class RemoteControllerTest {
         controller.setForeground(false)
     }
 
+    @Test fun successfulAuthenticationResetsReconnectBackoff() = runTest {
+        val platform = ControlledPlatform(listOf(approved), pending)
+        val controller = controller(platform)
+        controller.setForeground(true)
+        runCurrent()
+
+        // Let the first handshake fail so the retry clock has advanced to two seconds.
+        advanceTimeBy(1_001)
+        runCurrent()
+        val recovered = platform.nextSocket().apply { authenticate() }
+        advanceTimeBy(1_001)
+        runCurrent()
+        recovered.response(1, listing())
+        runCurrent()
+        assertTrue(controller.state.value.connected)
+
+        // Once that healthy session drops, it must use the baseline delay rather than
+        // inheriting the failures which happened before authentication.
+        recovered.close()
+        runCurrent()
+        platform.nextSocket().authenticate()
+        advanceTimeBy(1_001)
+        runCurrent()
+        assertEquals(3, platform.connections.size)
+        assertTrue(controller.state.value.connected)
+        controller.setForeground(false)
+    }
+
     @Test fun explicitDisconnectSuppressesReconnectUntilUserConnects() = runTest {
         val platform = ControlledPlatform(listOf(approved), pending)
         val controller = authenticatedController(platform)
