@@ -7,9 +7,9 @@ plugins {
     id("com.android.application")
 }
 
-// Release signing comes from the environment in CI, or from an untracked
-// mobile/keystore.properties for a local release. Without either, the release
-// build is unsigned rather than silently signed with the debug key.
+// Release signing comes from the environment in CI, mobile/keystore.properties,
+// or the ignored PKCS#12 key in the repository root. On macOS the local key's
+// password stays in Keychain rather than in this repository.
 val keystoreProperties = Properties().apply {
     val file = rootProject.file("keystore.properties")
     if (file.exists()) file.inputStream().use { load(it) }
@@ -17,11 +17,23 @@ val keystoreProperties = Properties().apply {
 fun signingValue(env: String, property: String): String? =
     System.getenv(env)?.takeIf { it.isNotBlank() }
         ?: keystoreProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+fun mobileReleaseKeychainPassword(): String? = runCatching {
+    if (!System.getProperty("os.name").startsWith("Mac", ignoreCase = true)) return@runCatching null
+    val process = ProcessBuilder(
+        "/usr/bin/security", "find-generic-password",
+        "-s", "tty7-mobile-release-key", "-a", "io.tty7.mobile", "-w",
+    ).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+    val password = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    password.takeIf { process.waitFor() == 0 && it.isNotBlank() }
+}.getOrNull()
 
-val releaseStoreFile = signingValue("ANDROID_KEYSTORE_PATH", "storeFile")
-val releaseStorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "storePassword")
+val repositoryReleaseStore = rootProject.projectDir.parentFile.resolve("tty7-mobile-release.p12").takeIf { it.isFile }
+val localKeychainPassword = repositoryReleaseStore?.let { mobileReleaseKeychainPassword() }
+val releaseStoreFile = signingValue("ANDROID_KEYSTORE_PATH", "storeFile") ?: repositoryReleaseStore?.absolutePath
+val releaseStorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD", "storePassword") ?: localKeychainPassword
 val releaseKeyAlias = signingValue("ANDROID_KEY_ALIAS", "keyAlias")
-val releaseKeyPassword = signingValue("ANDROID_KEY_PASSWORD", "keyPassword")
+    ?: repositoryReleaseStore?.let { "tty7-mobile-release" }
+val releaseKeyPassword = signingValue("ANDROID_KEY_PASSWORD", "keyPassword") ?: localKeychainPassword
 val hasReleaseSigning = listOf(
     releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword,
 ).all { it != null }
@@ -78,10 +90,13 @@ android {
     signingConfigs {
         if (hasReleaseSigning) {
             create("release") {
-                storeFile = rootProject.file(releaseStoreFile!!)
+                val signingStoreFile = releaseStoreFile!!
+                storeFile = rootProject.file(signingStoreFile)
                 storePassword = releaseStorePassword
                 keyAlias = releaseKeyAlias
                 keyPassword = releaseKeyPassword
+                if (signingStoreFile.endsWith(".p12", ignoreCase = true) ||
+                    signingStoreFile.endsWith(".pfx", ignoreCase = true)) storeType = "PKCS12"
             }
         }
     }

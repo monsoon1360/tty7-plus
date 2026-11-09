@@ -2,6 +2,9 @@
 /dist
 .DS_Store
 
+# Local Android release signing key. Keep the private key on disk, never in Git.
+/tty7-mobile-release.p12
+
 # Local dev-tool state — kept out of the repo but retained on disk.
 /CLAUDE.md
 /AGENTS.md
