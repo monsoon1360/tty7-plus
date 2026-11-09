@@ -4,6 +4,13 @@ GitHub Actions build of tty7-plus, a fork of [tty7](https://github.com/l0ng-ai/t
 This is a prerelease because the macOS packages are adhoc signed and the Windows
 and Linux packages are unsigned. The Android package is a signed release build.
 
+## 本次更新
+
+- 修复桌面端 Agent 消息在发送未被确认时从编辑框消失的问题；输入路由失效或
+  Agent 未确认时会自动恢复原问题、附件以及等待期间继续输入的内容。
+- Android `@ANDROID_VERSION@` 升级为原生 Canvas 终端，加入后台 Agent 通知、
+  稳定重连和手机尺寸 PTY 接管；可直接覆盖上一版 release 签名安装包。
+
 ## 下载
 
 | 文件 | 平台 | 说明 |

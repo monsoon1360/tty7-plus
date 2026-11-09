@@ -70,6 +70,17 @@ const KEY_GAP: Duration = Duration::from_millis(15);
 /// [`SETTLE`] after the write is not 40ms after that.
 const SETTLE_AFTER_PASTE_SLOW: Duration = Duration::from_millis(300);
 
+/// How long a rich agent has to confirm that an ordinary prompt reached it.
+///
+/// The composer clears its box before the delayed text/Enter writes finish.
+/// Without this receipt, a redraw that eats the Enter (or a write rejected
+/// during a transient handoff) makes the draft disappear from both tty7 and
+/// the agent. Rich agents report `prompt-submit`; a couple of seconds is far
+/// beyond the local hook's normal latency while still returning a lost draft
+/// quickly enough to feel like a failed send rather than vanished work.
+const PROMPT_RECEIPT_WAIT: Duration = Duration::from_secs(2);
+const PROMPT_RECEIPT_POLL: Duration = Duration::from_millis(50);
+
 /// How long the agent's input area has to stay gone before the box steps
 /// aside. An agent redrawing its screen can pass through a frame without the
 /// input on it; a picker or a prompt stays.
@@ -2107,6 +2118,10 @@ pub(super) struct Composer {
     /// its text between the first one's text and its Enter.
     queue: VecDeque<Step>,
     pumping: bool,
+    /// The ordinary message removed from the box while its writes are in
+    /// flight. A rich idle agent must acknowledge it with `prompt-submit`;
+    /// otherwise it is put back in the box instead of being lost.
+    inflight: Option<InflightPrompt>,
     /// Whose name the placeholder carries.
     named: Option<CLIAgent>,
     /// The row of the `/` or `@` menu the keyboard is on.
@@ -2137,6 +2152,19 @@ pub(super) struct Composer {
     /// grid's columns paint it.
     backdrop: Option<(Rgb, Pixels)>,
     _subs: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct PromptReceipt {
+    activity: u64,
+    turns: u64,
+    session_id: Option<String>,
+}
+
+struct InflightPrompt {
+    text: String,
+    attached: Vec<String>,
+    receipt: Option<PromptReceipt>,
 }
 
 /// The toolbar's pop-up lists, each over its own button.
@@ -2251,6 +2279,7 @@ impl TerminalView {
             grab: false,
             queue: VecDeque::new(),
             pumping: false,
+            inflight: None,
             named: None,
             highlighted: 0,
             dismissed: None,
@@ -2371,7 +2400,7 @@ impl TerminalView {
                 if let Some(c) = self.composer.as_mut() {
                     c.queue.extend(interrupt_keys(Some(agent)));
                 }
-                self.pump_composer(agent, cx);
+                self.pump_composer(agent, window, cx);
             }
             _ => {
                 window.focus(&self.focus_handle, cx);
@@ -2532,7 +2561,7 @@ impl TerminalView {
         };
         c.picker = None;
         c.queue.extend(submit_plan(agent, &command, bracketed));
-        self.pump_composer(agent, cx);
+        self.pump_composer(agent, window, cx);
         self.focus_composer(window, cx);
         cx.notify();
     }
@@ -2876,10 +2905,11 @@ impl TerminalView {
     }
 
     fn composer_can_send(&self, cx: &gpui::App) -> bool {
-        self.composer
-            .as_ref()
-            .is_some_and(|c| !c.attached.is_empty() || !c.input.read(cx).value().trim().is_empty())
-            && !self.agent_is_asking()
+        self.composer.as_ref().is_some_and(|c| {
+            !c.pumping
+                && c.inflight.is_none()
+                && (!c.attached.is_empty() || !c.input.read(cx).value().trim().is_empty())
+        }) && !self.agent_is_asking()
     }
 
     pub(super) fn submit_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2889,6 +2919,7 @@ impl TerminalView {
         if !self.composer_can_send(cx) {
             return;
         }
+        let receipt_state = self.agent_session();
         let shell = self.shell_program();
         // Where OpenCode's mentions are looked up, to be picked from its list.
         let mentions_from = match agent == CLIAgent::OpenCode && self.host_id().is_local() {
@@ -2921,6 +2952,20 @@ impl TerminalView {
             true => typed.strip_prefix('!').unwrap_or(&typed),
             false => &typed,
         };
+        // Commands alter the TUI itself and do not produce a prompt-submit
+        // hook. An ordinary prompt sent to a rich idle agent does, so keep the
+        // draft until that first-hand receipt arrives.
+        let receipt = receipt_state
+            .filter(|state| {
+                state.rich
+                    && matches!(state.status, AgentStatus::Idle | AgentStatus::Done)
+                    && !typed.trim_start().starts_with(['/', '!'])
+            })
+            .map(|state| PromptReceipt {
+                activity: state.activity,
+                turns: state.turns,
+                session_id: state.session_id,
+            });
         let picked = mentions_from.as_deref().and_then(|cwd| {
             let exists = |p: &str| Path::new(p).is_relative() && cwd.join(p).exists();
             opencode_mention_plan(&mention_pieces(message, exists), &c.attached, bracketed)
@@ -2952,13 +2997,18 @@ impl TerminalView {
             first.delay = first.delay.max(SETTLE);
             steps.splice(0..0, before);
         }
-        c.attached.clear();
+        let attached = std::mem::take(&mut c.attached);
         c.dismissed = None;
         c.queue.extend(steps);
+        c.inflight = Some(InflightPrompt {
+            text: typed,
+            attached,
+            receipt,
+        });
         c.input
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.remember_composer(cx);
-        self.pump_composer(agent, cx);
+        self.pump_composer(agent, window, cx);
     }
 
     /// Write queued steps one at a time, each after its own delay.
@@ -2967,7 +3017,7 @@ impl TerminalView {
     /// running: an agent that quit inside the wait has handed the pty back to
     /// the shell, and the rest of the message — its Enter above all — would
     /// run there as a command.
-    fn pump_composer(&mut self, agent: CLIAgent, cx: &mut Context<Self>) {
+    fn pump_composer(&mut self, agent: CLIAgent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.composer.as_mut() else {
             return;
         };
@@ -2975,39 +3025,129 @@ impl TerminalView {
             return;
         }
         c.pumping = true;
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
-                // Popping the last step and standing the pump down are one
-                // update, so a submission can never find it still "pumping"
-                // after it has stopped looking at the queue.
                 let next = this
-                    .update(cx, |view, _| {
+                    .update_in(cx, |view, _, _| {
                         let c = view.composer.as_mut()?;
-                        let step = c.queue.pop_front();
-                        c.pumping = step.is_some();
-                        step
+                        c.queue.pop_front()
                     })
                     .ok()
                     .flatten();
-                let Some(step) = next else { return };
-                if !step.delay.is_zero() {
-                    cx.background_executor().timer(step.delay).await;
-                }
-                let sent = this.update(cx, |view, cx| {
-                    if view.agent() != Some(agent) {
-                        if let Some(c) = view.composer.as_mut() {
-                            c.queue.clear();
-                        }
+                if let Some(step) = next {
+                    if !step.delay.is_zero() {
+                        cx.background_executor().timer(step.delay).await;
+                    }
+                    let keep_going = this
+                        .update_in(cx, |view, window, cx| {
+                            if view.agent() != Some(agent) || !view.send_to_pty(&step.bytes, cx) {
+                                view.restore_inflight_prompt(window, cx);
+                                return false;
+                            }
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !keep_going {
                         return;
                     }
-                    view.send_to_pty(&step.bytes, cx);
-                });
-                if sent.is_err() {
+                    continue;
+                }
+
+                let receipt = this
+                    .update_in(cx, |view, _, _| {
+                        view.composer
+                            .as_ref()
+                            .and_then(|c| c.inflight.as_ref())
+                            .and_then(|prompt| prompt.receipt.clone())
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(receipt) = receipt {
+                    let polls = PROMPT_RECEIPT_WAIT.as_millis() / PROMPT_RECEIPT_POLL.as_millis();
+                    let mut acknowledged = false;
+                    for _ in 0..polls {
+                        acknowledged = this
+                            .update_in(cx, |view, _, _| view.prompt_receipt_arrived(&receipt))
+                            .unwrap_or(false);
+                        if acknowledged {
+                            break;
+                        }
+                        cx.background_executor().timer(PROMPT_RECEIPT_POLL).await;
+                    }
+                    if !acknowledged {
+                        let _ = this.update_in(cx, |view, window, cx| {
+                            view.restore_inflight_prompt(window, cx)
+                        });
+                        return;
+                    }
+                    let _ = this.update_in(cx, |view, _, _| {
+                        if let Some(c) = view.composer.as_mut() {
+                            c.inflight = None;
+                        }
+                    });
+                    continue;
+                }
+
+                let stopped = this
+                    .update_in(cx, |view, _, _| {
+                        let Some(c) = view.composer.as_mut() else {
+                            return true;
+                        };
+                        c.inflight = None;
+                        if c.queue.is_empty() {
+                            c.pumping = false;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
+                if stopped {
                     return;
                 }
             }
         })
         .detach();
+    }
+
+    fn prompt_receipt_arrived(&self, receipt: &PromptReceipt) -> bool {
+        self.agent_session().is_some_and(|state| {
+            let same_session = match (&receipt.session_id, &state.session_id) {
+                (Some(expected), Some(actual)) => expected == actual,
+                _ => true,
+            };
+            same_session
+                && state.activity > receipt.activity
+                && (matches!(state.status, AgentStatus::Working | AgentStatus::Waiting)
+                    || state.turns > receipt.turns)
+        })
+    }
+
+    /// Put an unacknowledged prompt back where the user wrote it. New text
+    /// typed during the short receipt wait is kept after it, and attachments
+    /// from both drafts survive.
+    fn restore_inflight_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.composer.as_mut() else {
+            return;
+        };
+        c.queue.clear();
+        c.pumping = false;
+        let Some(prompt) = c.inflight.take() else {
+            return;
+        };
+        let current = c.input.read(cx).value().to_string();
+        let text = match current.trim().is_empty() {
+            true => prompt.text,
+            false if prompt.text.trim().is_empty() => current,
+            false => format!("{}\n\n{current}", prompt.text),
+        };
+        c.attached.splice(0..0, prompt.attached);
+        c.open = true;
+        let input = c.input.clone();
+        input.update(cx, |state, cx| state.set_value(text, window, cx));
+        self.remember_composer(cx);
+        self.focus_composer(window, cx);
+        cx.notify();
     }
 
     // -----------------------------------------------------------------------

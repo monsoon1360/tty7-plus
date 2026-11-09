@@ -3469,14 +3469,18 @@ impl TerminalView {
         self.scroll_frac = 0.;
     }
 
-    pub(super) fn send_to_pty(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+    /// Write only while this view still owns a live input route. The return
+    /// value lets multi-write submissions keep their draft when a handoff or
+    /// exit rejects one of the writes.
+    pub(super) fn send_to_pty(&mut self, bytes: &[u8], cx: &mut Context<Self>) -> bool {
         if self.terminal.exited || !self.accepts_input(cx) {
-            return;
+            return false;
         }
         self.terminal.write(bytes.to_vec());
         self.cursor_visible = true;
         self.jump_to_prompt();
         cx.notify();
+        true
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
@@ -16435,6 +16439,120 @@ mod gpui_tests {
                 });
             })
             .unwrap();
+    }
+
+    /// Clearing the host box is only optimistic for a hook-reporting agent:
+    /// if its TUI swallows the Enter, the prompt must come back instead of
+    /// disappearing from both sides. A prompt-submit receipt makes the same
+    /// write final.
+    #[gpui::test]
+    fn the_composer_restores_a_rich_prompt_without_a_receipt(cx: &mut TestAppContext) {
+        use crate::core::cli_agent::{AgentSessionState, AgentStatus, CLIAgent};
+
+        let (window, view, mut daemon) = rooted_harness(cx);
+        DaemonMsg::Agent(Some(CLIAgent::OhMyPi))
+            .encode(&mut daemon)
+            .unwrap();
+        DaemonMsg::AgentStatus(Some(AgentSessionState {
+            status: AgentStatus::Done,
+            session_id: Some("omp-session".into()),
+            rich: true,
+            activity: 7,
+            turns: 2,
+            ..Default::default()
+        }))
+        .encode(&mut daemon)
+        .unwrap();
+        for _ in 0..200 {
+            if cx.update(|cx| {
+                let view = view.read(cx);
+                view.agent() == Some(CLIAgent::OhMyPi)
+                    && view
+                        .agent_session()
+                        .is_some_and(|state| state.activity == 7)
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let submit = |text: &str, cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        if view.composer.is_none() {
+                            view.toggle_composer(window, cx);
+                        }
+                        let input = view.composer.as_ref().unwrap().input.clone();
+                        input.update(cx, |state, cx| state.set_value(text, window, cx));
+                        view.submit_composer(window, cx);
+                    });
+                })
+                .unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(100));
+            cx.run_until_parked();
+        };
+
+        submit("question that must survive", cx);
+        assert_eq!(next_input(&mut daemon), b"question that must survive");
+        assert_eq!(next_input(&mut daemon), b"\r");
+        for _ in 0..45 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(50));
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            cx.update(|cx| view
+                .read(cx)
+                .composer
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .value()),
+            "question that must survive",
+            "no prompt-submit receipt puts the draft back"
+        );
+
+        submit("accepted question", cx);
+        assert_eq!(next_input(&mut daemon), b"accepted question");
+        assert_eq!(next_input(&mut daemon), b"\r");
+        DaemonMsg::AgentStatus(Some(AgentSessionState {
+            status: AgentStatus::Working,
+            session_id: Some("omp-session".into()),
+            rich: true,
+            activity: 8,
+            turns: 2,
+            ..Default::default()
+        }))
+        .encode(&mut daemon)
+        .unwrap();
+        for _ in 0..200 {
+            if cx.update(|cx| {
+                view.read(cx)
+                    .agent_session()
+                    .is_some_and(|state| state.activity == 8)
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| view
+                .read(cx)
+                .composer
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .value()),
+            "",
+            "prompt-submit makes the optimistic clear final"
+        );
     }
 
     /// The selection that seeds the search query is the thing being searched

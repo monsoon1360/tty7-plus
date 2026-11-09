@@ -170,6 +170,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Agent questions no longer disappear when submission is not acknowledged.**
+  The desktop composer keeps ordinary prompts and attachments in flight until a
+  rich agent reports `prompt-submit`. If the input route changes, a PTY write is
+  rejected, or no receipt arrives within two seconds, the original draft is put
+  back in the composer together with anything typed while it was waiting.
+
 - **Android history pages stay within the phone's 128 KiB limit.** Page byte
   accounting includes soft-wrap metadata, numeric fields and row separators
   without allocating serialized row copies. Long retained output no longer
