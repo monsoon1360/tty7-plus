@@ -321,45 +321,55 @@ private val rawLineFeed = TerminalKey("LF", "Ctrl-J", "发送 LF，由终端程�
 private fun TerminalKeyBar(paneId: Long?, agentKind: String?, status: String?, enabled: Boolean, onInput: (String) -> Unit) {
     var more by remember(paneId, agentKind, enabled) { mutableStateOf(false) }
     val waiting = status.equals("waiting", ignoreCase = true)
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth()) {
-            primaryTerminalKeys.forEach { key ->
-                val shown = if (key.tag == "LF" && agentKind != "codex" && agentKind != "omp") rawLineFeed else key
-                TerminalKeyButton(shown, enabled, onInput, Modifier.weight(1f))
-            }
-            Box(Modifier.weight(1f)) {
-                TextButton(
-                    onClick = { more = true }, enabled = enabled,
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("key-more"),
-                ) { Text("更多", style = MaterialTheme.typography.labelMedium, maxLines = 1) }
-                DropdownMenu(expanded = more && enabled, onDismissRequest = { more = false }) {
-                    if (agentKind == "codex") {
-                        DropdownMenuItem(
-                            text = { Text(codexShiftLeft.label) },
-                            enabled = enabled,
-                            onClick = { more = false; if (enabled) onInput(codexShiftLeft.input) },
-                            modifier = Modifier.testTag("key-more-${codexShiftLeft.tag}").semantics { contentDescription = codexShiftLeft.description },
-                        )
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainerLow)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val keyGap = 4.dp
+            val keyWidth = (maxWidth - 16.dp - keyGap * 4) / 5
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(keyGap)) {
+                    primaryTerminalKeys.forEach { key ->
+                        val shown = if (key.tag == "LF" && agentKind != "codex" && agentKind != "omp") rawLineFeed else key
+                        TerminalKeyButton(shown, enabled, onInput, Modifier.width(keyWidth))
                     }
-                    moreTerminalKeys.forEach { key ->
-                        DropdownMenuItem(
-                            text = { Text(key.label) },
-                            enabled = enabled,
-                            onClick = { more = false; if (enabled) onInput(key.input) },
-                            modifier = Modifier.testTag("key-more-${key.tag}").semantics { contentDescription = key.description },
+                    Box(Modifier.width(keyWidth)) {
+                        TerminalControlKey(
+                            label = "更多", description = "更多终端按键", tag = "key-more", enabled = enabled,
+                            onClick = { more = true }, modifier = Modifier.fillMaxWidth(),
                         )
+                        DropdownMenu(expanded = more && enabled, onDismissRequest = { more = false }) {
+                            if (agentKind == "codex") {
+                                DropdownMenuItem(
+                                    text = { Text(codexShiftLeft.label) },
+                                    enabled = enabled,
+                                    onClick = { more = false; if (enabled) onInput(codexShiftLeft.input) },
+                                    modifier = Modifier.testTag("key-more-${codexShiftLeft.tag}").semantics { contentDescription = codexShiftLeft.description },
+                                )
+                            }
+                            moreTerminalKeys.forEach { key ->
+                                DropdownMenuItem(
+                                    text = { Text(key.label) },
+                                    enabled = enabled,
+                                    onClick = { more = false; if (enabled) onInput(key.input) },
+                                    modifier = Modifier.testTag("key-more-${key.tag}").semantics { contentDescription = key.description },
+                                )
+                            }
+                        }
                     }
                 }
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth().testTag("terminal-direction-keys").semantics {
-                contentDescription = if (waiting) "等待选择或确认：使用方向键选择，回车确认" else "使用方向键移动光标或选择"
-            },
-        ) {
-            directionTerminalKeys.forEach { key ->
-                TerminalKeyButton(key, enabled, onInput, Modifier.weight(1f))
+                Row(
+                    Modifier.fillMaxWidth().testTag("terminal-direction-keys").semantics {
+                        contentDescription = if (waiting) "等待选择或确认：使用方向键选择，回车确认" else "使用方向键移动光标或选择"
+                    },
+                    horizontalArrangement = Arrangement.spacedBy(keyGap, Alignment.CenterHorizontally),
+                ) {
+                    directionTerminalKeys.forEach { key ->
+                        TerminalKeyButton(key, enabled, onInput, Modifier.width(keyWidth))
+                    }
+                }
             }
         }
     }
@@ -367,11 +377,34 @@ private fun TerminalKeyBar(paneId: Long?, agentKind: String?, status: String?, e
 
 @Composable
 private fun TerminalKeyButton(key: TerminalKey, enabled: Boolean, onInput: (String) -> Unit, modifier: Modifier) {
-    TextButton(
-        onClick = { if (enabled) onInput(key.input) }, enabled = enabled,
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-        modifier = modifier.height(48.dp).testTag("key-${key.tag}").semantics { contentDescription = key.description },
-    ) { Text(key.label, style = MaterialTheme.typography.labelMedium, maxLines = 1) }
+    TerminalControlKey(
+        label = key.label, description = key.description, tag = "key-${key.tag}", enabled = enabled,
+        onClick = { onInput(key.input) }, modifier = modifier,
+    )
+}
+
+@Composable
+private fun TerminalControlKey(
+    label: String, description: String, tag: String, enabled: Boolean, onClick: () -> Unit, modifier: Modifier,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    Box(
+        modifier.height(36.dp).clip(shape)
+            .background(if (enabled) MaterialTheme.colorScheme.surfaceContainer else MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .testTag(tag).semantics { contentDescription = description }
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 @Composable

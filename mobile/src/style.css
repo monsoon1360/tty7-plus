@@ -49,13 +49,13 @@
 }
 
 :root {
-  --canvas: #f3f3f1;
-  --cell: #fcfcfb;
+  --canvas: #f5f5f3;
+  --cell: #fdfdfc;
   --cell-press: #ecece9;
-  --raised: #fcfcfb;
+  --raised: #ffffff;
   --ink: #1c1c1e;
   --ink-soft: rgb(0 0 0 / 0.72);
-  --ink-2: rgb(0 0 0 / 0.45);
+  --ink-2: rgb(0 0 0 / 0.6);
   --ink-3: rgb(0 0 0 / 0.3);
   --hair: rgb(0 0 0 / 0.08);
   --fill: rgb(0 0 0 / 0.06);
@@ -71,10 +71,10 @@
   --warn-ink: #b7791f;
   --ok-ink: #248a3d;
   --term: var(--cell);
-  --bar: rgb(252 252 251 / 0.82);
-  /* Floating controls: a hairline ring and a soft drop. */
-  --lift: 0 0 0 0.5px rgb(0 0 0 / 0.08), 0 8px 24px -8px rgb(0 0 0 / 0.18);
-  --shadow: 0 0 0 0.5px rgb(0 0 0 / 0.08), 0 18px 44px -12px rgb(0 0 0 / 0.28);
+  --bar: #fdfdfc;
+  /* Floating controls stay legible without becoming the visual subject. */
+  --lift: 0 0 0 0.5px var(--hair), 0 1px 2px rgb(0 0 0 / 0.05);
+  --shadow: 0 0 0 0.5px var(--hair), 0 8px 24px rgb(0 0 0 / 0.08);
 
   /* Running and connected. */
   --live: #34c759;
@@ -85,7 +85,7 @@
 
   --ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", Roboto, "Segoe UI", system-ui, sans-serif;
   --mono: Hack, "Symbols Nerd Font Mono", "Noto Sans Symbols", "Noto Sans Symbols 2", "Noto Emoji", "SF Mono", "PingFang SC", "Hiragino Sans", "Apple SD Gothic Neo", Menlo, ui-monospace, monospace;
-  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 
   /* The home indicator's gap; none while the keyboard is up, which covers
      it (main.ts sets `keyboard` on <html>). */
@@ -99,8 +99,8 @@
   --inset-left: env(safe-area-inset-left);
 
   color-scheme: light;
-  font: 17px/1.35 var(--ui);
-  letter-spacing: -0.005em;
+  font: 16px/1.4 var(--ui);
+  letter-spacing: 0;
   color: var(--ink);
   background: var(--canvas);
   -webkit-text-size-adjust: 100%;
@@ -110,13 +110,13 @@
 /* Dark: the system's, or the one chosen in Settings (main.ts sets
    `data-theme` on <html>). */
 :root[data-theme="dark"] {
-  --canvas: #0f0f10;
-  --cell: #1e1e20;
-  --cell-press: #29292c;
-  --raised: #242427;
+  --canvas: #111112;
+  --cell: #1a1a1c;
+  --cell-press: #262629;
+  --raised: #232326;
   --ink: #ececed;
   --ink-soft: rgb(255 255 255 / 0.78);
-  --ink-2: rgb(255 255 255 / 0.5);
+  --ink-2: rgb(255 255 255 / 0.62);
   --ink-3: rgb(255 255 255 / 0.3);
   --hair: rgb(255 255 255 / 0.1);
   --fill: rgb(255 255 255 / 0.08);
@@ -127,9 +127,9 @@
   --danger-fill: #ff453a;
   --warn-ink: #e0a345;
   --ok-ink: #5fd07a;
-  --bar: rgb(30 30 32 / 0.82);
-  --lift: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 8px 24px -8px rgb(0 0 0 / 0.6);
-  --shadow: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 18px 44px -12px rgb(0 0 0 / 0.7);
+  --bar: #1a1a1c;
+  --lift: 0 0 0 0.5px var(--hair), 0 1px 2px rgb(0 0 0 / 0.32);
+  --shadow: 0 0 0 0.5px var(--hair), 0 8px 24px rgb(0 0 0 / 0.38);
   color-scheme: dark;
 }
 
@@ -190,7 +190,7 @@ h3 {
 
 /* A control on the desktop, named where the text says to use it. */
 strong {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink);
 }
 
@@ -239,8 +239,8 @@ code {
   align-items: center;
   gap: 8px;
   height: calc(44px + var(--inset-top));
-  padding: var(--inset-top) max(16px, var(--inset-right)) 0
-    max(16px, var(--inset-left));
+  padding: var(--inset-top) max(12px, var(--inset-right)) 0
+    max(12px, var(--inset-left));
   background: var(--canvas);
   box-shadow: 0 1px 0 transparent;
   transition:
@@ -252,8 +252,6 @@ code {
 
 .nav.folded {
   background: var(--bar);
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
   box-shadow: 0 0.5px 0 var(--hair);
 }
 
@@ -269,8 +267,8 @@ code {
 }
 
 .nav-title {
-  font-weight: 600;
-  font-size: 17px;
+  font-weight: 500;
+  font-size: 16px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -288,21 +286,21 @@ code {
 }
 
 /* Until it folds in, the title takes no room, so the way back is named in
-   full; once it shows, the back pill gives way to it. */
+   full; once it shows, the label gives way to it. */
 .nav:not(.folded) .nav-title {
   max-width: 0;
 }
 
-/* Back is a floating pill that names where it goes. */
+/* Back names the destination without adding another floating surface. */
 .nav-back {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 38px;
-  padding: 0 14px 0 8px;
-  border-radius: 19px;
-  background: var(--cell);
-  box-shadow: var(--lift);
+  height: 36px;
+  padding: 0 8px 0 4px;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
   color: var(--ink);
   font-size: 15px;
   min-width: 0;
@@ -319,10 +317,10 @@ code {
   height: 20px;
 }
 
-/* Once the title shows, the pill would be cut to "Machin…" beside it: it
+/* Once the title shows, the label would be cut to "Machin…" beside it: it
    gives way to the round chevron alone, as the system's own bar does. */
 .nav.folded .nav-back {
-  width: 38px;
+  width: 36px;
   padding: 0;
   justify-content: center;
 }
@@ -340,27 +338,27 @@ code {
 .nav-icon {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 19px;
-  background: var(--cell);
-  box-shadow: var(--lift);
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
   color: var(--ink);
 }
 
 .nav-icon .icon {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
 }
 
-/* A round control on a surface of its own: the terminal's bar, a sheet. */
+/* A compact control on a surface of its own: the terminal's bar, a sheet. */
 .round {
   display: grid;
   place-items: center;
   flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
   background: var(--fill);
   color: var(--ink);
 }
@@ -391,7 +389,7 @@ code {
 }
 
 .title-block {
-  padding: 14px 24px 22px;
+  padding: 12px 16px 20px;
 }
 
 /* A top-level screen has nothing in its bar until the title folds into it:
@@ -437,10 +435,10 @@ code {
 }
 
 .large-title {
-  font-size: 34px;
-  line-height: 1.12;
-  font-weight: 700;
-  letter-spacing: -0.024em;
+  font-size: 30px;
+  line-height: 1.16;
+  font-weight: 500;
+  letter-spacing: -0.012em;
   overflow-wrap: anywhere;
 }
 
@@ -448,7 +446,7 @@ code {
 /* Grouped lists */
 
 .group {
-  margin: 0 20px 22px;
+  margin: 0 16px 20px;
 }
 
 .group-head {
@@ -499,7 +497,8 @@ code {
 
 .card {
   background: var(--cell);
-  border-radius: 22px;
+  border-radius: 14px;
+  box-shadow: 0 0 0 0.5px var(--hair);
   overflow: hidden;
 }
 
@@ -521,7 +520,7 @@ code {
   background: none;
   font: inherit;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink);
   text-align: left;
 }
@@ -576,12 +575,12 @@ code {
 .ws-bar {
   display: flex;
   gap: 8px;
-  margin: -6px 0 18px;
-  padding: 2px 20px;
+  margin: -4px 0 16px;
+  padding: 0 16px;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-width: none;
-  scroll-padding: 0 20px;
+  scroll-padding: 0 16px;
 }
 
 .ws-bar::-webkit-scrollbar {
@@ -593,13 +592,13 @@ code {
   flex: none;
   align-items: center;
   gap: 6px;
-  height: 36px;
+  height: 32px;
   max-width: 70vw;
-  padding: 0 14px;
-  border-radius: 18px;
+  padding: 0 10px;
+  border-radius: 8px;
   background: var(--fill);
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   transition: background 0.2s, color 0.2s;
 }
@@ -635,7 +634,7 @@ code {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 20px 16px;
+  margin: 0 16px 12px;
 }
 
 .remote-titles {
@@ -643,9 +642,9 @@ code {
 }
 
 .remote-name {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.014em;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
   overflow-wrap: anywhere;
 }
 
@@ -655,7 +654,7 @@ code {
 }
 
 .remote-note {
-  margin: -4px 20px 24px;
+  margin: -4px 16px 20px;
   font-size: 14px;
   line-height: 1.45;
   color: var(--ink-2);
@@ -670,7 +669,7 @@ code {
   margin-left: 8px;
   vertical-align: 2px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 1px 7px;
   border-radius: 6px;
   background: var(--hair);
@@ -681,16 +680,16 @@ code {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
-  min-height: 64px;
-  padding: 10px 16px;
+  min-height: 56px;
+  padding: 8px 12px;
   text-align: left;
-  transition: background 0.35s;
+  transition: background 0.16s;
 }
 
 .row.machine {
-  min-height: 68px;
+  min-height: 60px;
 }
 
 .row.dim > :not(.row-chevron) {
@@ -731,12 +730,12 @@ code {
 }
 
 .row-title {
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 500;
 }
 
 .row-sub {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--ink-2);
 }
 
@@ -753,7 +752,7 @@ code {
 }
 
 .status-word {
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .status-word.working {
@@ -793,22 +792,22 @@ code {
   display: grid;
   place-items: center;
   flex: none;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   background: var(--fill);
   color: var(--ink-soft);
 }
 
 .tile .icon {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
 }
 
 .tile.large {
-  width: 64px;
-  height: 64px;
-  border-radius: 18px;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
 }
 
 .tile.large .icon {
@@ -821,8 +820,8 @@ code {
   display: grid;
   place-items: center;
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   background: var(--fill);
   color: var(--ink-soft);
@@ -930,13 +929,13 @@ code {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  padding: 56px 36px 24px;
+  padding: 48px 24px 20px;
 }
 
 .empty-mark {
-  width: 76px;
-  height: 76px;
-  margin-bottom: 22px;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 20px;
 }
 
 .empty .tile.large {
@@ -944,15 +943,15 @@ code {
 }
 
 .empty-title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.014em;
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .empty-body {
-  margin: 8px 0 26px;
+  margin: 8px 0 24px;
   max-width: 30ch;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.45;
   color: var(--ink-2);
   text-wrap: pretty;
@@ -966,11 +965,11 @@ code {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 54px;
-  padding: 0 28px;
-  border-radius: 27px;
-  font-size: 17px;
-  font-weight: 600;
+  height: 44px;
+  padding: 0 20px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 500;
   transition:
     transform 0.2s var(--ease),
     opacity 0.2s;
@@ -1010,8 +1009,8 @@ code {
 .button.small {
   height: 34px;
   padding: 0 14px;
-  border-radius: 17px;
-  font-size: 15px;
+  border-radius: 8px;
+  font-size: 14px;
 }
 
 .button.wide {
@@ -1028,11 +1027,11 @@ code {
   gap: 4px;
   height: 28px;
   padding: 0 11px 0 8px;
-  border-radius: 15px;
+  border-radius: 7px;
   background: var(--tint);
   color: var(--accent);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .chip .icon {
@@ -1107,7 +1106,7 @@ html.scanning #app {
 .steps {
   list-style: none;
   counter-reset: step;
-  margin: 0 20px 26px;
+  margin: 0 16px 24px;
   padding: 0;
   display: grid;
   gap: 12px;
@@ -1116,10 +1115,10 @@ html.scanning #app {
 .steps li {
   counter-increment: step;
   display: grid;
-  grid-template-columns: 26px 1fr;
+  grid-template-columns: 24px 1fr;
   gap: 12px;
   align-items: baseline;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.45;
 }
 
@@ -1127,13 +1126,13 @@ html.scanning #app {
   content: counter(step);
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 13px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   background: var(--tint);
   color: var(--accent);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 500;
   transform: translateY(-1px);
 }
 
@@ -1150,10 +1149,10 @@ html.scanning #app {
   border: 0;
   outline: 0;
   margin: 0;
-  padding: 14px 16px;
+  padding: 12px;
   background: none;
   color: var(--ink);
-  font: 17px/1.3 var(--ui);
+  font: 16px/1.4 var(--ui);
   -webkit-user-select: text;
   user-select: text;
 }
@@ -1196,9 +1195,9 @@ html.scanning #app {
 .notice {
   display: flex;
   gap: 12px;
-  margin: 0 16px 24px;
-  padding: 14px 16px;
-  border-radius: 16px;
+  margin: 0 16px 20px;
+  padding: 12px;
+  border-radius: 12px;
   background: color-mix(in srgb, var(--danger) 10%, var(--cell));
 }
 
@@ -1222,8 +1221,8 @@ html.scanning #app {
 }
 
 .notice-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 500;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1266,14 +1265,14 @@ html.scanning #app {
   top: 46px;
   right: 2px;
   z-index: 10;
-  min-width: 240px;
+  min-width: 224px;
   padding: 0;
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--raised);
   box-shadow: var(--shadow);
   overflow: hidden;
   transform-origin: top right;
-  animation: menu-in 0.28s var(--ease);
+  animation: menu-in 0.2s var(--ease);
 }
 
 @keyframes menu-in {
@@ -1289,9 +1288,9 @@ html.scanning #app {
   justify-content: space-between;
   gap: 16px;
   width: 100%;
-  height: 48px;
-  padding: 0 16px;
-  font-size: 17px;
+  height: 44px;
+  padding: 0 12px;
+  font-size: 15px;
   text-align: left;
 }
 
@@ -1325,9 +1324,9 @@ html.scanning #app {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: calc(56px + var(--inset-top));
-  padding: var(--inset-top) max(16px, var(--inset-right)) 0
-    max(16px, var(--inset-left));
+  height: calc(52px + var(--inset-top));
+  padding: var(--inset-top) max(12px, var(--inset-right)) 0
+    max(12px, var(--inset-left));
   background: var(--term);
   box-shadow: 0 0.5px 0 var(--hair);
   position: relative;
@@ -1345,8 +1344,8 @@ html.scanning #app {
 
 .term-title {
   max-width: 100%;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
   line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
@@ -1514,12 +1513,12 @@ html.scanning #app {
   align-items: center;
   gap: 12px;
   padding: 10px 10px 10px 14px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--raised);
   box-shadow: var(--shadow);
   font-size: 15px;
   line-height: 1.35;
-  animation: menu-in 0.3s var(--ease);
+  animation: menu-in 0.2s var(--ease);
   transform-origin: top center;
 }
 
@@ -1546,7 +1545,7 @@ html.scanning #app {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px max(12px, var(--inset-right)) calc(10px + var(--safe-bottom))
+  padding: 8px max(12px, var(--inset-right)) calc(8px + var(--safe-bottom))
     max(12px, var(--inset-left));
   background: var(--canvas);
   box-shadow: 0 -0.5px 0 var(--hair);
@@ -1578,9 +1577,9 @@ html.scanning #app {
   place-items: center;
   flex: 1;
   min-width: 0;
-  height: 42px;
+  height: 40px;
   padding: 0 2px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--cell);
   box-shadow:
     0 0 0 0.5px var(--hair),
@@ -1631,7 +1630,7 @@ html.scanning #app {
 .compose {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
 .compose-input {
@@ -1640,10 +1639,10 @@ html.scanning #app {
   min-height: 44px;
   max-height: 132px;
   margin: 0;
-  padding: 11px 16px;
+  padding: 10px 12px;
   border: 0;
   outline: 0;
-  border-radius: 22px;
+  border-radius: 10px;
   resize: none;
   background: var(--cell);
   box-shadow: 0 0 0 0.5px var(--hair);
@@ -1661,6 +1660,7 @@ html.scanning #app {
 .compose .round {
   width: 44px;
   height: 44px;
+  border-radius: 10px;
 }
 
 .compose .round .icon {
@@ -1691,9 +1691,9 @@ html.scanning #app {
 .float-bar {
   position: absolute;
   z-index: 3;
-  left: max(16px, var(--inset-left));
-  right: max(16px, var(--inset-right));
-  bottom: calc(12px + var(--safe-bottom));
+  left: max(12px, var(--inset-left));
+  right: max(12px, var(--inset-right));
+  bottom: calc(8px + var(--safe-bottom));
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1729,8 +1729,6 @@ html.scanning #app {
   left: 0;
   height: calc(88px + var(--safe-bottom));
   background: linear-gradient(to bottom, transparent, var(--canvas) 55%);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
   -webkit-mask-image: linear-gradient(to bottom, transparent, #000 40%);
   mask-image: linear-gradient(to bottom, transparent, #000 40%);
   pointer-events: none;
@@ -1742,12 +1740,10 @@ html.scanning #app {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 48px;
-  padding: 0 18px;
-  border-radius: 24px;
-  background: var(--bar);
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: var(--cell);
   box-shadow: var(--lift);
   color: var(--ink-2);
 }
@@ -1766,7 +1762,7 @@ html.scanning #app {
   padding: 0;
   background: none;
   color: var(--ink);
-  font: 16px var(--ui);
+  font: 15px var(--ui);
   -webkit-appearance: none;
   appearance: none;
   -webkit-user-select: text;
@@ -1785,12 +1781,12 @@ html.scanning #app {
   display: grid;
   place-items: center;
   flex: none;
-  width: 48px;
-  height: 48px;
-  border-radius: 24px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
   background: var(--ink);
   color: var(--accent-ink);
-  box-shadow: var(--lift);
+  box-shadow: 0 0 0 0.5px var(--hair);
   transition: transform 0.15s var(--ease);
 }
 
@@ -1825,14 +1821,14 @@ html.scanning #app {
 .sheet {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   width: 100%;
   max-height: calc(100% - var(--inset-top) - 24px);
-  padding: 10px 20px calc(20px + var(--safe-bottom));
-  border-radius: 44px;
+  padding: 8px 16px calc(16px + var(--safe-bottom));
+  border-radius: 20px;
   background: var(--canvas);
   box-shadow: var(--shadow);
-  animation: sheet-in 0.36s var(--ease);
+  animation: sheet-in 0.32s var(--ease);
 }
 
 .scrim.leaving .sheet {
@@ -1855,9 +1851,9 @@ html.scanning #app {
 }
 
 .sheet-title {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.015em;
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .sheet-head .round {
@@ -1874,7 +1870,7 @@ html.scanning #app {
 .sheet-body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   min-height: 0;
   overflow-y: auto;
   /* Scrolling clips the sides too: room for a chosen card's ring there. */
@@ -1908,7 +1904,7 @@ html.scanning #app {
   justify-content: center;
   gap: 8px;
   height: 84px;
-  border-radius: 18px;
+  border-radius: 12px;
   background: var(--cell);
   box-shadow: 0 0 0 0.5px var(--hair);
   font-size: 14px;
@@ -1917,18 +1913,18 @@ html.scanning #app {
 
 .agent-choice.on {
   box-shadow: 0 0 0 1.5px var(--ink);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .row.choice {
-  min-height: 52px;
+  min-height: 48px;
   gap: 12px;
 }
 
 .row.choice .row-title {
   flex: 1;
   min-width: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 400;
 }
 
@@ -1981,13 +1977,13 @@ html.scanning #app {
    which recedes a little; back reverses it. */
 
 ::view-transition-group(root) {
-  animation-duration: 0.44s;
+  animation-duration: 0.32s;
   animation-timing-function: var(--ease);
 }
 
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: 0.44s;
+  animation-duration: 0.32s;
   animation-timing-function: var(--ease);
   mix-blend-mode: normal;
 }
@@ -1998,13 +1994,13 @@ html[data-nav="push"]::view-transition-old(root) {
 
 html[data-nav="push"]::view-transition-new(root) {
   animation-name: arrive;
-  box-shadow: -12px 0 32px rgb(0 0 0 / 0.14);
+  box-shadow: -8px 0 20px rgb(0 0 0 / 0.1);
 }
 
 html[data-nav="pop"]::view-transition-old(root) {
   z-index: 2;
   animation-name: depart;
-  box-shadow: -12px 0 32px rgb(0 0 0 / 0.14);
+  box-shadow: -8px 0 20px rgb(0 0 0 / 0.1);
 }
 
 html[data-nav="pop"]::view-transition-new(root) {
@@ -2020,8 +2016,7 @@ html[data-nav="pop"]::view-transition-new(root) {
 
 @keyframes recede {
   to {
-    transform: translateX(-28%);
-    filter: brightness(0.9);
+    transform: translateX(-16%);
   }
 }
 
@@ -2033,8 +2028,7 @@ html[data-nav="pop"]::view-transition-new(root) {
 
 @keyframes return {
   from {
-    transform: translateX(-28%);
-    filter: brightness(0.9);
+    transform: translateX(-16%);
   }
 }
 
@@ -2271,7 +2265,7 @@ html[data-nav="pop"]::view-transition-new(root) {
   align-items: center;
   gap: 8px;
   padding: 6px;
-  border-radius: 22px;
+  border-radius: 14px;
   background: var(--canvas);
   box-shadow: var(--shadow);
 }
@@ -2557,10 +2551,8 @@ html[data-nav="pop"]::view-transition-new(root) {
   width: 100%;
   padding: 10px 12px;
   border: 0;
-  border-radius: 22px;
-  background: var(--bar);
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  border-radius: 14px;
+  background: var(--raised);
   box-shadow: var(--shadow);
   color: var(--ink);
   font: inherit;
@@ -2578,7 +2570,7 @@ html[data-nav="pop"]::view-transition-new(root) {
 
 .peek-title {
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .peek-sub {
@@ -2605,7 +2597,7 @@ html[data-nav="pop"]::view-transition-new(root) {
   width: 44px;
   height: 44px;
   border: 0;
-  border-radius: 22px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   background: var(--raised);
@@ -2822,7 +2814,7 @@ html[data-nav="pop"]::view-transition-new(root) {
   z-index: 8;
 }
 
-/* The round bar buttons are drawn at 38pt but answer a 44pt square, the
+/* Compact bar buttons answer a 44pt square, the
    least a finger should have to hit. */
 .round,
 .nav-icon,

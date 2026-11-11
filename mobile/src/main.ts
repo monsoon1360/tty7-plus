@@ -186,7 +186,7 @@ function isDark() {
 function paintAppearance() {
   const dark = isDark();
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  themeColor?.setAttribute("content", dark ? "#0f0f10" : "#f3f3f1");
+  themeColor?.setAttribute("content", dark ? "#111112" : "#f5f5f3");
   if (dark === shownDark) return;
   shownDark = dark;
   window.dispatchEvent(new CustomEvent("theme"));
@@ -564,7 +564,7 @@ function hostsScreen(direction: "push" | "pop" = "pop") {
     const body = h("div", { class: "stack" });
     let all: Host[] = [];
     let query = "";
-    const dock = floatingBar("Search machines", (q) => {
+    const dock = floatingBar("Search", (q) => {
       query = q;
       render();
     }, { label: "Pair a machine", run: () => pairScreen() });
@@ -596,7 +596,7 @@ function hostsScreen(direction: "push" | "pop" = "pop") {
             h(
               "p",
               { class: "empty-body" },
-              "Reach the panes open in tty7 on your computer, and type into them from here. In tty7, open Settings → Mobile and point this phone's camera at the code.",
+              "Open the panes on your computer and type into them from this phone. In tty7, go to Settings → Mobile and scan the code.",
             ),
             h("button", { class: "button primary", onclick: () => pairScreen() }, "Pair a machine"),
           ),
