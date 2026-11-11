@@ -173,8 +173,12 @@ class AgentMonitorService : Service() {
         owner.serviceStarted()
     }
 
-    // No sticky resurrection: Android's Stop control and explicit disconnect remain authoritative.
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    // The process may be reclaimed after the app leaves the foreground. Let Android
+    // recreate the service so serviceStarted() can restore the saved connection and
+    // resume Agent alerts without waiting for the Activity to be opened again.
+    // stopService(), force-stop and Android's foreground-service Stop control still
+    // remain authoritative for an explicit disconnect.
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
         wakeLock?.let { if (it.isHeld) it.release() }

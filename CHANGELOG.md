@@ -170,6 +170,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Android Agent notifications recover after background process reclamation.**
+  The foreground monitor service is now restartable, so Android can restore the
+  saved computer connection and continue delivering alerts without requiring the
+  app to be opened again. Explicit disconnect and the system Stop control still
+  stop monitoring.
+
 - **Agent questions no longer disappear when submission is not acknowledged.**
   The desktop composer keeps ordinary prompts and attachments in flight until a
   rich agent reports `prompt-submit`. If the input route changes, a PTY write is
