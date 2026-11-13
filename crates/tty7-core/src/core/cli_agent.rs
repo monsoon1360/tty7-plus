@@ -415,6 +415,59 @@ impl CLIAgent {
         Some(tail.into_iter().map(String::from).collect())
     }
 
+    /// The session `argv` resumes, for the agents that name it with a
+    /// positional id after a `resume` subcommand — `codex resume <id>`, which
+    /// is also what a restore types. Codex reports nothing until the first
+    /// turn of a resumed session, so without this a restored pane holds no id
+    /// until then, and a second restore before that turn has nothing to
+    /// resume (#1260). `None` for `resume --last`, a bare `resume` picker, or
+    /// anything that is not an id.
+    pub fn resumed_session_id(self, argv: &[String]) -> Option<String> {
+        if !matches!(self, CLIAgent::Codex | CLIAgent::TraeCode | CLIAgent::Muse) {
+            return None;
+        }
+        let names_self = |token: &str| {
+            token.split(['/', '\\']).any(|seg| {
+                CLIAgent::match_token(&base_stem(seg).to_ascii_lowercase()) == Some(self)
+            })
+        };
+        let argv = &argv[argv.iter().take_while(|t| is_env_assignment(t)).count()..];
+        let named = argv.iter().position(|t| names_self(t))?;
+        let mut tail = argv[named + 1..].iter().map(String::as_str);
+        // The fork prepends configured model/reasoning options to `resume`.
+        // Skip only known option arities, never search arbitrary argv values.
+        if self == CLIAgent::Codex {
+            while tail.clone().next().is_some_and(|t| t.starts_with('-')) {
+                let words = super::ai::codex_option_words(tail.next()?)?;
+                for _ in 1..words {
+                    tail.next()?;
+                }
+            }
+        }
+        if tail.next() != Some("resume") {
+            return None;
+        }
+        if self == CLIAgent::Codex {
+            while tail.clone().next().is_some_and(|t| t.starts_with('-')) {
+                let option = tail.next()?;
+                if option == "--last" || option.starts_with("--last=") {
+                    return None;
+                }
+                let words = super::ai::codex_option_words(option)?;
+                for _ in 1..words {
+                    tail.next()?;
+                }
+            }
+        }
+        let id = tail.next()?;
+        (!id.is_empty()
+            && !id.starts_with('-')
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'))
+        .then(|| id.to_string())
+    }
+
     /// What follows the agent's own name in `argv`, with everything that names
     /// a session taken out: the resume/fork subcommands and the flags listed as
     /// stale for this agent, each with its value. `None` when no token in
@@ -641,7 +694,9 @@ impl CLIAgent {
             CLIAgent::Antigravity => 0x3186FF,
             CLIAgent::Grok => 0x000000,
             CLIAgent::Qwen => 0x6D44E8,
-            CLIAgent::OhMyPi => 0xF97316,
+            // The near-black field omp.sh's favicon sits on; the mark wears
+            // the violet midpoint of the site's pink-to-cyan gradient.
+            CLIAgent::OhMyPi => 0x0F0A14,
             // The blue of the flame in Kimi's brand mark; the glyph itself is
             // black, which Codex and Grok already have covered.
             CLIAgent::Kimi => 0x027AFF,
@@ -669,11 +724,12 @@ impl CLIAgent {
     /// agent wearing two faces.
     ///
     /// White for every mark that is a silhouette sitting on its brand colour.
-    /// TraeCode is the one whose mark is the coloured half of the pair, on an
-    /// accent that is deliberately black.
+    /// TraeCode and Oh My Pi are the ones whose mark is the coloured half of
+    /// the pair, on an accent that is deliberately near-black.
     pub fn icon_rgb(self) -> u32 {
         match self {
             CLIAgent::TraeCode => 0x32F08C,
+            CLIAgent::OhMyPi => 0x9B4DFF,
             CLIAgent::QoderCLI | CLIAgent::QoderCLICn => 0x000000,
             _ => 0xFFFFFF,
         }
@@ -2095,6 +2151,61 @@ mod tests {
         assert_eq!(s.status_age_secs(189_000), Some(180));
         // A daemon clock ahead of ours reads as just now, not as a wrap.
         assert_eq!(s.status_age_secs(8_000), Some(0));
+    }
+
+    #[test]
+    fn resumed_sessions_skip_known_codex_options_without_guessing() {
+        let argv = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        for command in [
+            "codex resume id-1 --yolo",
+            "codex --model default -c model_reasoning_effort=high resume id-1",
+            "codex --model=default -c=model_reasoning_effort=high resume id-1",
+            "codex -mdefault -cmodel_reasoning_effort=high resume id-1",
+            "codex --yolo -C /project resume --model default id-1",
+            "CODEX_HOME=/tmp/codex /usr/bin/codex resume id-1",
+        ] {
+            assert_eq!(
+                CLIAgent::Codex
+                    .resumed_session_id(&argv(command))
+                    .as_deref(),
+                Some("id-1"),
+                "{command}"
+            );
+        }
+        for command in [
+            "codex",
+            "codex resume",
+            "codex resume --last",
+            "codex resume --last id-1",
+            "codex resume --last=true id-1",
+            "codex --model resume id-1",
+            "codex --unknown resume id-1",
+            "codex --help resume id-1",
+            "codex prompt resume id-1",
+            "codex fork id-1",
+            "codex resume bad/id",
+            "codex -c",
+            "codex resume --model",
+        ] {
+            assert_eq!(
+                CLIAgent::Codex.resumed_session_id(&argv(command)),
+                None,
+                "{command}"
+            );
+        }
+        for (agent, command) in [
+            (CLIAgent::TraeCode, "traecli resume id-1"),
+            (CLIAgent::Muse, "muse resume id-1"),
+        ] {
+            assert_eq!(
+                agent.resumed_session_id(&argv(command)).as_deref(),
+                Some("id-1")
+            );
+        }
+        assert_eq!(
+            CLIAgent::Claude.resumed_session_id(&argv("claude resume id-1")),
+            None
+        );
     }
 
     #[test]

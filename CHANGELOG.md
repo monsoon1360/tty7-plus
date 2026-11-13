@@ -84,14 +84,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   status line stay authoritative. The editor split (`Split Editor Right`,
   focus left/right) goes with the file strip it existed for.
 
-- **Selected upstream fixes through `8ad8841e`.** Integrate 29 reviewed commits
+- **Selected upstream fixes through `384ef875`.** Integrate 33 reviewed commits
   while retaining the fork's Android relay protocol, vendored terminal engine,
   AI/Git settings, external-editor controls and disabled upstream updater.
   GitHub-panel, upstream-release/update, legacy iroh replay and CI-policy changes
   remain excluded; title-bar changes do not restore removed document switches.
-  The latest three keep the SSH host list's wheel inside the list, reap opened
-  files' helper processes instead of leaving zombies behind, and resolve
-  `path:start-end` links at the range's first line.
+  The latest four restore Bash's first-command markers when profile scripts extend
+  `PROMPT_COMMAND`, treat unavailable macOS system proxy configuration as no proxy,
+  remember explicitly resumed agent sessions before their first turn, and update
+  Oh My Pi's icon and colours. Session detection also accepts the fork's configured
+  Codex model/reasoning options before `resume` without publishing a mobile status
+  transition solely to fill a session ID.
 
 - **Settings alignment and monitor placement.** Align the Git provider and
   language dropdowns, shorten AI/Git help text, and open new settings windows

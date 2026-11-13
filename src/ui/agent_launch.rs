@@ -531,6 +531,12 @@ mod tests {
         };
         let line = compose(true, "bash", "codex resume session --model explicit");
         assert_eq!(
+            CLIAgent::Codex
+                .resumed_session_id(&crate::ui::app::split_shell_args(&line).unwrap())
+                .as_deref(),
+            Some("session")
+        );
+        assert_eq!(
             crate::ui::app::split_shell_args(&line).unwrap(),
             argv(&[
                 "codex",

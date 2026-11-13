@@ -422,12 +422,14 @@ See [docs/](docs/) for the full documentation, including the
 The upstream project is [l0ng-ai/tty7](https://github.com/l0ng-ai/tty7). This
 fork tracks it selectively, rather than merging its default branch wholesale.
 The latest reviewed upstream revision is
-[`8ad8841e`](https://github.com/l0ng-ai/tty7/commit/8ad8841e4835e4e6c4e6f4d5a0a16541eaa9107f):
-29 commits were selected, with fork-specific adaptations for daemon handoff,
-the vendored terminal engine, shortcuts and title-bar alignment. The latest
-three keep the SSH host list's wheel inside the list, reap opened files'
-helper processes rather than leaving zombies, and resolve `path:start-end`
-links at the range's first line.
+[`384ef875`](https://github.com/l0ng-ai/tty7/commit/384ef87554e0f9a98f72282c6306c9221a7a48b5):
+33 commits were selected, with fork-specific adaptations for daemon handoff,
+the vendored terminal engine, shortcuts, title-bar alignment and Codex launch
+options. The latest four fix Bash's first-command markers, handle unavailable
+macOS system proxy configuration, retain resumed agent session IDs before the
+first turn, and update the Oh My Pi icon and colours. See the
+[November 13 review](docs/upstream-review-2026-11-13.md) for source commits,
+adaptations and skipped changes.
 
 The upstream GitHub panel, updater/release changes, legacy iroh replay fix,
 warnings-as-errors CI change, and the reverted tab-button/video changes were
@@ -437,7 +439,7 @@ external-editor controls remain fork-specific.
 ```bash
 git remote add upstream https://github.com/l0ng-ai/tty7.git # once
 git fetch upstream
-git log --oneline 8ad8841e..upstream/main
+git log --oneline 384ef875..upstream/main
 # Review each new commit before applying it:
 git cherry-pick -x <reviewed-commit>
 ```

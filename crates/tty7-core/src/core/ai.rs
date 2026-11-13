@@ -285,6 +285,25 @@ pub fn codex_default_args(args: &[OsString], defaults: &CodexSettings) -> Vec<Os
     result
 }
 
+/// Number of argv words in a known Codex option, including its value. Unknown
+/// arity must not let an option's value masquerade as a resume subcommand.
+pub(super) fn codex_option_words(arg: &str) -> Option<usize> {
+    if matches!(arg, "-m" | "--model" | "-c" | "--config") || option_takes_value(arg) {
+        Some(2)
+    } else if flag_without_value(arg)
+        || arg == "--yolo"
+        || (arg.starts_with("--") && arg.contains('='))
+        || (arg.len() > 2
+            && ["-m", "-c", "-i", "-p", "-s", "-C", "-a", "-o"]
+                .iter()
+                .any(|prefix| arg.starts_with(prefix)))
+    {
+        Some(1)
+    } else {
+        None
+    }
+}
+
 fn option_takes_value(arg: &str) -> bool {
     matches!(
         arg,
